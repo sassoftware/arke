@@ -126,7 +126,7 @@ jobs:
         id: gitleaks
         if: always()
         run: |-
-          go install github.com/gitleaks/gitleaks/v8/cmd/gitleaks@${{ env.GITLEAKS_VERSION }} 2> ${{ env.ARTIFACT_DIR }}/gitleaks-install-log.txt
+          # go install github.com/gitleaks/gitleaks/v8/cmd/gitleaks@${{ env.GITLEAKS_VERSION }} 2> ${{ env.ARTIFACT_DIR }}/gitleaks-install-log.txt
           wget -qO- "https://github.com/gitleaks/gitleaks/releases/download/${{ env.GITLEAKS_VERSION }}/gitleaks_${{ env.GITLEAKS_VERSION }}_linux_x64.tar.gz" | tar -xzv
           ./gitleaks_${{ env.GITLEAKS_VERSION }}_linux_x64/gitleaks detect --config ./.github/linters/gitleaks-config.toml -v
 

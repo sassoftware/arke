@@ -21,11 +21,11 @@ type mockServerStream struct {
 	sendErr error
 }
 
-func (m *mockServerStream) RecvMsg(msg interface{}) error {
+func (m *mockServerStream) RecvMsg(_ interface{}) error {
 	return m.recvErr
 }
 
-func (m *mockServerStream) SendMsg(msg interface{}) error {
+func (m *mockServerStream) SendMsg(_ interface{}) error {
 	return m.sendErr
 }
 
@@ -47,7 +47,7 @@ func TestUnaryInterceptor_SuccessWithKnownMethod(t *testing.T) {
 		FullMethod: api.Producer_Publish_FullMethodName,
 	}
 
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+	handler := func(_ context.Context, _ interface{}) (interface{}, error) {
 		return "response", nil
 	}
 
@@ -68,7 +68,7 @@ func TestUnaryInterceptor_ErrorWithKnownMethod(t *testing.T) {
 	}
 
 	expectedErr := errors.New("handler error")
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+	handler := func(_ context.Context, _ interface{}) (interface{}, error) {
 		return nil, expectedErr
 	}
 
@@ -88,7 +88,7 @@ func TestUnaryInterceptor_UnknownMethodFallback(t *testing.T) {
 		FullMethod: "/some.unknown.Service/UnknownMethod",
 	}
 
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+	handler := func(_ context.Context, _ interface{}) (interface{}, error) {
 		return "ok", nil
 	}
 
@@ -110,7 +110,7 @@ func TestUnaryInterceptor_PassesRequestToHandler(t *testing.T) {
 
 	req := "test-request"
 	var receivedReq interface{}
-	handler := func(ctx context.Context, r interface{}) (interface{}, error) {
+	handler := func(_ context.Context, r interface{}) (interface{}, error) {
 		receivedReq = r
 		return nil, nil
 	}
@@ -131,7 +131,7 @@ func TestUnaryInterceptor_PassesContextToHandler(t *testing.T) {
 	type ctxKey struct{}
 	ctx := context.WithValue(context.Background(), ctxKey{}, "ctx-value")
 	var receivedCtx context.Context
-	handler := func(c context.Context, r interface{}) (interface{}, error) {
+	handler := func(c context.Context, _ interface{}) (interface{}, error) {
 		receivedCtx = c
 		return nil, nil
 	}
@@ -150,7 +150,7 @@ func TestStreamInterceptor_Success(t *testing.T) {
 	}
 
 	ss := &mockServerStream{}
-	handler := func(srv interface{}, stream grpc.ServerStream) error {
+	handler := func(_ interface{}, _ grpc.ServerStream) error {
 		return nil
 	}
 
@@ -169,7 +169,7 @@ func TestStreamInterceptor_Error(t *testing.T) {
 
 	ss := &mockServerStream{}
 	expectedErr := errors.New("stream error")
-	handler := func(srv interface{}, stream grpc.ServerStream) error {
+	handler := func(_ interface{}, _ grpc.ServerStream) error {
 		return expectedErr
 	}
 
@@ -188,7 +188,7 @@ func TestStreamInterceptor_WrapsStream(t *testing.T) {
 
 	ss := &mockServerStream{}
 	var receivedStream grpc.ServerStream
-	handler := func(srv interface{}, stream grpc.ServerStream) error {
+	handler := func(_ interface{}, stream grpc.ServerStream) error {
 		receivedStream = stream
 		return nil
 	}
@@ -308,7 +308,7 @@ func TestStreamInterceptor_MethodNameFormatting(t *testing.T) {
 
 	ss := &mockServerStream{}
 	var receivedStream grpc.ServerStream
-	handler := func(srv interface{}, stream grpc.ServerStream) error {
+	handler := func(_ interface{}, stream grpc.ServerStream) error {
 		receivedStream = stream
 		return nil
 	}
@@ -332,7 +332,7 @@ func TestUnaryInterceptor_AllKnownMethods(t *testing.T) {
 	for grpcMethod, friendlyName := range methodMap {
 		t.Run(friendlyName, func(t *testing.T) {
 			info := &grpc.UnaryServerInfo{FullMethod: grpcMethod}
-			handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+			handler := func(_ context.Context, _ interface{}) (interface{}, error) {
 				return nil, nil
 			}
 			_, err := UnaryInterceptor(context.Background(), nil, info, handler)
