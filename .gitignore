@@ -4,8 +4,7 @@ build
 *.pdf
 *.prof
 tests/integration/arke
-coverage.out
-coverage.html
+coverage.*
 tests/integration/certs/server
 tests/integration/certs/testca
 tests/integration/rabbit
@@ -15,3 +14,5 @@ env-*
 .dccache
 arke
 test/healthz/healthz-client
+coverage/
+*.out

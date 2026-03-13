@@ -109,7 +109,7 @@ func init() {
 		supportedSourceOptions[option] = true
 	}
 	if !strings.HasSuffix(os.Args[0], ".test") {
-		go connectionCleaner()
+		go connectionCleaner(context.Background())
 	}
 }
 
