@@ -17,6 +17,8 @@ type getLocaleFileTestCase struct {
 	expectedFiles []string
 }
 
+const testValue2 = "value2"
+
 func TestGetLocaleFiles(t *testing.T) {
 	filePrefix := messageFilePrefix
 	cases := []getLocaleFileTestCase{
@@ -87,7 +89,7 @@ func TestGetLocaleFiles(t *testing.T) {
 	}
 }
 
-func TestNewPropertiesBundle(t *testing.T) {
+func TestNewPropertiesBundle(t *testing.T) { //nolint:gocognit
 	tests := []struct {
 		name    string
 		data    []byte
@@ -135,7 +137,7 @@ func TestNewPropertiesBundle(t *testing.T) {
 				if len(pb.messages) != 3 {
 					t.Errorf("expected 3 messages, got %d", len(pb.messages))
 				}
-				if pb.messages["key2"] != "value2" {
+				if pb.messages["key2"] != testValue2 {
 					t.Errorf("expected 'value2', got '%s'", pb.messages["key2"])
 				}
 			},
@@ -168,7 +170,7 @@ func TestNewPropertiesBundle(t *testing.T) {
 				if pb.messages["key1"] != "value1" {
 					t.Errorf("expected 'value1', got '%s'", pb.messages["key1"])
 				}
-				if pb.messages["key2"] != "value2" {
+				if pb.messages["key2"] != testValue2 {
 					t.Errorf("expected 'value2', got '%s'", pb.messages["key2"])
 				}
 			},
@@ -204,7 +206,7 @@ func TestNewPropertiesBundle(t *testing.T) {
 				if len(pb.messages) != 1 {
 					t.Errorf("expected 1 message, got %d", len(pb.messages))
 				}
-				if pb.messages["key2"] != "value2" {
+				if pb.messages["key2"] != testValue2 {
 					t.Errorf("expected 'value2', got '%s'", pb.messages["key2"])
 				}
 			},

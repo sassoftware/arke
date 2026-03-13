@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	CouldNotDetectPackageErrorMessage = "Could not detect language"
+	CouldNotDetectPackageErrorMessage = "could not detect language"
 	defaultLanguage                   = "en"
 )
 
@@ -24,7 +24,7 @@ func init() {
 
 func InitializeSystemLocale() {
 	locale, _ := DetectIETF()
-	if "" == locale {
+	if locale == "" {
 		locale = defaultLanguage
 	}
 	set := flag.NewFlagSet("i18n", flag.ContinueOnError)

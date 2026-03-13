@@ -654,7 +654,6 @@ func Test_SubscribeStreamBadOpt(t *testing.T) {
 }
 
 func Test_streamSubscribe(t *testing.T) {
-
 	prov := NewAMQP091Provider().(*amqp091provider)
 
 	origNewAmqpConn091 := NewAmqpConn091
@@ -1153,7 +1152,6 @@ func Test_StreamRetry(t *testing.T) {
 }
 
 func Test_Subscribe_Stream_DeclareOnly(t *testing.T) {
-
 	oldGetClientIdentifier := GetClientIdentifier
 	GetClientIdentifier = func(context.Context) (string, error) {
 		return "1234", nil
@@ -1176,7 +1174,6 @@ func Test_Subscribe_Stream_DeclareOnly(t *testing.T) {
 	for _, dot := range declareOnlyTests {
 		t.Run(fmt.Sprintf("DeclareOnlyTests declareError %s", dot.declareError),
 			func(t *testing.T) {
-
 				prov := NewAMQP091Provider()
 
 				addr := &pb.Address{Subjects: []string{"routingkey"}, Name: "address", Type: pb.Address_STREAM}
@@ -1225,5 +1222,4 @@ func Test_Subscribe_Stream_DeclareOnly(t *testing.T) {
 				amock.AssertExpectations(t)
 			})
 	}
-
 }

@@ -14,14 +14,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sassoftware/arke/internal/metrics"
-	"github.com/sassoftware/arke/internal/provider"
-
 	met "github.com/armon/go-metrics"
 	promet "github.com/armon/go-metrics/prometheus"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/sassoftware/arke/internal/metrics"
+	"github.com/sassoftware/arke/internal/provider"
 )
 
 type stats struct {
@@ -66,7 +65,7 @@ func init() {
 
 	promConf := met.DefaultConfig("")
 	promConf.EnableHostname = false
-	met.NewGlobal(promConf, Stats.Sink) //nolint errcheck
+	met.NewGlobal(promConf, Stats.Sink) //nolint:errcheck
 }
 
 func pprofEnabled() bool {
@@ -93,7 +92,8 @@ func setupServer() *http.Server {
 	}
 
 	metricsServer := &http.Server{
-		Handler: mux,
+		Handler:           mux,
+		ReadHeaderTimeout: 30 * time.Second,
 	}
 
 	return metricsServer
@@ -103,11 +103,10 @@ func setupServer() *http.Server {
 func Serve(ctx context.Context, lis *net.Listener) {
 	metricsServer := setupServer()
 
-	go metricsServer.Serve(*lis) //nolint errcheck
+	go metricsServer.Serve(*lis) //nolint:errcheck
 
 	<-ctx.Done()
-	metricsServer.Shutdown(ctx) //nolint errcheck
-
+	metricsServer.Shutdown(ctx) //nolint:errcheck
 }
 
 func gatherClientStatsHandler(h http.Handler) http.Handler {

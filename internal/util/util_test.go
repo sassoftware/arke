@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc/peer"
 )
@@ -51,7 +50,6 @@ func Test_GetClientAddr(t *testing.T) {
 }
 
 func Test_SetClientIdentifier(t *testing.T) {
-
 	p := &peer.Peer{}
 	p.Addr = fakeAddr{s: "127.0.0.1", network: "tcp"}
 	ctx := peer.NewContext(context.Background(), p)
@@ -67,13 +65,11 @@ func Test_SetClientIdentifier(t *testing.T) {
 	ctx = peer.NewContext(context.Background(), p)
 	getID, err = GetClientIdentifier(ctx)
 	assert.NotNil(t, err)
-	assert.Equal(t, err.Error(), "Could not retrieve client-id from context")
+	assert.Equal(t, err.Error(), "could not retrieve client-id from context")
 	assert.Equal(t, "", getID)
-
 }
 
 func Test_RemoveClientIdentifier(t *testing.T) {
-
 	p := &peer.Peer{}
 	p.Addr = fakeAddr{s: "127.0.0.1", network: "tcp"}
 	ctx := peer.NewContext(context.Background(), p)
@@ -86,8 +82,7 @@ func Test_RemoveClientIdentifier(t *testing.T) {
 	getID, err := GetClientIdentifier(ctx)
 	assert.Equal(t, "", getID)
 	assert.NotNil(t, err)
-	assert.Equal(t, "Could not find client identifier", err.Error())
-
+	assert.Equal(t, "could not find client identifier", err.Error())
 }
 
 func Test_TestProcessStats(t *testing.T) {

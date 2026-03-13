@@ -38,7 +38,7 @@ var kacp = keepalive.ClientParameters{
 func ConnectToArke(withTLS bool) (*grpc.ClientConn, error) {
 	var creds credentials.TransportCredentials
 	if withTLS {
-		creds = credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
+		creds = credentials.NewTLS(&tls.Config{InsecureSkipVerify: true}) //nolint:gosec
 	} else {
 		creds = insecure.NewCredentials()
 	}
@@ -47,7 +47,7 @@ func ConnectToArke(withTLS bool) (*grpc.ClientConn, error) {
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithKeepaliveParams(kacp),
 		grpc.WithTransportCredentials(creds),
-	) //nolint staticcheck
+	)
 	if err == nil && conn == nil {
 		return nil, fmt.Errorf("got a nil connection")
 	}

@@ -9,9 +9,8 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/sassoftware/arke/internal/util"
-
 	"github.com/sassoftware/arke/i18n"
+	"github.com/sassoftware/arke/internal/util"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -39,7 +38,6 @@ const (
 )
 
 func getTelemetryCollectorAddress() string {
-
 	if addr := os.Getenv(EnvOtelExporterOtlpEndpoint); addr != "" {
 		return addr
 	}
@@ -86,9 +84,7 @@ func Enabled() bool {
 }
 
 func InitTracerProvider() (*sdktrace.TracerProvider, error) {
-
 	if getTelemetryEnabled() {
-
 		ctx := context.Background()
 
 		var exporter sdktrace.SpanExporter

@@ -151,7 +151,7 @@ integration_rabbitmq: ## Runs integration tests for RabbitMQ
 	source env-rabbitmq && go test -count=1 -v -tags=integration ./tests/integration/
 
 lint: ## Run golangci-lint tool
-	golangci-lint run --timeout=30m --disable-all --max-issues-per-linter 0 --max-same-issues 0 --enable=errcheck --enable=gosimple --enable=govet --enable=ineffassign --enable=staticcheck --enable=typecheck --enable=unused --enable=revive --enable=gocritic  --allow-parallel-runners ./...
+	golangci-lint run --config .github/linters/golangci-config.yaml --allow-parallel-runners ./...
 
 compose: linux compose_only ## Builds and runs docker image(s) for integration tests
 

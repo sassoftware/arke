@@ -14,19 +14,18 @@ import (
 	"strconv"
 	"time"
 
-	metrics "github.com/sassoftware/arke/internal/metrics/prometheus"
-	"github.com/sassoftware/arke/internal/server"
-	"github.com/sassoftware/arke/internal/server/prometheus"
-	"github.com/sassoftware/arke/internal/server/ratelimiter"
-	"github.com/sassoftware/arke/internal/util"
-	"github.com/sassoftware/arke/internal/util/tracing"
-
 	"github.com/KimMachineGun/automemlimit/memlimit"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/ratelimit"
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/selector"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/i18n"
+	metrics "github.com/sassoftware/arke/internal/metrics/prometheus"
 	_ "github.com/sassoftware/arke/internal/provider/connectors" // initializes providers
+	"github.com/sassoftware/arke/internal/server"
+	"github.com/sassoftware/arke/internal/server/prometheus"
+	"github.com/sassoftware/arke/internal/server/ratelimiter"
+	"github.com/sassoftware/arke/internal/util"
+	"github.com/sassoftware/arke/internal/util/tracing"
 	"github.com/soheilhy/cmux"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"google.golang.org/grpc"
@@ -198,7 +197,6 @@ func defaultKeepAliveEnforcementPolicy() keepalive.EnforcementPolicy {
 }
 
 func DefaultArkeServer() *Arke {
-
 	a := &Arke{
 		port:    50051,
 		hpaName: "arke",
@@ -246,8 +244,7 @@ func setGoMemLimit() {
 // listener returns a TLS-enabled listener if the certFile and certKey are set,
 // otherwise a plain TCP listener.
 func (a Arke) listener() (net.Listener, error) {
-
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", a.port))
+	lis, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", fmt.Sprintf(":%d", a.port))
 
 	if err != nil {
 		return nil, err
@@ -335,7 +332,7 @@ func (a *Arke) Serve(ctx context.Context) error {
 	// so if we're not HTTP/1, assume gRPC.
 	grpcListener := a.mux.Match(cmux.Any())
 
-	go a.server.Serve(grpcListener) // nolint errcheck
+	go a.server.Serve(grpcListener) //nolint:errcheck
 	// To emit prometeus metrics for arke
 	go metrics.Serve(ctx, &httpListener)
 	if a.ratelimiter != nil {
@@ -344,7 +341,7 @@ func (a *Arke) Serve(ctx context.Context) error {
 	serveErrChan := make(chan error)
 	go func(as *Arke) {
 		if err := as.mux.Serve(); err != nil {
-			switch err.(type) { //nolint gocritic
+			switch err.(type) { //nolint:gocritic
 			case *net.OpError:
 				serveErrChan <- nil
 				return

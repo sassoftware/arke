@@ -39,7 +39,7 @@ func Test_MonitorHPA(t *testing.T) {
 				origNamespaceFile := namespaceFile
 				tDir := os.TempDir()
 				ns, _ := os.CreateTemp(tDir, "namespace")
-				ns.WriteString("test-namespace") // nolint:errcheck
+				ns.WriteString("test-namespace") //nolint:errcheck
 				ns.Close()
 				namespaceFile = ns.Name()
 				// Restore original value on cleanup
@@ -60,7 +60,7 @@ func Test_MonitorHPA(t *testing.T) {
 				}
 				tDir := os.TempDir()
 				ns, _ := os.CreateTemp(tDir, "namespace")
-				ns.WriteString("test-namespace") // nolint:errcheck
+				ns.WriteString("test-namespace") //nolint:errcheck
 				ns.Close()
 				namespaceFile = ns.Name()
 				// Restore original value on cleanup
@@ -93,7 +93,7 @@ func Test_MonitorHPA(t *testing.T) {
 				}
 				tDir := os.TempDir()
 				ns, _ := os.CreateTemp(tDir, "namespace")
-				ns.WriteString("test-namespace") // nolint:errcheck
+				ns.WriteString("test-namespace") //nolint:errcheck
 				ns.Close()
 				namespaceFile = ns.Name()
 				return func() {

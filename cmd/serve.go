@@ -12,12 +12,11 @@ import (
 	"runtime"
 	"runtime/pprof"
 
+	"github.com/sassoftware/arke/i18n"
+	_ "github.com/sassoftware/arke/internal/provider/connectors"
 	"github.com/sassoftware/arke/internal/server/ratelimiter"
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/sassoftware/arke/pkg/arke"
-
-	"github.com/sassoftware/arke/i18n"
-	_ "github.com/sassoftware/arke/internal/provider/connectors"
 )
 
 const (
@@ -30,7 +29,6 @@ var memprofile = flag.String("memprofile", "", "write memory profile to `file`")
 var tlsSkipVerify = flag.Bool("tls-skip-verify", false, "Force TLS, but always skip verification")
 
 func run(ctx context.Context) error {
-
 	// Set up cpu and memory profiling if passed in as args
 	flag.Parse()
 	if *cpuprofile != "" {
@@ -82,7 +80,7 @@ func run(ctx context.Context) error {
 
 	err = svr.Serve(ctx)
 	if err != nil {
-		switch err.(type) { //nolint gocritic
+		switch err.(type) {
 		case *net.OpError:
 			return nil
 		default:

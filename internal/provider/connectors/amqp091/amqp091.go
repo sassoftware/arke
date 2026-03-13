@@ -23,12 +23,11 @@ import (
 
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
+	pb "github.com/sassoftware/arke/api"
+	"github.com/sassoftware/arke/i18n"
 	"github.com/sassoftware/arke/internal/provider"
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/sassoftware/arke/internal/util/tracing"
-
-	pb "github.com/sassoftware/arke/api"
-	"github.com/sassoftware/arke/i18n"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -43,6 +42,10 @@ const transferEncodingHeaderName = "Transfer-Encoding"
 
 const maxPubChannels = 10
 const maxPubPCChannels = 10
+
+const queueTypeClassic = "classic"
+const queueTypeQuorum = "quorum"
+const xMatchAny = "any"
 
 var supportedSourceOptionsList = []string{"MessageTTL", "DeadLetterAddress", "DeadLetterSubject", "Expires", "Offset", "ConsumerGroup"}
 
@@ -432,7 +435,7 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 
 	activeMessages := util.NewConcurrentMap()
 	pubChCtx := context.WithValue(context.Background(), CtxKey{name: "clientIdentifier"}, clientIdentifier)
-	pubChCtx, pubChCancel := context.WithCancel(pubChCtx)
+	pubChCtx, pubChCancel := context.WithCancel(pubChCtx) //nolint:gosec
 	bd := BrokerDetails{
 		connectionConfig: cf,
 		ClientIdentifier: clientIdentifier,
@@ -488,7 +491,6 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 	go bd.connectionWatcher()
 
 	return nil
-
 }
 
 func (prov *amqp091provider) setupDeadLetter(ctx context.Context, origSource *pb.Source) *pb.Error {
@@ -541,7 +543,6 @@ func (prov *amqp091provider) setupDeadLetter(ctx context.Context, origSource *pb
 }
 
 func addressTypeToAmqpType(aType pb.Address_TargetType) (string, error) {
-
 	var exchangeType string
 	switch aType {
 	case pb.Address_TOPIC:
@@ -562,13 +563,13 @@ func addressTypeToAmqpType(aType pb.Address_TargetType) (string, error) {
 func sourceTypeToAmqpType(source *pb.Source) (string, error) {
 	var queueType string
 	if source.GetAutoDelete() {
-		return "classic", nil
+		return queueTypeClassic, nil
 	}
-	switch source.GetType() {
+	switch source.GetType() { //nolint:exhaustive
 	case pb.Source_QUEUE:
-		queueType = "quorum"
+		queueType = queueTypeQuorum
 	case pb.Source_TEMPORARY:
-		queueType = "classic"
+		queueType = queueTypeClassic
 	default:
 		return "", fmt.Errorf("%s is not a valid source type", source.GetType())
 	}
@@ -576,19 +577,16 @@ func sourceTypeToAmqpType(source *pb.Source) (string, error) {
 }
 
 func (bd *BrokerDetails) exchangeKnown(name string) bool {
-
 	_, ok := bd.knownExchanges.Get(name)
 	return ok
 }
 
 func (bd *BrokerDetails) queueKnown(name string) bool {
-
 	_, ok := bd.knownQueues.Get(name)
 	return ok
 }
 
 func (bd *BrokerDetails) bindingKnown(name string) bool {
-
 	_, ok := bd.knownBindings.Get(name)
 	return ok
 }
@@ -608,7 +606,6 @@ func (bd *BrokerDetails) decrementStreamCount() {
 }
 
 func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDetails, amqpChannel amqp091ChannelShim) error {
-
 	// don't try to declare an exchange with amq. in the name
 	if strings.Contains(address.GetName(), "amq.") {
 		return nil
@@ -617,7 +614,6 @@ func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDeta
 	known := bd.exchangeKnown(address.GetName())
 
 	if !known {
-
 		exchangeType, err := addressTypeToAmqpType(address.GetType())
 
 		if err != nil {
@@ -635,7 +631,6 @@ func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDeta
 	}
 
 	if parent := address.GetParentAddress(); parent != nil {
-
 		known = bd.exchangeKnown(parent.GetName())
 		if !known {
 			err := prov.declareExchange(parent, bd, amqpChannel)
@@ -714,7 +709,7 @@ func (prov *amqp091provider) declareQueue(source *pb.Source, bd *BrokerDetails, 
 
 	// if an AutoDelete source and x-expires is not set, set it to 5 minutes
 	if _, hasExpires := args["x-expires"]; (source.GetAutoDelete() || source.GetExclusive()) && !hasExpires {
-		args["x-expires"] = int(time.Duration(5 * time.Minute).Milliseconds())
+		args["x-expires"] = int((5 * time.Minute).Milliseconds())
 	}
 
 	// The AutoDelete and Exclusive parameters are now set to false because we have experienced issues
@@ -742,7 +737,6 @@ func (bd *BrokerDetails) getManagementClient() *http.Client {
 }
 
 func (bd *BrokerDetails) doManagementRequest(method, urn string) ([]map[string]interface{}, error) {
-
 	var results []map[string]interface{}
 
 	body, err := bd.doManagementRequestWithoutMarshal(method, urn)
@@ -774,7 +768,7 @@ func (bd *BrokerDetails) doManagementRequestWithoutMarshal(method, urn string) (
 	host := bd.connectionConfig.Host
 
 	rurl := fmt.Sprintf("%s://%s:%d%s", proto, host, adminPort, urn)
-	req, _ := http.NewRequest(method, rurl, nil)
+	req, _ := http.NewRequestWithContext(context.Background(), method, rurl, nil)
 	req.SetBasicAuth(bd.connectionConfig.GetCredentials().GetUsername(), bd.connectionConfig.GetCredentials().GetPassword())
 	req.Header.Add("Accept", "application/json")
 	resp, respErr := client.Do(req)
@@ -782,11 +776,11 @@ func (bd *BrokerDetails) doManagementRequestWithoutMarshal(method, urn string) (
 	var body []byte
 	var bodyErr error
 	if resp != nil {
-		defer resp.Body.Close() //nolint
+		defer resp.Body.Close()
 		body, bodyErr = io.ReadAll(resp.Body)
 	}
 
-	if respErr != nil { //nolint gocritic
+	if respErr != nil { //nolint:gocritic
 		err := fmt.Errorf("Error retrieving bindings: %s", respErr.Error())
 		return nil, err
 	} else if resp == nil {
@@ -874,7 +868,7 @@ func (bd *BrokerDetails) cleanupBindings(source *pb.Source, subjects []string) [
 	return removed
 }
 
-func (prov *amqp091provider) declareBinding(source *pb.Source, bd *BrokerDetails, amqpChannel amqp091ChannelShim, force bool) error {
+func (prov *amqp091provider) declareBinding(source *pb.Source, bd *BrokerDetails, amqpChannel amqp091ChannelShim, force bool) error { //nolint:gocognit,unparam
 	knownBindingKey := fmt.Sprintf("%s:%s", source.GetName(), strings.Join(source.Address.GetSubjects(), ":"))
 	known := bd.bindingKnown(knownBindingKey)
 	if known && !force {
@@ -899,7 +893,7 @@ func (prov *amqp091provider) declareBinding(source *pb.Source, bd *BrokerDetails
 			if len(matchHeaders) > 0 {
 				matchHeaders["x-match"] = "all"
 				if filter.GetType() == pb.Filter_ANY {
-					matchHeaders["x-match"] = "any"
+					matchHeaders["x-match"] = xMatchAny
 				}
 			}
 
@@ -943,7 +937,6 @@ func (prov *amqp091provider) declareBinding(source *pb.Source, bd *BrokerDetails
 
 // Subscribe subscribe to a stream of messages from the broker
 func (prov *amqp091provider) Subscribe(ctx context.Context, source *pb.Source, messageChannel chan<- *pb.Message) *pb.Error {
-
 	if source.GetAddress().GetName() == "" {
 		return &pb.Error{Message: "address name not defined"}
 	}
@@ -960,8 +953,7 @@ func (prov *amqp091provider) Subscribe(ctx context.Context, source *pb.Source, m
 	return prov.queueSubscribe(ctx, bd, source, messageChannel)
 }
 
-func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetails, source *pb.Source, messageChannel chan<- *pb.Message) *pb.Error {
-
+func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetails, source *pb.Source, messageChannel chan<- *pb.Message) *pb.Error { //nolint:gocognit
 	if bd.Connection.IsClosed() {
 		return &pb.Error{Message: "connection to broker is closed"}
 	}
@@ -1051,7 +1043,6 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 			return
 		default:
 			return
-
 		}
 	}()
 
@@ -1154,7 +1145,7 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 	}
 }
 
-func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDetails, source *pb.Source, messageChannel chan<- *pb.Message) *pb.Error {
+func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDetails, source *pb.Source, messageChannel chan<- *pb.Message) *pb.Error { //nolint:gocognit
 	// Streams have a reduced set of supported options so they
 	// are not validated by server
 	validOptions := supportedStreamSourceOptions
@@ -1210,7 +1201,7 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 		return nil
 	}
 
-	latch := util.NewBlockingLatch(uint(source.GetPrefetchCount()))
+	latch := util.NewBlockingLatch(uint(source.GetPrefetchCount())) //nolint:gosec
 
 	consumerName, cErr := bd.getConsumerName(source)
 	if cErr != nil {
@@ -1296,7 +1287,6 @@ func (prov *amqp091provider) Disconnect(ctx context.Context) {
 }
 
 func (prov *amqp091provider) disconnectClientByIdentifier(clientIdentifier string) {
-
 	var bd *BrokerDetails
 	if bdu, ok := prov.connections.Get(clientIdentifier); ok {
 		bd = bdu.(*BrokerDetails)
@@ -1324,12 +1314,11 @@ func (prov *amqp091provider) disconnectClientByIdentifier(clientIdentifier strin
 	}
 	prov.connections.Delete(clientIdentifier)
 
-	bd = nil
+	bd = nil //nolint:wastedassign
 }
 
 // Publish publish a message to the broker
 func (prov *amqp091provider) Publish(ctx context.Context, messageChannel <-chan *pb.Message, errChan chan<- *pb.Error) *pb.Error {
-
 	bd, err := prov.getBrokerDetails(ctx)
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
@@ -1363,7 +1352,6 @@ func (prov *amqp091provider) Publish(ctx context.Context, messageChannel <-chan 
 			return
 		default:
 			return
-
 		}
 	}()
 
@@ -1412,7 +1400,6 @@ func (prov *amqp091provider) Publish(ctx context.Context, messageChannel <-chan 
 			errChan <- prov.prepareAndSend(mCtx, message, bd, amqpChannel)
 		}
 	}
-
 }
 
 func (prov *amqp091provider) PublishOne(ctx context.Context, msg *pb.Message) *pb.Error {
@@ -1424,7 +1411,7 @@ func (prov *amqp091provider) PublishOne(ctx context.Context, msg *pb.Message) *p
 	bd.updateLastPubSubEvent()
 
 	var pubErr *pb.Error
-	switch msg.GetAddress().GetType() {
+	switch msg.GetAddress().GetType() { //nolint:exhaustive
 	case pb.Address_STREAM:
 		pubErr = prov.publishOneStream(ctx, msg, bd)
 	default:
@@ -1435,7 +1422,6 @@ func (prov *amqp091provider) PublishOne(ctx context.Context, msg *pb.Message) *p
 }
 
 func (prov *amqp091provider) publishOneQueue(ctx context.Context, msg *pb.Message, bd *BrokerDetails) *pb.Error {
-
 	if bd.Connection.IsClosed() {
 		return &pb.Error{Message: "connection to broker is closed"}
 	}
@@ -1642,7 +1628,6 @@ func (prov *amqp091provider) WaitForConnect(ctx context.Context) bool {
 		}
 
 		sleepRandomReconnect()
-
 	}
 	return false
 }
@@ -1728,14 +1713,15 @@ func (bd *BrokerDetails) getStreamOrQueueStats(source *pb.Source) *pb.SourceStat
 	util.Logger.Debugf("Source.Type: %d", source.Type)
 	util.Logger.Debugf("results: %+v", results)
 
-	if source.Type == pb.Source_QUEUE {
+	switch source.Type { //nolint:exhaustive
+	case pb.Source_QUEUE:
 		if messageCountRaw, ok := results["messages"]; ok {
 			stats.MessageCount = int64(messageCountRaw.(float64))
 			util.Logger.Debugf("Message count for queue %s: %d", queue, stats.MessageCount)
 		} else {
 			util.Logger.Debugf("No message count found for queue %s", queue)
 		}
-	} else if source.Type == pb.Source_STREAM {
+	case pb.Source_STREAM:
 		bd.updateStatsForStream(source, stats)
 	}
 
@@ -1775,7 +1761,6 @@ func sleepRandomReconnect() {
 // connectionWatcher Called at the end of BrokerDetails.connect(), we monitor the bd.ErrorChannel and try to reconnect
 // if we get an error on the channel. Receiving nil on the channel means we've closed because of the client
 func (bd *BrokerDetails) connectionWatcher() {
-
 	for !bd.clientDisconnect {
 		select {
 		case <-bd.shutdownChan:
@@ -1787,7 +1772,7 @@ func (bd *BrokerDetails) connectionWatcher() {
 				sleepRandomReconnect()
 				bd.Unlock()
 				// Ignore this error because we will reconnect in 30 seconds
-				bd.connect() //nolint errcheck
+				bd.connect() //nolint:errcheck
 				continue
 			}
 			bd.Unlock()
@@ -1800,7 +1785,7 @@ func (bd *BrokerDetails) connectionWatcher() {
 				bd.state = provider.DISCONNECTED
 				bd.Unlock()
 				// Ignore this error because we will reconnect in 30 seconds
-				bd.connect() //nolint errcheck
+				bd.connect() //nolint:errcheck
 			}
 			continue
 		}
@@ -1808,7 +1793,6 @@ func (bd *BrokerDetails) connectionWatcher() {
 }
 
 func (bd *BrokerDetails) connect() (bool, error) {
-
 	if bd.clientDisconnect {
 		return false, nil
 	}
@@ -1874,7 +1858,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	var connStr string
 
 	// skip verification if true
-	if bd.tlsEnabled && bd.tlsSkipVerify { //nolint gocritic
+	if bd.tlsEnabled && bd.tlsSkipVerify {
 		util.Logger.Debugf("%s connecting with TLS enabled but verification off: %s:%d", bd.ClientIdentifier, cf.GetHost(), cf.GetPort())
 		bd.tlsConfig.InsecureSkipVerify = true // deepcode ignore TooPermissiveTrustManager: PSGO-2002
 	} else if !bd.tlsEnabled { // no tls
@@ -1905,7 +1889,6 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	bd.loadExchanges()
 
 	return true, nil
-
 }
 
 func (bd *BrokerDetails) loadExchanges() {
@@ -1938,7 +1921,6 @@ func (bd *BrokerDetails) loadExchanges() {
 }
 
 func (prov *amqp091provider) Stats() *provider.Stats {
-
 	stats := &provider.Stats{}
 	stats.Clients = make([]*provider.ClientStats, 0)
 	for _, connID := range prov.connections.GetList() {
@@ -1954,7 +1936,6 @@ func (prov *amqp091provider) Stats() *provider.Stats {
 		clientStat.Produced = int(conn.produced)
 		clientStat.Consumed = int(conn.consumed)
 		stats.Clients = append(stats.Clients, clientStat)
-
 	}
 	return stats
 }

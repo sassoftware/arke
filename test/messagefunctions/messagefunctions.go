@@ -11,33 +11,30 @@ import (
 	"log"
 	"os"
 	"strings"
-
-	"github.com/sassoftware/arke/internal/util/tracing"
-
 	"sync"
 	"time"
 
 	pb "github.com/sassoftware/arke/api"
+	"github.com/sassoftware/arke/internal/util/tracing"
 	cfg "github.com/sassoftware/arke/test/config"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
-	"google.golang.org/grpc"
 )
 
 func connectConfig(clientName string) *pb.ConnectionConfiguration {
-
 	connConfig := cfg.ConnectionConfigurationFromEnv()
 
 	providerTLS := strings.ToLower(os.Getenv("ARKE_PROVIDER_TLS"))
 
-	if providerTLS == "sendca" {
+	switch providerTLS {
+	case "sendca":
 		cacert, err := os.ReadFile("certs/testca/ca_certificate.pem")
 		if err != nil {
 			log.Fatalf("Error reading provider CA cert: %v", err)
 		}
 		connConfig.Tls = true
 		connConfig.CaCertificate = cacert
-	} else if providerTLS == "true" {
+	case "true":
 		connConfig.Tls = true
 	}
 
@@ -46,8 +43,7 @@ func connectConfig(clientName string) *pb.ConnectionConfiguration {
 	return &connConfig
 }
 
-func ProduceSendMessages(c pb.ProducerClient, ctx context.Context, cnt int, message *pb.Message, clientName string) error { //nolint
-
+func ProduceSendMessages(ctx context.Context, c pb.ProducerClient, cnt int, message *pb.Message, clientName string) error {
 	connConfig := pb.ConnectionConfiguration{}
 	switch clientName {
 	case "simple_producer":
@@ -58,9 +54,7 @@ func ProduceSendMessages(c pb.ProducerClient, ctx context.Context, cnt int, mess
 	}
 
 	defer func() {
-		if _, err := c.Disconnect(ctx, &pb.Empty{}); err != nil {
-			// fmt.Printf("Disconnect error: %v\n", err)
-		}
+		_, _ = c.Disconnect(ctx, &pb.Empty{})
 	}()
 
 	authResp, err := c.Connect(ctx, &connConfig)
@@ -96,14 +90,11 @@ func ProduceSendMessages(c pb.ProducerClient, ctx context.Context, cnt int, mess
 	return nil
 }
 
-func ProduceMessagesUnary(conn *grpc.ClientConn, c pb.ProducerClient, ctx context.Context, cnt int, message *pb.Message, producerName string, includePubID bool, clientName string) error { //nolint
-
+func ProduceMessagesUnary(ctx context.Context, c pb.ProducerClient, cnt int, message *pb.Message, includePubID bool, clientName string) error {
 	connConfig := connectConfig(clientName)
 
 	defer func() {
-		if _, err := c.Disconnect(ctx, &pb.Empty{}); err != nil {
-			// fmt.Printf("Disconnect error: %v\n", err)
-		}
+		_, _ = c.Disconnect(ctx, &pb.Empty{})
 	}()
 
 	authResp, err := c.Connect(ctx, connConfig)
@@ -116,11 +107,10 @@ func ProduceMessagesUnary(conn *grpc.ClientConn, c pb.ProducerClient, ctx contex
 	}
 	// fmt.Printf("Publisher connected - connConfig: %+v\n", connConfig)
 	// fmt.Printf("Publisher connected - authResp: %+v\n", authResp)
-	return ProduceMessagesUnaryWOConnect(conn, c, ctx, cnt, message, producerName, includePubID, clientName)
+	return ProduceMessagesUnaryWOConnect(ctx, c, cnt, message, includePubID)
 }
 
-func ProduceMessagesUnaryWOConnect(conn *grpc.ClientConn, c pb.ProducerClient, ctx context.Context, cnt int, message *pb.Message, producerName string, includePubID bool, clientName string) error { //nolint
-
+func ProduceMessagesUnaryWOConnect(ctx context.Context, c pb.ProducerClient, cnt int, message *pb.Message, includePubID bool) error {
 	for i := 0; i < cnt; i++ {
 		if includePubID {
 			// PublishID must start at 1
@@ -141,7 +131,6 @@ func ProduceMessagesUnaryWOConnect(conn *grpc.ClientConn, c pb.ProducerClient, c
 }
 
 func ParallelProduceMessages(worker int, producer int, c pb.ProducerClient, ctx *context.Context, cnt int, cwg *sync.WaitGroup) {
-
 	message := "test " + time.Now().String()
 
 	subjects := make([]string, 0)
@@ -173,14 +162,13 @@ func ParallelProduceMessages(worker int, producer int, c pb.ProducerClient, ctx 
 		log.Printf("worker %d/%d: Successfully produced message", worker, producer)
 		span.End()
 	}
-	stream.CloseSend() //nolint errcheck
+	stream.CloseSend() //nolint:errcheck
 	cwg.Done()
 }
 
 // produceMessagesUnary produces messages using unary gRPC calls
 // cnt: number of messages to produce
 func ParallelProduceMessagesUnary(c pb.ProducerClient, cnt int, cwg *sync.WaitGroup) {
-
 	message := "test " + time.Now().String()
 
 	subjects := make([]string, 0)

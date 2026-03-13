@@ -15,18 +15,25 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sassoftware/arke/internal/provider"
-	"github.com/sassoftware/arke/internal/util"
-
 	// "github.com/NeowayLabs/wabbit/amqptest/server"
 	amqp "github.com/rabbitmq/amqp091-go"
 	pb "github.com/sassoftware/arke/api"
+	"github.com/sassoftware/arke/internal/provider"
+	"github.com/sassoftware/arke/internal/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
 var ctx context.Context
 var cf *pb.ConnectionConfiguration
+
+const testTenant = "tenant"
+const testQueueTypeClassic = "classic"
+const testQueueTypeQuorum = "quorum"
+const testDeadLetterAddress = "dla"
+const testContentTypeJSON = "application/json"
+const testContentEncodingText = "text"
+const testXMatchAny = "any"
 
 func init() {
 	// Register the MockProvider with the Provider factory.
@@ -320,7 +327,8 @@ func TestConnect_Stats(t *testing.T) {
 	amock.AssertExpectations(t)
 }
 
-func Test_Ack_NoMsg(t *testing.T) {
+func setupProviderWithSimpleConn(t *testing.T) (provider.Provider, context.Context, func()) {
+	t.Helper()
 	prov := NewAMQP091Provider()
 
 	oldGetClientIdentifier := GetClientIdentifier
@@ -337,20 +345,26 @@ func Test_Ack_NoMsg(t *testing.T) {
 		return amock
 	}
 
-	defer func() {
-		GetClientIdentifier = oldGetClientIdentifier
-		NewAmqpConn091 = oldNewAmqpConn091
-	}()
-
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
 	assert.Nil(t, err)
-	msg := pb.Message{}
-	err = prov.Ack(ctx, msg.GetUuid())
-	assert.Contains(t, err.GetMessage(), "No message with uuid")
 
-	amock.AssertExpectations(t)
+	cleanup := func() {
+		GetClientIdentifier = oldGetClientIdentifier
+		NewAmqpConn091 = oldNewAmqpConn091
+		amock.AssertExpectations(t)
+	}
+	return prov, ctx, cleanup
+}
+
+func Test_Ack_NoMsg(t *testing.T) {
+	prov, ctx, cleanup := setupProviderWithSimpleConn(t)
+	defer cleanup()
+
+	msg := pb.Message{}
+	err := prov.Ack(ctx, msg.GetUuid())
+	assert.Contains(t, err.GetMessage(), "No message with uuid")
 }
 
 func Test_Ack_AckErr(t *testing.T) {
@@ -369,7 +383,7 @@ func Test_Ack_AckErr(t *testing.T) {
 		mm := amqp091Message{}
 		mm.DeliveryTag = 1
 		dMock.On("Ack").Return(errors.New("ackErr"))
-		mm.SetDelivery(dMock) //nolint
+		mm.SetDelivery(dMock)
 
 		msgs <- mm
 	}(&delMock)
@@ -406,10 +420,10 @@ func Test_Ack_AckErr(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cc := &pb.ConnectionConfiguration{}
-	cc.Tenant = "tenant"
+	cc.Tenant = testTenant
 	cc.Host = u.Hostname()
 	i, _ := strconv.Atoi(u.Port())
-	cc.AdminPort = int32(i)
+	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
 	assert.Nil(t, err)
@@ -442,36 +456,12 @@ func Test_Ack_AckErr(t *testing.T) {
 }
 
 func Test_Nack_NoMsg(t *testing.T) {
-	prov := NewAMQP091Provider()
+	prov, ctx, cleanup := setupProviderWithSimpleConn(t)
+	defer cleanup()
 
-	oldGetClientIdentifier := GetClientIdentifier
-	GetClientIdentifier = func(context.Context) (string, error) {
-		return "1234", nil
-	}
-
-	amock := &amqpConnectionMock{}
-	amock.On("Connect").Return(nil)
-	errs := make(chan amqp091Error)
-	amock.On("NotifyClose").Return(errs)
-	oldNewAmqpConn091 := NewAmqpConn091
-	NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
-		return amock
-	}
-
-	defer func() {
-		GetClientIdentifier = oldGetClientIdentifier
-		NewAmqpConn091 = oldNewAmqpConn091
-	}()
-
-	ctx := context.Background()
-	cc := &pb.ConnectionConfiguration{}
-	err := prov.Connect(ctx, cc, false)
-	assert.Nil(t, err)
 	msg := pb.Message{}
-	err = prov.Nack(ctx, msg.GetUuid())
+	err := prov.Nack(ctx, msg.GetUuid())
 	assert.Contains(t, err.GetMessage(), "No message with uuid")
-
-	amock.AssertExpectations(t)
 }
 
 func Test_Retry_NoMsg(t *testing.T) {
@@ -556,7 +546,7 @@ func Test_Ack(t *testing.T) {
 		mm := amqp091Message{}
 		mm.DeliveryTag = 1
 		dMock.On("Ack").Return(nil)
-		mm.SetDelivery(dMock) //nolint
+		mm.SetDelivery(dMock)
 
 		msgs <- mm
 	}(&delMock)
@@ -592,10 +582,10 @@ func Test_Ack(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cc := &pb.ConnectionConfiguration{}
-	cc.Tenant = "tenant"
+	cc.Tenant = testTenant
 	cc.Host = u.Hostname()
 	i, _ := strconv.Atoi(u.Port())
-	cc.AdminPort = int32(i)
+	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
 	assert.Nil(t, err)
@@ -642,7 +632,7 @@ func Test_Nack(t *testing.T) {
 		mm := amqp091Message{}
 		mm.DeliveryTag = 1
 		dMock.On("Nack", false, false).Return(nil)
-		mm.SetDelivery(dMock) //nolint
+		mm.SetDelivery(dMock)
 
 		msgs <- mm
 	}(&delMock)
@@ -678,10 +668,10 @@ func Test_Nack(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cc := &pb.ConnectionConfiguration{}
-	cc.Tenant = "tenant"
+	cc.Tenant = testTenant
 	cc.Host = u.Hostname()
 	i, _ := strconv.Atoi(u.Port())
-	cc.AdminPort = int32(i)
+	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
 	assert.Nil(t, err)
@@ -726,7 +716,7 @@ func Test_Nack_NackErr(t *testing.T) {
 		mm := amqp091Message{}
 		mm.DeliveryTag = 1
 		dMock.On("Nack", false, false).Return(errors.New("nackErr"))
-		mm.SetDelivery(dMock) //nolint
+		mm.SetDelivery(dMock)
 
 		msgs <- mm
 	}(&delMock)
@@ -763,10 +753,10 @@ func Test_Nack_NackErr(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cc := &pb.ConnectionConfiguration{}
-	cc.Tenant = "tenant"
+	cc.Tenant = testTenant
 	cc.Host = u.Hostname()
 	i, _ := strconv.Atoi(u.Port())
-	cc.AdminPort = int32(i)
+	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
 	assert.Nil(t, err)
@@ -811,7 +801,7 @@ func Test_Retry(t *testing.T) {
 	mm := amqp091Message{}
 	mm.DeliveryTag = 1
 	delMock.On("Ack").Return(nil)
-	mm.SetDelivery(&delMock) //nolint
+	mm.SetDelivery(&delMock)
 	go func() {
 		msgs <- mm
 	}()
@@ -853,10 +843,10 @@ func Test_Retry(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cc := &pb.ConnectionConfiguration{}
-	cc.Tenant = "tenant"
+	cc.Tenant = testTenant
 	cc.Host = u.Hostname()
 	i, _ := strconv.Atoi(u.Port())
-	cc.AdminPort = int32(i)
+	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
 	assert.Nil(t, err)
@@ -898,7 +888,7 @@ func Test_RetryFailure(t *testing.T) {
 		mm := amqp091Message{}
 		mm.DeliveryTag = 1
 		dMock.On("Nack", false, true).Return(nil)
-		mm.SetDelivery(dMock) //nolint
+		mm.SetDelivery(dMock)
 
 		msgs <- mm
 	}(&delMock)
@@ -936,10 +926,10 @@ func Test_RetryFailure(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cc := &pb.ConnectionConfiguration{}
-	cc.Tenant = "tenant"
+	cc.Tenant = testTenant
 	cc.Host = u.Hostname()
 	i, _ := strconv.Atoi(u.Port())
-	cc.AdminPort = int32(i)
+	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
 	assert.Nil(t, err)
@@ -979,7 +969,6 @@ func Test_RetryFailure_NoBrokerDetails(t *testing.T) {
 	retErr := prov.Retry(ctx, nil, "", 1)
 	assert.NotNil(t, retErr)
 	assert.Contains(t, retErr.GetMessage(), "no client identifier")
-
 }
 func Test_RetryFailure_DeclareErrorsStillSuccess(t *testing.T) {
 	prov := NewAMQP091Provider()
@@ -997,7 +986,7 @@ func Test_RetryFailure_DeclareErrorsStillSuccess(t *testing.T) {
 		mm := amqp091Message{}
 		mm.DeliveryTag = 1
 		dMock.On("Ack").Return(nil)
-		mm.SetDelivery(dMock) //nolint
+		mm.SetDelivery(dMock)
 
 		msgs <- mm
 	}(&delMock)
@@ -1036,10 +1025,10 @@ func Test_RetryFailure_DeclareErrorsStillSuccess(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cc := &pb.ConnectionConfiguration{}
-	cc.Tenant = "tenant"
+	cc.Tenant = testTenant
 	cc.Host = u.Hostname()
 	i, _ := strconv.Atoi(u.Port())
-	cc.AdminPort = int32(i)
+	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
 	assert.Nil(t, err)
@@ -1165,16 +1154,16 @@ func Test_DLQ(t *testing.T) {
 		mm := amqp091Message{}
 		mm.DeliveryTag = 1
 		dMock.On("Nack", false, false).Return(nil)
-		mm.SetDelivery(dMock) //nolint
+		mm.SetDelivery(dMock)
 
 		msgs <- mm
 	}(&delMock)
 
 	argsDlq := make(amqp091Table)
-	argsDlq["x-queue-type"] = "classic"
+	argsDlq["x-queue-type"] = testQueueTypeClassic
 	args := make(amqp091Table)
-	args["x-dead-letter-exchange"] = "dla"
-	args["x-queue-type"] = "quorum"
+	args["x-dead-letter-exchange"] = testDeadLetterAddress
+	args["x-queue-type"] = testQueueTypeQuorum
 	cancels := make(chan amqp091Error)
 	cmock.On("NotifyClose").Return(cancels)
 	cmock.On("Close").Return(nil)
@@ -1210,17 +1199,17 @@ func Test_DLQ(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cc := &pb.ConnectionConfiguration{}
-	cc.Tenant = "tenant"
+	cc.Tenant = testTenant
 	cc.Host = u.Hostname()
 	i, _ := strconv.Atoi(u.Port())
-	cc.AdminPort = int32(i)
+	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
 	assert.Nil(t, err)
 
 	subjects := make([]string, 0)
 	subjects = append(subjects, "routingkey")
-	options := map[string]string{"DeadLetterAddress": "dla"}
+	options := map[string]string{"DeadLetterAddress": testDeadLetterAddress}
 	src := &pb.Source{Name: "queue", Address: &pb.Address{Name: "address", Subjects: subjects},
 		Options: options}
 	mc := make(chan *pb.Message)
@@ -1249,7 +1238,7 @@ func Test_Ack_NoConnect(t *testing.T) {
 	msg := pb.Message{}
 	err := prov.Ack(ctx, msg.GetUuid())
 	assert.NotNil(t, err)
-	assert.Contains(t, err.GetMessage(), "Could not retrieve client-id from context")
+	assert.Contains(t, err.GetMessage(), "could not retrieve client-id from context")
 }
 
 func Test_Nack_NoConnect(t *testing.T) {
@@ -1258,7 +1247,7 @@ func Test_Nack_NoConnect(t *testing.T) {
 	msg := pb.Message{}
 	err := prov.Nack(ctx, msg.GetUuid())
 	assert.NotNil(t, err)
-	assert.Contains(t, err.GetMessage(), "Could not retrieve client-id from context")
+	assert.Contains(t, err.GetMessage(), "could not retrieve client-id from context")
 }
 func Test_Publish_NoConnect(t *testing.T) {
 	prov := NewAMQP091Provider()
@@ -1267,7 +1256,7 @@ func Test_Publish_NoConnect(t *testing.T) {
 	ec := make(chan *pb.Error)
 	err := prov.Publish(ctx, mc, ec)
 	assert.NotNil(t, err)
-	assert.Contains(t, err.GetMessage(), "Could not retrieve client-id from context")
+	assert.Contains(t, err.GetMessage(), "could not retrieve client-id from context")
 }
 
 func Test_Subscribe_NoConnect(t *testing.T) {
@@ -1279,7 +1268,7 @@ func Test_Subscribe_NoConnect(t *testing.T) {
 
 	err := prov.Subscribe(ctx, src, mc)
 	assert.NotNil(t, err)
-	assert.Contains(t, err.GetMessage(), "Could not retrieve client-id from context")
+	assert.Contains(t, err.GetMessage(), "could not retrieve client-id from context")
 }
 func Test_Subscribe_NoAddressName(t *testing.T) {
 	prov := NewAMQP091Provider()
@@ -1344,9 +1333,9 @@ func Test_Subscribe_Options(t *testing.T) {
 	expectedQueueArgs := amqp091Table{}
 	expectedQueueArgs["x-message-ttl"] = 100
 	expectedQueueArgs["x-expires"] = 100
-	expectedQueueArgs["x-dead-letter-exchange"] = "dla"
+	expectedQueueArgs["x-dead-letter-exchange"] = testDeadLetterAddress
 	expectedQueueArgs["x-dead-letter-routing-key"] = "dls"
-	expectedQueueArgs["x-queue-type"] = "classic"
+	expectedQueueArgs["x-queue-type"] = testQueueTypeClassic
 
 	oldGetClientIdentifier := GetClientIdentifier
 	GetClientIdentifier = func(context.Context) (string, error) {
@@ -1359,8 +1348,8 @@ func Test_Subscribe_Options(t *testing.T) {
 	delMock := mock.Mock{}
 	go func(dMock *mock.Mock) {
 		mm := amqp091Message{}
-		mm.ContentType = "application/json"
-		mm.ContentEncoding = "text"
+		mm.ContentType = testContentTypeJSON
+		mm.ContentEncoding = testContentEncodingText
 		mm.Headers = make(amqp091Table)
 		mm.Headers["something"] = "somethingelse"
 		mm.DeliveryTag = 1
@@ -1396,12 +1385,12 @@ func Test_Subscribe_Options(t *testing.T) {
 	expectedMatchHeaders1 := amqp091Table{}
 	expectedMatchHeaders1["key1"] = "value1"
 	expectedMatchHeaders1["key2"] = "value2"
-	expectedMatchHeaders1["x-match"] = "any"
+	expectedMatchHeaders1["x-match"] = testXMatchAny
 
 	expectedMatchHeaders2 := amqp091Table{}
 	expectedMatchHeaders2["key3"] = "value3"
 	expectedMatchHeaders2["key4"] = "value4"
-	expectedMatchHeaders2["x-match"] = "any"
+	expectedMatchHeaders2["x-match"] = testXMatchAny
 
 	cmock.On("SetPrefetch", 4).Return(nil)
 	cmock.On("Close").Return(nil)
@@ -1411,7 +1400,7 @@ func Test_Subscribe_Options(t *testing.T) {
 	cmock.On("ExchangeBind", address.GetName(), subjects[0], parent.GetName()).Return(nil)
 	cmock.On("ExchangeBind", address.GetName(), subjects[1], parent.GetName()).Return(nil)
 	cmock.On("QueueDeclare", src.GetName(), false, false, expectedQueueArgs).Return(nil)
-	cmock.On("QueueDeclare", "srcname.dlq", false, false, amqp091Table{"x-queue-type": "classic"}).Return(nil)
+	cmock.On("QueueDeclare", "srcname.dlq", false, false, amqp091Table{"x-queue-type": testQueueTypeClassic}).Return(nil)
 	cmock.On("QueueBind", src.GetName(), "subject1", address.GetName(), expectedMatchHeaders1).Return(nil).Once()
 	cmock.On("QueueBind", src.GetName(), "subject1", address.GetName(), expectedMatchHeaders2).Return(nil).Once()
 	cmock.On("QueueBind", src.GetName(), "subject2", address.GetName(), expectedMatchHeaders1).Return(nil).Once()
@@ -1445,10 +1434,10 @@ func Test_Subscribe_Options(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cc := &pb.ConnectionConfiguration{}
-	cc.Tenant = "tenant"
+	cc.Tenant = testTenant
 	cc.Host = u.Hostname()
 	i, _ := strconv.Atoi(u.Port())
-	cc.AdminPort = int32(i)
+	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
 	assert.Nil(t, err)
@@ -1493,8 +1482,8 @@ func Test_Subscribe_NoSubjectsNoFilters(t *testing.T) {
 	delMock := mock.Mock{}
 	go func(dMock *mock.Mock) {
 		mm := amqp091Message{}
-		mm.ContentType = "application/json"
-		mm.ContentEncoding = "text"
+		mm.ContentType = testContentTypeJSON
+		mm.ContentEncoding = testContentEncodingText
 		mm.Headers = make(amqp091Table)
 		mm.Headers["something"] = "somethingelse"
 		mm.DeliveryTag = 1
@@ -1516,7 +1505,7 @@ func Test_Subscribe_NoSubjectsNoFilters(t *testing.T) {
 		PrefetchCount: 4}
 
 	expectedQueueArgs := amqp091Table{}
-	expectedQueueArgs["x-queue-type"] = "quorum"
+	expectedQueueArgs["x-queue-type"] = testQueueTypeQuorum
 	expectedQueueArgs["x-expires"] = 300000
 
 	cmock.On("SetPrefetch", 4).Return(nil)
@@ -1551,10 +1540,10 @@ func Test_Subscribe_NoSubjectsNoFilters(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cc := &pb.ConnectionConfiguration{}
-	cc.Tenant = "tenant"
+	cc.Tenant = testTenant
 	cc.Host = u.Hostname()
 	i, _ := strconv.Atoi(u.Port())
-	cc.AdminPort = int32(i)
+	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
 	assert.Nil(t, err)
@@ -1723,7 +1712,6 @@ func Test_WaitForConnect(t *testing.T) {
 	assert.True(t, connected)
 
 	amock.AssertExpectations(t)
-
 }
 
 func Test_Publish(t *testing.T) {
@@ -2054,7 +2042,7 @@ func Test_PublishOneFailedNotConnected(t *testing.T) {
 	ctx := context.Background()
 	suberr := prov.PublishOne(ctx, msg)
 	assert.NotNil(t, suberr)
-	assert.Equal(t, "Could not retrieve client-id from context", suberr.GetMessage())
+	assert.Equal(t, "could not retrieve client-id from context", suberr.GetMessage())
 }
 
 func Test_Publish_ErrorDeclareExchange(t *testing.T) {
@@ -2130,7 +2118,7 @@ func Test_fromAmqpMessage(t *testing.T) {
 	del.Body = []byte("Hello")
 	del.DeliveryMode = uint8(2)
 	del.Headers = amqp.Table{"h1": "header1"}
-	del.ContentType = "text"
+	del.ContentType = testContentEncodingText
 	del.ContentEncoding = "plain"
 	del.DeliveryTag = 1
 
@@ -2148,7 +2136,7 @@ func Test_toAmqpMessage(t *testing.T) {
 	aMsg.Body = []byte("Hello")
 	aMsg.DeliveryMode = 2
 	aMsg.Headers = amqp091Table{"h1": "header1"}
-	aMsg.ContentType = "text"
+	aMsg.ContentType = testContentEncodingText
 	aMsg.ContentEncoding = "plain"
 
 	del := toAmqpMessage(aMsg)
@@ -2260,7 +2248,6 @@ func Test_getBrokerDetails_err(t *testing.T) {
 	assert.NotNil(t, bd)
 	assert.NotNil(t, err)
 	assert.Equal(t, "could not retrieve broker details for this connection: 1234", err.Error())
-
 }
 
 func Test_SetupDeadLetter_no_BD(t *testing.T) {
@@ -2277,7 +2264,7 @@ func Test_SetupDeadLetter_no_BD(t *testing.T) {
 
 	ctx := context.Background()
 	opts := make(map[string]string)
-	opts["DeadLetterAddress"] = "dla"
+	opts["DeadLetterAddress"] = testDeadLetterAddress
 	src := &pb.Source{Options: opts}
 	err := prov.setupDeadLetter(ctx, src)
 	assert.NotNil(t, err)
@@ -2306,7 +2293,7 @@ func Test_SetupDeadLetter_channel_error(t *testing.T) {
 
 	ctx := context.Background()
 	opts := make(map[string]string)
-	opts["DeadLetterAddress"] = "dla"
+	opts["DeadLetterAddress"] = testDeadLetterAddress
 	src := &pb.Source{Options: opts}
 	err := prov.setupDeadLetter(ctx, src)
 	assert.NotNil(t, err)
@@ -2361,8 +2348,8 @@ func Test_connect_connecting_disconnected(t *testing.T) {
 	i, _ := strconv.Atoi(u.Port())
 	bd.connectionConfig = &pb.ConnectionConfiguration{
 		Host:      u.Hostname(),
-		Tenant:    "tenant",
-		AdminPort: int32(i),
+		Tenant:    testTenant,
+		AdminPort: int32(i), //nolint:gosec
 	}
 
 	amock := &amqpConnectionMock{}
@@ -2394,7 +2381,8 @@ func mockManagementRequestServer() *httptest.Server {
 		var body []byte
 		var status int
 		bindingBody := []byte(`[{"source":"arke.test","vhost":"tenant","destination":"queue","destination_type":"queue","routing_key":"routingkey","arguments":{},"properties_key":"routingkey"}]`)
-		if r.Method == "GET" {
+		switch r.Method {
+		case "GET":
 			body = bindingBody
 			status = http.StatusOK
 			// handle special cases here
@@ -2412,7 +2400,7 @@ func mockManagementRequestServer() *httptest.Server {
 				status = http.StatusOK
 				body = []byte(`[]`)
 			}
-		} else if r.Method == "DELETE" {
+		case "DELETE":
 			status = http.StatusNoContent
 		}
 		// we must call WriteHeader before w.Write otherwise we get a log warning message
@@ -2425,8 +2413,8 @@ func mockManagementRequestServer() *httptest.Server {
 	return server
 }
 
-func Test_cleanupBindings(t *testing.T) {
-
+func setupCleanupBindingsTest(t *testing.T) (*BrokerDetails, *pb.Source) {
+	t.Helper()
 	bd := &BrokerDetails{}
 	addr := &pb.Address{Subjects: []string{"routingkey"}, Name: "address"}
 	src := &pb.Source{Address: addr, Name: "queue"}
@@ -2434,55 +2422,42 @@ func Test_cleanupBindings(t *testing.T) {
 	bd.connectionConfig = &pb.ConnectionConfiguration{Credentials: creds}
 
 	msrv := mockManagementRequestServer()
-	defer msrv.Close()
+	t.Cleanup(msrv.Close)
 	u, err := url.Parse(msrv.URL)
 	assert.Nil(t, err)
 	bd.connectionConfig.Host = u.Hostname()
-	bd.connectionConfig.Tenant = "tenant"
+	bd.connectionConfig.Tenant = testTenant
 	i, _ := strconv.Atoi(u.Port())
-	bd.connectionConfig.AdminPort = int32(i)
+	bd.connectionConfig.AdminPort = int32(i) //nolint:gosec
+	return bd, src
+}
 
+func Test_cleanupBindings(t *testing.T) {
+	bd, src := setupCleanupBindingsTest(t)
 	removed := bd.cleanupBindings(src, []string{"routingkey2"})
 	assert.Len(t, removed, 1)
 }
 
 func Test_cleanupBindings_none(t *testing.T) {
-
-	bd := &BrokerDetails{}
-	addr := &pb.Address{Subjects: []string{"routingkey"}, Name: "address"}
-	src := &pb.Source{Address: addr, Name: "queue"}
-	creds := &pb.Credentials{Username: "user", Password: "password"}
-	bd.connectionConfig = &pb.ConnectionConfiguration{Credentials: creds}
-
-	msrv := mockManagementRequestServer()
-	defer msrv.Close()
-	u, err := url.Parse(msrv.URL)
-	assert.Nil(t, err)
-	bd.connectionConfig.Host = u.Hostname()
-	bd.connectionConfig.Tenant = "tenant"
-	i, _ := strconv.Atoi(u.Port())
-	bd.connectionConfig.AdminPort = int32(i)
-
+	bd, src := setupCleanupBindingsTest(t)
 	removed := bd.cleanupBindings(src, []string{"routingkey"})
 	assert.Len(t, removed, 0)
 }
 
 func Test_declareQueueAutoDelete(t *testing.T) {
-
 	var autoDeleteTests = []struct {
 		autoDelete bool
 		exclusive  bool
 		expires    int
 	}{
 		{true, false, 0},
-		{true, false, int(time.Duration(5 * time.Minute).Milliseconds())},
+		{true, false, int((5 * time.Minute).Milliseconds())},
 		{false, true, 0},
 	}
 
 	for _, adt := range autoDeleteTests {
 		t.Run(fmt.Sprintf("AutoDeleteTest autoDelete:%t, exclusive: %t, expires:%d",
 			adt.autoDelete, adt.exclusive, adt.expires), func(t *testing.T) {
-
 			bd := &BrokerDetails{
 				knownQueues: util.NewConcurrentMap(),
 			}
@@ -2493,12 +2468,12 @@ func Test_declareQueueAutoDelete(t *testing.T) {
 			if adt.expires > 0 {
 				expectedArgs["x-expires"] = adt.expires
 			} else {
-				expectedArgs["x-expires"] = int(time.Duration(5 * time.Minute).Milliseconds())
+				expectedArgs["x-expires"] = int((5 * time.Minute).Milliseconds())
 			}
 			if adt.autoDelete {
-				expectedArgs["x-queue-type"] = "classic"
+				expectedArgs["x-queue-type"] = testQueueTypeClassic
 			} else {
-				expectedArgs["x-queue-type"] = "quorum"
+				expectedArgs["x-queue-type"] = testQueueTypeQuorum
 			}
 
 			cmock := &amqpChannelMock{}
@@ -2513,7 +2488,6 @@ func Test_declareQueueAutoDelete(t *testing.T) {
 }
 
 func Test_singleActiveConsumer(t *testing.T) {
-
 	var sacTests = []struct {
 		singleActiveConsumer bool
 	}{
@@ -2524,7 +2498,6 @@ func Test_singleActiveConsumer(t *testing.T) {
 	for _, sac := range sacTests {
 		t.Run(fmt.Sprintf("SingleActiveConsumerTest singleActiveConsumer:%t",
 			sac.singleActiveConsumer), func(t *testing.T) {
-
 			bd := &BrokerDetails{
 				knownQueues: util.NewConcurrentMap(),
 			}
@@ -2532,7 +2505,7 @@ func Test_singleActiveConsumer(t *testing.T) {
 			src := &pb.Source{Address: addr, Name: "queue", SingleActiveConsumer: sac.singleActiveConsumer}
 
 			expectedArgs := make(amqp091Table)
-			expectedArgs["x-queue-type"] = "quorum"
+			expectedArgs["x-queue-type"] = testQueueTypeQuorum
 
 			if sac.singleActiveConsumer {
 				expectedArgs["x-single-active-consumer"] = true
@@ -2550,7 +2523,6 @@ func Test_singleActiveConsumer(t *testing.T) {
 }
 
 func Test_Subscribe_Queue_DeclareOnly(t *testing.T) {
-
 	oldGetClientIdentifier := GetClientIdentifier
 	GetClientIdentifier = func(context.Context) (string, error) {
 		return "1234", nil
@@ -2573,7 +2545,6 @@ func Test_Subscribe_Queue_DeclareOnly(t *testing.T) {
 	for _, dot := range declareOnlyTests {
 		t.Run(fmt.Sprintf("DeclareOnlyTests channelError %s", dot.channelError),
 			func(t *testing.T) {
-
 				prov := NewAMQP091Provider()
 
 				addr := &pb.Address{Subjects: []string{"routingkey"}, Name: "address"}
@@ -2607,10 +2578,10 @@ func Test_Subscribe_Queue_DeclareOnly(t *testing.T) {
 
 				ctx, cancel := context.WithCancel(context.Background())
 				cc := &pb.ConnectionConfiguration{}
-				cc.Tenant = "tenant"
+				cc.Tenant = testTenant
 				cc.Host = u.Hostname()
 				i, _ := strconv.Atoi(u.Port())
-				cc.AdminPort = int32(i)
+				cc.AdminPort = int32(i) //nolint:gosec
 
 				defer cancel()
 
@@ -2630,11 +2601,9 @@ func Test_Subscribe_Queue_DeclareOnly(t *testing.T) {
 				amock.AssertExpectations(t)
 			})
 	}
-
 }
 
 func Test_SourceStats(t *testing.T) {
-
 	oldGetClientIdentifier := GetClientIdentifier
 	GetClientIdentifier = func(context.Context) (string, error) {
 		return "1234", nil
@@ -2656,9 +2625,9 @@ func Test_SourceStats(t *testing.T) {
 	creds := &pb.Credentials{Username: "user", Password: "password"}
 	bd.connectionConfig = &pb.ConnectionConfiguration{Credentials: creds}
 	bd.connectionConfig.Host = u.Hostname()
-	bd.connectionConfig.Tenant = "tenant"
+	bd.connectionConfig.Tenant = testTenant
 	i, _ := strconv.Atoi(u.Port())
-	bd.connectionConfig.AdminPort = int32(i)
+	bd.connectionConfig.AdminPort = int32(i) //nolint:gosec
 
 	defer func() {
 		GetClientIdentifier = oldGetClientIdentifier
@@ -2776,13 +2745,13 @@ func Test_SourceStats_errors(t *testing.T) {
 	src.Address = &pb.Address{Name: "myname"}
 	stats = prov.SourceStats(ctx, src)
 	assert.NotNil(t, stats)
-	assert.Equal(t, "Could not retrieve client-id from context", stats.GetError().GetMessage())
+	assert.Equal(t, "could not retrieve client-id from context", stats.GetError().GetMessage())
 }
 
 func stockMessage(address *pb.Address) *pb.Message {
 	msg := &pb.Message{Address: address, Body: []byte("thebody")}
 	msg.Headers = make(map[string]string)
-	msg.Headers["Content-Type"] = "application/json"
+	msg.Headers["Content-Type"] = testContentTypeJSON
 	msg.Headers["Content-Encoding"] = "utf8"
 	msg.Headers["Additional-Header"] = "HeaderValue"
 	msg.Persistent = true

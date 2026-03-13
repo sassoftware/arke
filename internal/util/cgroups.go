@@ -94,7 +94,7 @@ func readCgroupLimits() {
 					setCPUMillicoreLimit(-1) // Use -1 to indicate an unknown limit
 				}
 			} else {
-				setCPUMillicoreLimit(int(runtime.NumCPU() * 1000))
+				setCPUMillicoreLimit(runtime.NumCPU() * 1000)
 				Logger.Debugf("No CPU limit detected in %s; assuming %d mCPU", cpuQuotaFile, cpuMillicoreLimit)
 			}
 		}

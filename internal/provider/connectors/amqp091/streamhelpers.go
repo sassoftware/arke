@@ -118,5 +118,5 @@ func toStreamOffset(offset string, lastOffset int64) (stream.OffsetSpecification
 	if pErr == nil {
 		return stream.OffsetSpecification{}.Offset(int64(pOffset)), nil
 	}
-	return stream.OffsetSpecification{}, fmt.Errorf("Invalid offset: %s", offset)
+	return stream.OffsetSpecification{}, fmt.Errorf("invalid offset: %s", offset)
 }

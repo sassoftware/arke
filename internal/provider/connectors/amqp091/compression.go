@@ -29,7 +29,6 @@ func bodyOverLimit(body []byte) bool {
 
 func compressMessage(msg streamMessage) (streamMessage, error) {
 	if bodyOverLimit(msg.Body) {
-
 		compressed, err := compressBody(msg.Body)
 
 		if err != nil {
@@ -70,7 +69,6 @@ func compressBody(b []byte) ([]byte, error) {
 	copy(out, buf.Bytes())
 
 	return out, nil
-
 }
 
 // releasePools detaches pooled objects from any external buffers and returns

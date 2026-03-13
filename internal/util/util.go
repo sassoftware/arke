@@ -5,7 +5,7 @@ package util
 
 import (
 	"context"
-	"crypto/sha1"
+	"crypto/sha1" //nolint:gosec
 	"errors"
 	"fmt"
 	"math/rand"
@@ -27,7 +27,7 @@ func SetClientIdentifier(ctx context.Context, name string) (string, error) {
 		return "", err
 	}
 	// deepcode ignore InsecureHash: no sensitive data-only hashing for a unique client identifier
-	h := fmt.Sprintf("%x", sha1.Sum([]byte(clientAddr)))[:8]
+	h := fmt.Sprintf("%x", sha1.Sum([]byte(clientAddr)))[:8] //nolint:gosec
 	clientIdentifier := fmt.Sprintf("%s-%s", name, h)
 	clientMap.Add(clientAddr, clientIdentifier)
 	return clientIdentifier, err
@@ -43,14 +43,14 @@ func GetClientIdentifier(ctx context.Context) (string, error) {
 	clientAddr, err := GetClientAddr(ctx)
 
 	if err != nil {
-		return "", errors.New("Could not retrieve client-id from context")
+		return "", errors.New("could not retrieve client-id from context")
 	}
 
 	if identifier, found := clientMap.Get(clientAddr); found {
 		return identifier.(string), nil
 	}
 
-	return "", errors.New("Could not find client identifier")
+	return "", errors.New("could not find client identifier")
 }
 
 // ServceNameFromClientAddr returns the service name from the client address.
@@ -72,11 +72,11 @@ func ServceNameFromClientAddr(clientAddr string) string {
 func GetClientAddr(ctx context.Context) (string, error) {
 	if client, ok := peer.FromContext(ctx); ok {
 		if client.Addr.String() == "" {
-			return "", errors.New("Could not retrieve address info from peer")
+			return "", errors.New("could not retrieve address info from peer")
 		}
 		return client.Addr.String(), nil
 	}
-	return "", errors.New("Could not retrieve peer info")
+	return "", errors.New("could not retrieve peer info")
 }
 
 func RecoverPanic() {
@@ -84,7 +84,6 @@ func RecoverPanic() {
 		Logger.Warn(fmt.Sprintf("%v", err))
 		return
 	}
-
 }
 
 // GenUUID Generate a UUID and return the string representation
@@ -98,7 +97,7 @@ func NewTimestampPB() *timestamppb.Timestamp {
 }
 
 func SleepRandom(sleepMin int, sleepMax int) {
-	rn := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rn := rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec
 
 	splay := time.Duration(rn.Intn(sleepMax-sleepMin)+sleepMin) * time.Millisecond
 	time.Sleep(splay)

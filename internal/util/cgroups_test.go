@@ -23,20 +23,20 @@ func setupTempCgroupFiles(t *testing.T, version CgroupVersion, memLimit, cpuQuot
 
 	if version == CgroupV2 {
 		// Create v2 structure
-		err := os.WriteFile(filepath.Join(tempDir, "cgroup.controllers"), []byte("cpu memory io"), 0644)
+		err := os.WriteFile(filepath.Join(tempDir, "cgroup.controllers"), []byte("cpu memory io"), 0600)
 		if err != nil {
 			t.Fatalf("Failed to create controller file: %v", err)
 		}
 
 		if memLimit != "" {
-			err = os.WriteFile(filepath.Join(tempDir, "memory.max"), []byte(memLimit), 0644)
+			err = os.WriteFile(filepath.Join(tempDir, "memory.max"), []byte(memLimit), 0600)
 			if err != nil {
 				t.Fatalf("Failed to create memory limit file: %v", err)
 			}
 		}
 
 		if cpuQuota != "" {
-			err = os.WriteFile(filepath.Join(tempDir, "cpu.max"), []byte(cpuQuota), 0644)
+			err = os.WriteFile(filepath.Join(tempDir, "cpu.max"), []byte(cpuQuota), 0600)
 			if err != nil {
 				t.Fatalf("Failed to create cpu quota file: %v", err)
 			}
@@ -54,14 +54,14 @@ func setupTempCgroupFiles(t *testing.T, version CgroupVersion, memLimit, cpuQuot
 		}
 
 		if memLimit != "" {
-			err := os.WriteFile(filepath.Join(memDir, "memory.limit_in_bytes"), []byte(memLimit), 0644)
+			err := os.WriteFile(filepath.Join(memDir, "memory.limit_in_bytes"), []byte(memLimit), 0600)
 			if err != nil {
 				t.Fatalf("Failed to create memory limit file: %v", err)
 			}
 		}
 
 		if cpuQuota != "" {
-			err := os.WriteFile(filepath.Join(cpuDir, "cpu.cfs_quota_us"), []byte(cpuQuota), 0644)
+			err := os.WriteFile(filepath.Join(cpuDir, "cpu.cfs_quota_us"), []byte(cpuQuota), 0600)
 			if err != nil {
 				t.Fatalf("Failed to create cpu quota file: %v", err)
 			}
@@ -104,7 +104,7 @@ func TestDetectCgroupVersion(t *testing.T) {
 			cgroupV2ControllerFile = filepath.Join(tempDir, "cgroup.controllers")
 
 			if tt.createController {
-				err := os.WriteFile(cgroupV2ControllerFile, []byte("cpu memory"), 0644)
+				err := os.WriteFile(cgroupV2ControllerFile, []byte("cpu memory"), 0600)
 				if err != nil {
 					t.Fatalf("Failed to create controller file: %v", err)
 				}
@@ -372,7 +372,7 @@ func TestReadCgroupLimits_MissingFiles(t *testing.T) {
 		tempDir := t.TempDir()
 
 		// Only create controller file, not memory or cpu files
-		err := os.WriteFile(filepath.Join(tempDir, "cgroup.controllers"), []byte("cpu memory"), 0644)
+		err := os.WriteFile(filepath.Join(tempDir, "cgroup.controllers"), []byte("cpu memory"), 0600)
 		if err != nil {
 			t.Fatalf("Failed to create controller file: %v", err)
 		}
@@ -499,8 +499,8 @@ func TestReadCgroupLimits_SyncOnce(t *testing.T) {
 		firstCPU := cpuMillicoreLimit
 
 		// Change the files
-		_ = os.WriteFile(cgroupV2MemLimitFile, []byte("2147483648"), 0644)
-		_ = os.WriteFile(cgroupV2CpuQuotaFile, []byte("200000 100000"), 0644)
+		_ = os.WriteFile(cgroupV2MemLimitFile, []byte("2147483648"), 0600)
+		_ = os.WriteFile(cgroupV2CpuQuotaFile, []byte("200000 100000"), 0600)
 
 		// Second call - should not re-read files due to sync.Once
 		readCgroupLimits()

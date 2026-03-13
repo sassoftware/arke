@@ -57,7 +57,7 @@ func fromTableToMap(tab amqp091Table) map[string]string {
 func toAmqpMessage(msg *amqp091Message) amqp.Publishing {
 	pub := amqp.Publishing{}
 	pub.Body = msg.Body
-	pub.DeliveryMode = uint8(msg.DeliveryMode)
+	pub.DeliveryMode = uint8(msg.DeliveryMode) //nolint:gosec
 	pub.Headers = toAmqpTable(msg.Headers)
 	pub.ContentType = msg.ContentType
 	pub.ContentEncoding = msg.ContentEncoding

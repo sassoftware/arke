@@ -11,11 +11,10 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/sassoftware/arke/api"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-
-	pb "github.com/sassoftware/arke/api"
 )
 
 func Test_DefaultArkeServer(t *testing.T) {
@@ -126,7 +125,7 @@ func Test_listener(t *testing.T) {
 }
 
 func testHealth(port int) error {
-	conn, err := grpc.NewClient(fmt.Sprintf("localhost:%d", port), grpc.WithTransportCredentials(insecure.NewCredentials())) //nolint staticcheck
+	conn, err := grpc.NewClient(fmt.Sprintf("localhost:%d", port), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
 	}

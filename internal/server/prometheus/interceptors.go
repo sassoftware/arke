@@ -12,9 +12,10 @@ import (
 	"github.com/sassoftware/arke/internal/metrics"
 	"github.com/sassoftware/arke/internal/metrics/prometheus"
 	"github.com/sassoftware/arke/internal/util"
-
 	"google.golang.org/grpc"
 )
+
+const statusError = "error"
 
 // methodMap maps gRPC full method names to a more friendly format
 // that can be used as a Prometheus label value.
@@ -42,7 +43,6 @@ var methodMap = map[string]string{
 
 // UnaryInterceptor unary grpc interceptor
 func UnaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-
 	// allocations_test.go shows this is the fastest way to do this and without
 	// allocations, though the tests themselves do not actually call this method.
 	fullMethod, ok := methodMap[info.FullMethod]
@@ -66,7 +66,7 @@ func UnaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServ
 	m, err := handler(ctx, req)
 	if err != nil {
 		util.Logger.Debugf("RPC failed with error %s", err.Error())
-		status = "error"
+		status = statusError
 	}
 
 	elapsed := float32(time.Since(start).Nanoseconds()) / float32(time.Millisecond)
@@ -89,7 +89,7 @@ func (w *wrappedStream) RecvMsg(m interface{}) error {
 
 	err := w.ServerStream.RecvMsg(m)
 	if err != nil {
-		status = "error"
+		status = statusError
 	}
 
 	labelset.AddLabel("status", status)
@@ -99,14 +99,13 @@ func (w *wrappedStream) RecvMsg(m interface{}) error {
 }
 
 func (w *wrappedStream) SendMsg(m interface{}) error {
-
 	labelset := metrics.NewLabelSet()
 	labelset.AddLabel("method", w.GRPCMethod)
 	status := "ok"
 
 	err := w.ServerStream.SendMsg(m)
 	if err != nil {
-		status = "error"
+		status = statusError
 	}
 
 	labelset.AddLabel("status", status)
@@ -121,7 +120,6 @@ func newWrappedStream(s grpc.ServerStream, method string) grpc.ServerStream {
 
 // StreamInterceptor stream grpc interceptor
 func StreamInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-
 	fullMethod := strings.TrimPrefix(info.FullMethod, "/")
 	fullMethod = strings.ReplaceAll(fullMethod, "/", ".")
 
@@ -137,7 +135,7 @@ func StreamInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamS
 	err := handler(srv, newWrappedStream(ss, fullMethod))
 	if err != nil {
 		util.Logger.Debugf("RPC failed with error %s", err.Error())
-		status = "error"
+		status = statusError
 	}
 
 	elapsed := float32(time.Since(start).Nanoseconds()) / float32(time.Millisecond)

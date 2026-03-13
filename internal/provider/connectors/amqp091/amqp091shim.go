@@ -10,10 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sassoftware/arke/internal/util"
-
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/sassoftware/arke/i18n"
+	"github.com/sassoftware/arke/internal/util"
 	"github.com/stretchr/testify/mock"
 )
 
@@ -66,7 +65,7 @@ type amqp091Error struct {
 	error amqp.Error
 }
 
-// amqp091Message Strucutre of a message
+// amqp091Message Structure of a message
 type amqp091Message struct {
 	delivery        interface{}
 	Body            []byte
@@ -340,7 +339,7 @@ func (ch *amqp091Channel) NotifyClose(rec chan amqp091Error) chan amqp091Error {
 // Ack Ack a message
 func (msg *amqp091Message) Ack() error {
 	// For unit testing
-	switch msg.delivery.(type) { //nolint gocritic
+	switch msg.delivery.(type) { //nolint:gocritic
 	case amqp.Delivery:
 		return msg.delivery.(amqp.Delivery).Ack(false)
 	case *mock.Mock:
@@ -353,7 +352,7 @@ func (msg *amqp091Message) Ack() error {
 // Nack Nack a message
 func (msg *amqp091Message) Nack(requeue bool) error {
 	// For unit testing
-	switch msg.delivery.(type) { //nolint gocritic
+	switch msg.delivery.(type) { //nolint:gocritic
 	case amqp.Delivery:
 		return msg.delivery.(amqp.Delivery).Nack(false, requeue)
 	case *mock.Mock:

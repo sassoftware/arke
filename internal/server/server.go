@@ -13,17 +13,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sassoftware/arke/internal/provider"
-	"github.com/sassoftware/arke/internal/util"
-	"github.com/sassoftware/arke/internal/util/tracing"
-
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/i18n"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
+	"github.com/sassoftware/arke/internal/provider"
 
 	// Import the connectors so their init functions are executed
 	_ "github.com/sassoftware/arke/internal/provider/connectors"
+	"github.com/sassoftware/arke/internal/util"
+	"github.com/sassoftware/arke/internal/util/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -129,7 +128,7 @@ func (snd *streamSender) Send(cr *pb.ConsumeResponse) error {
 }
 
 // Consume Receives a stream of messages (source, ack, nack) and returns a message (message, ackresponse, nackresponse)
-func (s *ConsumerServer) Consume(stream pb.Consumer_ConsumeServer) error {
+func (s *ConsumerServer) Consume(stream pb.Consumer_ConsumeServer) error { //nolint:gocognit,gocyclo
 	sender := newStreamSender(stream)
 
 	ctx := stream.Context()
@@ -218,7 +217,6 @@ consumeLoop:
 			}
 
 			if cnsmRecv.msg.GetSrc() != nil {
-
 				if isSubscribing {
 					errMsg := "Only one source message allowed per subscribe"
 					_ = sender.Send(&pb.ConsumeResponse{Resp: &pb.ConsumeResponse_Msg{Msg: &pb.Message{Error: &pb.Error{Message: errMsg}}}})
@@ -320,7 +318,6 @@ consumeLoop:
 						}
 					}
 				}(messageChannel, prov, loopCtx, &stopForLoop, &returnError)
-
 			} else if cnsmRecv.msg.GetAck() != nil { // Ack or Nack the message
 				go func() {
 					ackmsg := cnsmRecv.msg.GetAck()
@@ -328,7 +325,7 @@ consumeLoop:
 
 					var ackerr *pb.Error
 
-					if ackmsg.GetUuid() == "" { //nolint gocritic
+					if ackmsg.GetUuid() == "" { //nolint:gocritic
 						ackerr = &pb.Error{Message: "Uuid not set when acking/nacking"}
 					} else if ackmsg.GetNack() && ackmsg.GetRequeueDelay() > 0 { // delayed retry
 						ackerr = prov.Retry(ctx, source, ackmsg.GetUuid(), ackmsg.GetRequeueDelay())
@@ -371,7 +368,6 @@ func (s *ProducerServer) PublishOne(ctx context.Context, msg *pb.Message) (*pb.M
 	}
 
 	if len(msg.GetAddress().GetSubjects()) != 1 {
-
 		errMsg := &pb.Error{
 			Message: "exactly one subject allowed in an Address with Publish",
 			IsFatal: false,
@@ -393,13 +389,13 @@ func (s *ProducerServer) PublishOne(ctx context.Context, msg *pb.Message) (*pb.M
 }
 
 // Publish sends message to the server
-func (s *ProducerServer) Publish(stream pb.Producer_PublishServer) error {
+func (s *ProducerServer) Publish(stream pb.Producer_PublishServer) error { //nolint:gocognit
 	ctx := stream.Context()
 	prov, findErr := findProvider(ctx)
 	if prov == nil {
 		ftlError := errors.New(findErr.Message)
 		msgResp := &pb.MessageResponse{Success: false, Error: findErr}
-		stream.Send(msgResp) //nolint errcheck
+		stream.Send(msgResp) //nolint:errcheck
 		return ftlError
 	}
 
@@ -410,7 +406,7 @@ func (s *ProducerServer) Publish(stream pb.Producer_PublishServer) error {
 	if err != nil {
 		ciError := &pb.Error{Message: err.Error(), IsFatal: true}
 		msgResp := &pb.MessageResponse{Success: false, Error: ciError}
-		stream.Send(msgResp) //nolint errcheck
+		stream.Send(msgResp) //nolint:errcheck
 		return err
 	}
 
@@ -463,7 +459,6 @@ func (s *ProducerServer) Publish(stream pb.Producer_PublishServer) error {
 				}
 
 				if len(msg.GetAddress().GetSubjects()) != 1 {
-
 					errMsg := &pb.Error{
 						Message: "exactly one subject allowed in an Address with Publish",
 						IsFatal: false,
@@ -472,7 +467,6 @@ func (s *ProducerServer) Publish(stream pb.Producer_PublishServer) error {
 					resp = &pb.MessageResponse{Success: false, Error: errMsg}
 					span.RecordError(errors.New(errMsg.GetMessage()))
 				} else {
-
 					span.SetName(msg.GetAddress().GetName() + " publish")
 					span.SetAttributes(attribute.KeyValue{
 						Key:   "clientIdentifier",
@@ -557,7 +551,7 @@ func (s *ProducerServer) Publish(stream pb.Producer_PublishServer) error {
 		resp := &pb.MessageResponse{Success: false, Error: errMsg}
 
 		// we don't care if the send fails here
-		stream.Send(resp) //nolint errcheck
+		stream.Send(resp) //nolint:errcheck
 	}
 
 	return returnError
@@ -565,14 +559,14 @@ func (s *ProducerServer) Publish(stream pb.Producer_PublishServer) error {
 
 // Disconnect disconnects from the consumer server
 func (s *ConsumerServer) Disconnect(ctx context.Context, empty *pb.Empty) (*pb.Empty, error) {
-	retVal, _ := brokerDisconnect(ctx, empty)
-	return retVal, nil
+	brokerDisconnect(ctx, empty)
+	return &pb.Empty{}, nil
 }
 
 // Disconnect disconnects from the producer server
 func (s *ProducerServer) Disconnect(ctx context.Context, empty *pb.Empty) (*pb.Empty, error) {
-	retVal, _ := brokerDisconnect(ctx, empty)
-	return retVal, nil
+	brokerDisconnect(ctx, empty)
+	return &pb.Empty{}, nil
 }
 
 // SourceStats get stats for a specific source
@@ -639,7 +633,6 @@ func SetSourceDefaults(source *pb.Source) {
 			source.Options = opts
 		}
 	}
-
 }
 
 func brokerConnect(ctx context.Context, cf *pb.ConnectionConfiguration, tlsSkipVerify bool) (*pb.ConnectResponse, error) {
@@ -702,10 +695,10 @@ func brokerConnect(ctx context.Context, cf *pb.ConnectionConfiguration, tlsSkipV
 	return &pb.ConnectResponse{Success: success, Error: errMsg}, err
 }
 
-func brokerDisconnect(ctx context.Context, _ *pb.Empty) (*pb.Empty, error) {
+func brokerDisconnect(ctx context.Context, _ *pb.Empty) {
 	clientIdentifier, err := GetClientIdentifier(ctx)
 	if err != nil {
-		return &pb.Empty{}, nil
+		return
 	}
 	cf, found := connectionMap.Get(clientIdentifier)
 	if found {
@@ -714,11 +707,10 @@ func brokerDisconnect(ctx context.Context, _ *pb.Empty) (*pb.Empty, error) {
 		prov.Disconnect(ctx)
 		connectionMap.Delete(clientIdentifier)
 		util.Logger.Info(i18n.ClientDisconnect, clientIdentifier)
-		return &pb.Empty{}, nil
+		return
 	}
 
 	util.Logger.Debugf("Disconnect called for client %s, but no connection information found.", clientIdentifier)
-	return &pb.Empty{}, nil
 }
 
 func findProvider(ctx context.Context) (provider.Provider, *pb.Error) {
@@ -781,7 +773,6 @@ func MonitorHealthChan(receiver chan pb.HealthStatus_Code) {
 }
 
 func (s *HealthzServer) Check(stream pb.Healthz_CheckServer) error {
-
 	ctx := stream.Context()
 
 	clientAddr, err := GetClientAddr(ctx)
@@ -845,7 +836,7 @@ func (s *HealthzServer) Check(stream pb.Healthz_CheckServer) error {
 				hs.Status.Time = NewTimestampPB()
 				hlth.Resp = hs
 				// We dont' care if this send fails
-				stream.Send(hlth) //nolint errcheck
+				stream.Send(hlth) //nolint:errcheck
 			} else if status := msg.GetStatus(); status != nil {
 				// TODO: we are going to do nothing for now, but we need to determine
 				// if there are any actual scenarios for us caring about a status response
@@ -875,7 +866,7 @@ func (s *HealthzServer) Check(stream pb.Healthz_CheckServer) error {
 			}
 			hlth.Resp = hs
 			// We don't care if this send fails
-			stream.Send(hlth) //nolint errcheck
+			stream.Send(hlth) //nolint:errcheck
 		case <-ctx.Done():
 			done = true
 		}

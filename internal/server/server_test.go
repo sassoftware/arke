@@ -12,17 +12,14 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/internal/provider"
 	s "github.com/sassoftware/arke/internal/server"
 	"github.com/sassoftware/arke/internal/util"
-
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/protobuf/types/known/timestamppb"
-
-	pb "github.com/sassoftware/arke/api"
-	"github.com/stretchr/testify/mock"
-	// mp "github.com/sassoftware/arke/internal/provider/mock"
 )
 
 var ctx context.Context
@@ -294,7 +291,6 @@ func (prov *MockProvider) Disconnect(context.Context) {
 
 // Publish publish a message to the broker
 func (prov *MockProvider) Publish(ctx context.Context, messageChannel <-chan *pb.Message, errChan chan<- *pb.Error) *pb.Error {
-
 	args := prov.Called(ctx, cf)
 
 	errArg := args.Get(0)
@@ -385,7 +381,7 @@ func TestConsumerServerConnect_Success(t *testing.T) {
 	mockp.ExpectedCalls = make([]*mock.Call, 0)
 	(*mockp).On("Connect", mock.Anything, mock.AnythingOfType("*api.ConnectionConfiguration"), mock.AnythingOfType("bool")).Return(&pb.Error{})
 	connectResp, err := conSrv.Connect(ctx, cf)
-	conSrv.Disconnect(ctx, &pb.Empty{}) //nolint errcheck
+	conSrv.Disconnect(ctx, &pb.Empty{}) //nolint:errcheck
 	assert.NotNil(t, connectResp)
 	assert.Nil(t, err)
 
@@ -397,7 +393,7 @@ func TestProducerServerConnect_Success(t *testing.T) {
 	mockp.On("Connect", mock.Anything, mock.AnythingOfType("*api.ConnectionConfiguration"), mock.AnythingOfType("bool")).Return(&pb.Error{})
 
 	connectResp, err := proSrv.Connect(ctx, cf)
-	proSrv.Disconnect(ctx, &pb.Empty{}) //nolint errcheck
+	proSrv.Disconnect(ctx, &pb.Empty{}) //nolint:errcheck
 	assert.NotNil(t, connectResp)
 	assert.Nil(t, err)
 
@@ -430,9 +426,9 @@ func TestServerConnectTwice_Ignore(t *testing.T) {
 
 	mockp.On("Connect", mock.Anything, mock.AnythingOfType("*api.ConnectionConfiguration"), mock.AnythingOfType("bool")).Return(&pb.Error{})
 
-	proSrv.Connect(ctx, cf) //nolint errcheck
+	proSrv.Connect(ctx, cf) //nolint:errcheck
 	connectResp, err := proSrv.Connect(ctx, cf)
-	proSrv.Disconnect(ctx, &pb.Empty{}) //nolint errcheck
+	proSrv.Disconnect(ctx, &pb.Empty{}) //nolint:errcheck
 
 	assert.NotNil(t, connectResp)
 	assert.Nil(t, err)
@@ -450,7 +446,7 @@ func TestServerNoConnectionShare(t *testing.T) {
 	connectResp, err := proSrv.Connect(ctx, cf)
 	assert.NotNil(t, connectResp)
 	assert.Nil(t, err)
-	defer proSrv.Disconnect(ctx, &pb.Empty{}) //nolint errcheck
+	defer proSrv.Disconnect(ctx, &pb.Empty{}) //nolint:errcheck
 
 	oldClientIdentifier := s.GetClientIdentifier
 	s.GetClientIdentifier = func(context.Context) (string, error) {
@@ -462,7 +458,7 @@ func TestServerNoConnectionShare(t *testing.T) {
 	cr2, err2 := proSrv.Connect(ctx2, cf)
 	assert.NotNil(t, cr2)
 	assert.Nil(t, err2)
-	defer proSrv.Disconnect(ctx2, &pb.Empty{}) //nolint errcheck
+	defer proSrv.Disconnect(ctx2, &pb.Empty{}) //nolint:errcheck
 
 	mockp.AssertExpectations(t)
 }
@@ -472,9 +468,9 @@ func TestProducerServerPublish_Success(t *testing.T) {
 
 	mockp.On("Connect", mock.Anything, mock.AnythingOfType("*api.ConnectionConfiguration"), mock.AnythingOfType("bool")).Return(&pb.Error{})
 	ctx := context.WithValue(context.Background(), peer.Peer{}, "")
-	msg := &pb.Message{Body: []byte("publish_sucess message body")}
+	msg := &pb.Message{Body: []byte("publish_success message body")}
 
-	proSrv.Connect(ctx, cf) //nolint errcheck
+	proSrv.Connect(ctx, cf) //nolint:errcheck
 	mockp.On("Connect", mock.Anything, mock.AnythingOfType("*api.ConnectionConfiguration"), mock.AnythingOfType("bool")).Return(&pb.Error{})
 	stream := &MockProducerPublishServerStream{}
 	stream.Receives = make([]*MockPubRecv, 0)
@@ -501,7 +497,7 @@ func TestProducerServerPublishRecv_Fail(t *testing.T) {
 	ctx := context.WithValue(context.Background(), peer.Peer{}, "")
 	msg := &pb.Message{Body: []byte("pub recv fail")}
 
-	proSrv.Connect(ctx, cf) //nolint errcheck
+	proSrv.Connect(ctx, cf) //nolint:errcheck
 	stream := &MockProducerPublishServerStream{}
 	stream.Receives = make([]*MockPubRecv, 0)
 	stream.Receives = append(stream.Receives, &MockPubRecv{Message: msg})
@@ -543,7 +539,7 @@ func TestProducerServerPublishOne(t *testing.T) {
 
 	mockp.On("Connect", mock.Anything, mock.AnythingOfType("*api.ConnectionConfiguration"), mock.AnythingOfType("bool")).Return(&pb.Error{})
 
-	proSrv.Connect(ctx, cf) //nolint errcheck
+	proSrv.Connect(ctx, cf) //nolint:errcheck
 
 	mockp.On("PublishOne", mock.Anything, mock.Anything).Return(nil).Once()
 
@@ -570,7 +566,7 @@ func TestProducerServerPublishOneWithTwoSubjects(t *testing.T) {
 
 	mockp.On("Connect", mock.Anything, mock.AnythingOfType("*api.ConnectionConfiguration"), mock.AnythingOfType("bool")).Return(&pb.Error{})
 
-	proSrv.Connect(ctx, cf) //nolint errcheck
+	proSrv.Connect(ctx, cf) //nolint:errcheck
 
 	resp, err := proSrv.PublishOne(ctx, msg)
 	assert.NotNil(t, err)
@@ -587,7 +583,7 @@ func TestProducerServerPublishSend_Fail(t *testing.T) {
 	ctx := context.WithValue(context.Background(), peer.Peer{}, "")
 	msg := &pb.Message{Body: []byte("pub send fail")}
 
-	proSrv.Connect(ctx, cf) //nolint errcheck
+	proSrv.Connect(ctx, cf) //nolint:errcheck
 	stream := &MockProducerPublishServerStream{}
 	stream.Receives = make([]*MockPubRecv, 0)
 	stream.Receives = append(stream.Receives, &MockPubRecv{Message: msg})
@@ -616,7 +612,7 @@ func TestServerDisconnect_SuccessNoUUID(t *testing.T) {
 	mockp.On("Connect", mock.Anything, mock.AnythingOfType("*api.ConnectionConfiguration"), mock.AnythingOfType("bool")).Return(&pb.Error{})
 
 	empty := &pb.Empty{}
-	conSrv.Connect(ctx, cf) //nolint errcheck
+	conSrv.Connect(ctx, cf) //nolint:errcheck
 	connectResp, err := conSrv.Disconnect(ctx, empty)
 
 	s.GetClientIdentifier = oldGetClientIdentifier
@@ -635,7 +631,7 @@ func TestServerDisconnect_FailNoMap(t *testing.T) {
 
 	mockp.On("Connect", mock.Anything, mock.AnythingOfType("*api.ConnectionConfiguration"), mock.AnythingOfType("bool")).Return(&pb.Error{})
 
-	conSrv.Connect(ctx, cf) //nolint errcheck
+	conSrv.Connect(ctx, cf) //nolint:errcheck
 
 	oldGetClientIdentifier := s.GetClientIdentifier
 	s.GetClientIdentifier = func(context.Context) (string, error) {
@@ -658,7 +654,7 @@ func TestConsumerServerDisconnect_Success(t *testing.T) {
 
 	mockp.On("Connect", mock.Anything, mock.AnythingOfType("*api.ConnectionConfiguration"), mock.AnythingOfType("bool")).Return(&pb.Error{})
 
-	conSrv.Connect(ctx, cf) //nolint errcheck
+	conSrv.Connect(ctx, cf) //nolint:errcheck
 	connectResp, err := conSrv.Disconnect(ctx, empty)
 	assert.NotNil(t, connectResp)
 	assert.Nil(t, err)
@@ -674,7 +670,7 @@ func TestProducerServerDisconnect_Success(t *testing.T) {
 
 	mockp.On("Connect", mock.Anything, mock.AnythingOfType("*api.ConnectionConfiguration"), mock.AnythingOfType("bool")).Return(&pb.Error{})
 
-	proSrv.Connect(ctx, cf) //nolint errcheck
+	proSrv.Connect(ctx, cf) //nolint:errcheck
 	connectResp, err := proSrv.Disconnect(ctx, empty)
 	assert.NotNil(t, connectResp)
 	assert.Nil(t, err)
@@ -723,7 +719,7 @@ func TestConsumerServerConsume(t *testing.T) {
 	// We are returning an error after 500 ms as a simple way of exiting the subscribe
 	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: "breaking"}).After(250 * time.Millisecond)
 	mockp.On("Ack", mock.Anything, mock.Anything).Return(nil)
-	conSrv.Connect(ctx, cf) //nolint errcheck
+	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
 	assert.NotNil(t, err)
 
@@ -759,7 +755,7 @@ func TestConsumerServerSubscribeReturnNil(t *testing.T) {
 	// We are returning an error after 500 ms as a simple way of exiting the subscribe
 	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(nil).After(50 * time.Millisecond)
 	mockp.On("Ack", mock.Anything, mock.Anything).Return(nil)
-	conSrv.Connect(ctx, cf) //nolint errcheck
+	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
 
 	// The Subscribe() call above should return nil after 50ms, Consume() should handle
@@ -843,7 +839,7 @@ func TestConsumerServerConsume_Nack(t *testing.T) {
 	// We are returning an error after 500 ms as a simple way of exiting the subscribe
 	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: "breaking"}).After(250 * time.Millisecond)
 	mockp.On("Nack", mock.Anything, mock.Anything).Return(nil)
-	conSrv.Connect(ctx, cf) //nolint errcheck
+	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
 	assert.NotNil(t, err)
 
@@ -878,7 +874,7 @@ func TestConsumerServerConsume_DLQ(t *testing.T) {
 	// We are returning an error after 500 ms as a simple way of exiting the subscribe
 	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: "breaking"}).After(250 * time.Millisecond)
 	mockp.On("DeadLetter", mock.Anything, source, mock.Anything).Return(nil)
-	conSrv.Connect(ctx, cf) //nolint errcheck
+	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
 	assert.NotNil(t, err)
 
@@ -914,7 +910,7 @@ func TestConsumerServerConsume_DLQFail(t *testing.T) {
 	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: "breaking"}).After(250 * time.Millisecond)
 	mockp.On("DeadLetter", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: "breaking"})
 	mockp.On("Nack", mock.Anything, mock.Anything).Return(nil)
-	conSrv.Connect(ctx, cf) //nolint errcheck
+	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
 	assert.NotNil(t, err)
 
@@ -949,7 +945,7 @@ func TestConsumerServerConsume_Retry(t *testing.T) {
 	// We are returning an error after 500 ms as a simple way of exiting the subscribe
 	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: "breaking"}).After(250 * time.Millisecond)
 	mockp.On("Retry", mock.Anything, source, mock.Anything, mock.Anything).Return(nil)
-	conSrv.Connect(ctx, cf) //nolint errcheck
+	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
 	assert.NotNil(t, err)
 
@@ -970,7 +966,7 @@ func TestConsumerServerConsume_BadOption(t *testing.T) {
 
 	stream.On("Send", mock.AnythingOfType("*api.ConsumeResponse")).Return(nil, nil).Once()
 	stream.On("Recv").Return(cnsm, nil).Once()
-	conSrv.Connect(ctx, cf) //nolint errcheck
+	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
 	assert.NotNil(t, err)
 
@@ -1003,7 +999,7 @@ func TestConsumerServerConsume_AckErr(t *testing.T) {
 	// We are returning an error after 500 ms as a simple way of exiting the subscribe
 	mockp.On("Subscribe", mock.Anything, mock.Anything, mock.Anything).Return(&pb.Error{Message: "breaking"}).After(250 * time.Millisecond)
 	mockp.On("Ack", mock.Anything, mock.Anything).Return(&pb.Error{Message: "ackerr"})
-	conSrv.Connect(ctx, cf) //nolint errcheck
+	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
 	assert.NotNil(t, err)
 
@@ -1027,7 +1023,7 @@ func TestConsumerServerConsume_SourceTwice(t *testing.T) {
 	stream.On("Recv").Return(cnsm, nil).Twice()
 	stream.On("Recv").Return(nil, io.EOF).After(100 * time.Millisecond)
 	mockp.On("Subscribe", mock.Anything, mock.Anything, mock.Anything).Return(&pb.Error{Message: "breaking"}).After(250 * time.Millisecond)
-	conSrv.Connect(ctx, cf) //nolint errcheck
+	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
 	fmt.Println("err:", err)
 	assert.Equal(t, err, io.EOF)
@@ -1037,7 +1033,6 @@ func TestConsumerServerConsume_SourceTwice(t *testing.T) {
 }
 
 func TestHealthzServerCheck(t *testing.T) {
-
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
@@ -1055,19 +1050,15 @@ func TestHealthzServerCheck(t *testing.T) {
 	stream.AssertExpectations(t)
 }
 
-func TestHealthzServerCheck_CPUHigh(t *testing.T) {
+func runHealthCheckTest(t *testing.T, getStats func() *util.ProcessStats, expectedCode pb.HealthStatus_Code) {
+	t.Helper()
 
 	oldGetProcessStats := s.GetProcessStats
 	defer func() {
 		s.GetProcessStats = oldGetProcessStats
 	}()
 
-	s.GetProcessStats = func() *util.ProcessStats {
-		ps := &util.ProcessStats{}
-		ps.CPUAvailability = 0.01 // very low CPU availability to trigger unhealthy status
-		ps.MemoryAvailability = 0.99
-		return ps
-	}
+	s.GetProcessStats = getStats
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
@@ -1079,13 +1070,11 @@ func TestHealthzServerCheck_CPUHigh(t *testing.T) {
 	hc.Check = &pb.HealthCheck{Uuid: uuid}
 	hlth := &pb.Health{Resp: hc}
 	stream.On("Recv").Return(hlth, nil).Once()
-	stream.On("Recv").Return(nil, errors.New("termM")).Once() // send an error to force termination
+	stream.On("Recv").Return(nil, errors.New("termM")).Once()
 
-	// Use mock.MatchedBy to match health status properties - accept any valid health message
 	stream.On("Send", mock.MatchedBy(func(h *pb.Health) bool {
-		// Just check that we have a health status message with UNHEALTHY code
 		if status, ok := h.GetResp().(*pb.Health_Status); ok && status != nil && status.Status != nil {
-			return status.Status.Code == pb.HealthStatus_UNHEALTHY
+			return status.Status.Code == expectedCode
 		}
 		return false
 	})).Return(nil)
@@ -1093,93 +1082,36 @@ func TestHealthzServerCheck_CPUHigh(t *testing.T) {
 	err := hlthSrv.Check(stream)
 	assert.Nil(t, err)
 	stream.AssertExpectations(t)
-	s.GetProcessStats = oldGetProcessStats
+}
+
+func TestHealthzServerCheck_CPUHigh(t *testing.T) {
+	runHealthCheckTest(t, func() *util.ProcessStats {
+		ps := &util.ProcessStats{}
+		ps.CPUAvailability = 0.01
+		ps.MemoryAvailability = 0.99
+		return ps
+	}, pb.HealthStatus_UNHEALTHY)
 }
 
 func TestHealthzServerCheck_MemoryHigh(t *testing.T) {
-
-	oldGetProcessStats := s.GetProcessStats
-	defer func() {
-		s.GetProcessStats = oldGetProcessStats
-	}()
-
-	s.GetProcessStats = func() *util.ProcessStats {
+	runHealthCheckTest(t, func() *util.ProcessStats {
 		ps := &util.ProcessStats{}
-		ps.MemoryAvailability = 0.01 // very low memory availability to trigger unhealthy status
+		ps.MemoryAvailability = 0.01
 		ps.CPUAvailability = 0.99
 		return ps
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	stream := &MockHealthzCheckServerStream{}
-	stream.On("Context").Return(ctx)
-	uuid := util.GenUUID()
-	hc := &pb.Health_Check{}
-	hc.Check = &pb.HealthCheck{Uuid: uuid}
-	hlth := &pb.Health{Resp: hc}
-	stream.On("Recv").Return(hlth, nil).Once()
-	stream.On("Recv").Return(nil, errors.New("termM")).Once() // send an error to force termination
-
-	// Use mock.MatchedBy to match health status properties - accept any valid health message
-	stream.On("Send", mock.MatchedBy(func(h *pb.Health) bool {
-		// Just check that we have a health status message with UNHEALTHY code
-		if status, ok := h.GetResp().(*pb.Health_Status); ok && status != nil && status.Status != nil {
-			return status.Status.Code == pb.HealthStatus_UNHEALTHY
-		}
-		return false
-	})).Return(nil)
-
-	err := hlthSrv.Check(stream)
-	assert.Nil(t, err)
-	stream.AssertExpectations(t)
-	s.GetProcessStats = oldGetProcessStats
+	}, pb.HealthStatus_UNHEALTHY)
 }
 
 func TestHealthzServerCheck_OK(t *testing.T) {
-
-	oldGetProcessStats := s.GetProcessStats
-	defer func() {
-		s.GetProcessStats = oldGetProcessStats
-	}()
-
-	s.GetProcessStats = func() *util.ProcessStats {
+	runHealthCheckTest(t, func() *util.ProcessStats {
 		ps := &util.ProcessStats{}
-		ps.CPUAvailability = 0.99    // very high CPU availability to trigger healthy status
-		ps.MemoryAvailability = 0.99 // very high memory availability to trigger healthy status
+		ps.CPUAvailability = 0.99
+		ps.MemoryAvailability = 0.99
 		return ps
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	stream := &MockHealthzCheckServerStream{}
-	stream.On("Context").Return(ctx)
-	uuid := util.GenUUID()
-	hc := &pb.Health_Check{}
-	hc.Check = &pb.HealthCheck{Uuid: uuid}
-	hlth := &pb.Health{Resp: hc}
-	stream.On("Recv").Return(hlth, nil).Once()
-	stream.On("Recv").Return(nil, errors.New("termM")).Once() // send an error to force termination
-
-	// Use mock.MatchedBy to match health status properties - accept any valid health message
-	stream.On("Send", mock.MatchedBy(func(h *pb.Health) bool {
-		// Just check that we have a health status message with OK code
-		if status, ok := h.GetResp().(*pb.Health_Status); ok && status != nil && status.Status != nil {
-			return status.Status.Code == pb.HealthStatus_OK
-		}
-		return false
-	})).Return(nil)
-
-	err := hlthSrv.Check(stream)
-	assert.Nil(t, err)
-	stream.AssertExpectations(t)
-	s.GetProcessStats = oldGetProcessStats
+	}, pb.HealthStatus_OK)
 }
 
 func TestConsumerServerConsume_SubscribeDeclareOnly(t *testing.T) {
-
 	var declareOnlyTests = []struct {
 		success bool
 		subErr  *pb.Error
@@ -1218,7 +1150,7 @@ func TestConsumerServerConsume_SubscribeDeclareOnly(t *testing.T) {
 					mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(nil) // After(250 * time.Millisecond)
 				}
 
-				conSrv.Connect(ctx, cf) //nolint errcheck
+				conSrv.Connect(ctx, cf) //nolint:errcheck
 				err := conSrv.Consume(stream)
 				if dot.subErr != nil {
 					assert.NotNil(t, err)

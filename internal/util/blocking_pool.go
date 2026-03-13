@@ -22,7 +22,7 @@ func NewBlockingPool(ctx context.Context, limit int, constructor func() any) *Bl
 	return &BlockingPool{
 		ctx:   ctx,
 		pool:  p,
-		limit: int32(limit),
+		limit: int32(limit), //nolint:gosec
 		New:   constructor}
 }
 

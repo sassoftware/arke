@@ -40,7 +40,6 @@ linters:
       - examples$
 formatters:
   enable:
-    - gci
     - gofmt
     - goimports
   exclusions:
@@ -49,3 +48,11 @@ formatters:
       - third_party$
       - builtin$
       - examples$
+  settings:
+    revive:
+      rules:
+        - name: package-naming
+          disabled: false
+          arguments:
+            - skip-default-bad-name-check: true
+              skip-collision-with-common-std: true

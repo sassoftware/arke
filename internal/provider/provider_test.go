@@ -10,9 +10,8 @@ import (
 	"time"
 
 	p "github.com/sassoftware/arke/internal/provider"
-	"github.com/sassoftware/arke/internal/util"
-
 	_ "github.com/sassoftware/arke/internal/provider/connectors"
+	"github.com/sassoftware/arke/internal/util"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -91,12 +90,12 @@ func TestConcurrentNewProvider(t *testing.T) {
 		p.Register(letter, NewTestProvider)
 	}
 	for _, letter := range strings.Split(letters, "") {
-		go p.GetProvider(letter) //nolint errorcheck
+		go p.GetProvider(letter) //nolint:errcheck
 	}
 
 	providerNames := []string{"amqp091", "test"}
 	for _, name := range providerNames {
-		go p.GetProvider(name) //nolint errcheck
+		go p.GetProvider(name) //nolint:errcheck
 	}
 	time.Sleep(100 * time.Millisecond)
 	providers := p.RegisteredProviders()

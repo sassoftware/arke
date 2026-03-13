@@ -53,7 +53,6 @@ func MonitorHPA(healthChan chan pb.HealthStatus_Code, arkeHpaName string) {
 			Logger.Debugf("Could not configure HPA cluster monitoring: %s", err.Error())
 			return
 		}
-
 	} else if err != nil {
 		Logger.Debugf("Could not configure HPA cluster monitoring: %s", err.Error())
 		return
@@ -86,14 +85,13 @@ func MonitorHPA(healthChan chan pb.HealthStatus_Code, arkeHpaName string) {
 			return
 		}
 		for event := range watcher.ResultChan() {
-
 			hpa := event.Object.(*v1.HorizontalPodAutoscaler)
-			if hpa.ObjectMeta.GetName() != arkeHpaName {
+			if hpa.GetName() != arkeHpaName {
 				continue
 			}
 
-			newReplicaCount := currentReplicaCount //nolint ineffassign
-			switch event.Type {
+			newReplicaCount := currentReplicaCount //nolint:wastedassign,ineffassign
+			switch event.Type {                    //nolint:exhaustive
 			case watch.Modified:
 				newReplicaCount = hpa.Status.CurrentReplicas
 			default:

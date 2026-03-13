@@ -36,7 +36,7 @@ func TestStandardInit(t *testing.T) {
 	os.Unsetenv(EnvLang)
 	os.Unsetenv(EnvLcAll)
 	locale, _ := DetectIETF()
-	if "" == locale {
+	if locale == "" {
 		locale = defaultLanguage
 	}
 	assert.Equal(t, locale, "en", "Incorrect default locale.")
