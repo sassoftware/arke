@@ -39,7 +39,7 @@ exclude:
     - \.pb\.go$    # excludes all protobuf generated files
     - ^tests/
     - ^test/
-    - _shim\.go$   # excludes our shim files that mainly contain broker integration code
+    - shim\.go$   # excludes our shim files that mainly contain broker integration code
 
 # (optional; default false)
 # When true, requires all coverage-ignore annotations to include explanatory comments
