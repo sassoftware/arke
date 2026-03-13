@@ -35,7 +35,7 @@ jobs:
       pull-requests: read
     env:
       GOMEMLIMIT: 2GiB
-      GOLANGCI_LINT_VERSION=v2.11.3
+      GOLANGCI_LINT_VERSION: v2.11.3
       TRIVY_SKIP_DB_UPDATE: true
       TRIVY_SKIP_JAVA_DB_UPDATE: true
 
