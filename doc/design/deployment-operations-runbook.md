@@ -2,7 +2,10 @@
 
 ## Purpose
 
-This document covers everything an operator needs to deploy, configure, monitor, and troubleshoot Arke in production. It assumes a Kubernetes environment, though most sections apply equally to bare-metal and VM deployments.
+This document covers everything an operator needs to deploy, configure,
+monitor, and troubleshoot Arke in production. It assumes a Kubernetes
+environment, though most sections apply equally to bare-metal and VM
+deployments.
 
 ---
 
@@ -41,7 +44,9 @@ All configuration is provided through environment variables. No config file is r
 
 ### Rate Limiting
 
-All three numeric variables must be set to valid positive integers for rate limiting to activate. Setting only some of them disables rate limiting and logs a warning.
+All three numeric variables must be set to valid positive integers for rate
+limiting to activate. Setting only some of them disables rate limiting and
+logs a warning.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -75,7 +80,8 @@ All three numeric variables must be set to valid positive integers for rate limi
 
 ### 1. Resources and Limits
 
-Arke sets `GOMEMLIMIT` to 90% of the cgroup memory limit automatically. Set container `resources.limits.memory` to match your expected load. Start with:
+Arke sets `GOMEMLIMIT` to 90% of the cgroup memory limit automatically. Set
+container `resources.limits.memory` to match your expected load. Start with:
 
 ```yaml
 resources:
@@ -89,7 +95,8 @@ resources:
 
 ### 2. Ports
 
-Only a single port is needed. Both gRPC and Prometheus metrics are served on the same port via `cmux`.
+Only a single port is needed. Both gRPC and Prometheus metrics are served on
+the same port via `cmux`.
 
 ```yaml
 ports:
@@ -100,7 +107,8 @@ ports:
 
 ### 3. Liveness and Readiness Probes
 
-Use the standard gRPC health protocol. The `arke` service is registered with status `SERVING` on startup.
+Use the standard gRPC health protocol. The `arke` service is registered with
+status `SERVING` on startup.
 
 ```yaml
 livenessProbe:
@@ -140,7 +148,8 @@ volumes:
 
 ### 5. HPA Configuration
 
-Arke broadcasts `GOAWAY` to connected clients when it detects an HPA scale-up. The HPA itself should be configured based on CPU or custom metrics:
+Arke broadcasts `GOAWAY` to connected clients when it detects an HPA scale-up.
+The HPA itself should be configured based on CPU or custom metrics:
 
 ```yaml
 apiVersion: autoscaling/v2
@@ -165,7 +174,8 @@ spec:
 
 ### 6. Prometheus Scraping
 
-Prometheus metrics are served at `http://<pod-ip>:<PORT>/metrics`. Add a `PodMonitor` for scraping the metrics:
+Prometheus metrics are served at `http://<pod-ip>:<PORT>/metrics`. Add a
+`PodMonitor` for scraping the metrics:
 
 ```yaml
 apiVersion: monitoring.coreos.com/v1
@@ -196,7 +206,9 @@ Arke handles `SIGINT` (Ctrl-C, `kubectl delete pod`, Kubernetes preStop). On sig
 3. The OTLP tracer provider flushes pending spans.
 4. The process exits.
 
-Kubernetes sends `SIGTERM` before killing a pod. To align, map `SIGTERM` → graceful stop. If your base image or init system does not propagate signals to PID 1 correctly, add a `preStop` lifecycle hook:
+Kubernetes sends `SIGTERM` before killing a pod. To align, map `SIGTERM` →
+graceful stop. If your base image or init system does not propagate signals to
+PID 1 correctly, add a `preStop` lifecycle hook:
 
 ```yaml
 lifecycle:
@@ -205,7 +217,8 @@ lifecycle:
       command: ["sleep", "5"]
 ```
 
-This gives Kubernetes time to deregister the pod from the service before traffic is cut.
+This gives Kubernetes time to deregister the pod from the service before
+traffic is cut.
 
 ---
 
@@ -226,9 +239,14 @@ Key metrics to alert on:
 
 ### OpenTelemetry Traces
 
-Configure `OTEL_EXPORTER_OTLP_ENDPOINT` to point at your collector (Jaeger, Tempo, etc.). Trace context is propagated using both W3C `traceparent`/`tracestate` and B3 headers, so Arke integrates with both W3C-native and legacy tracing stacks.
+Configure `OTEL_EXPORTER_OTLP_ENDPOINT` to point at your collector (Jaeger,
+Tempo, etc.). Trace context is propagated using both W3C `traceparent`
+`tracestate` and B3 headers, so Arke integrates with both W3C-native and
+legacy tracing stacks.
 
-Disable entirely with `OTEL_SDK_DISABLED=true` if you do not have a collector — leaving the exporter pointing at a non-existent endpoint causes connection errors that are logged but do not affect functionality.
+Disable entirely with `OTEL_SDK_DISABLED=true` if you do not have a collector
+— leaving the exporter pointing at a non-existent endpoint causes connection
+errors that are logged but do not affect functionality.
 
 ### Health Check
 
@@ -240,7 +258,8 @@ The custom `Healthz.Check` stream reports:
 | `cpu_availability` | Percentage of CPU headroom (0–100) |
 | `memory_availability` | Percentage of memory headroom (0–100) |
 
-`UNHEALTHY` is set when memory usage exceeds ~90% or CPU has been consistently high for an extended period. `GOAWAY` is set by the HPA monitor.
+`UNHEALTHY` is set when memory usage exceeds ~90% or CPU has been consistently
+high for an extended period. `GOAWAY` is set by the HPA monitor.
 
 ---
 
@@ -259,7 +278,8 @@ go tool pprof cpu.out
 go tool pprof mem.out
 ```
 
-Do not run with profiling enabled in production under sustained load — the files grow unbounded until the process exits.
+Do not run with profiling enabled in production under sustained load — the
+files grow unbounded until the process exits.
 
 ---
 
@@ -269,35 +289,51 @@ Do not run with profiling enabled in production under sustained load — the fil
 
 Rate limiting is enforced. Check current settings:
 
-1. Review `ARKE_RATE_LIMIT_BUCKET_SIZE`, `ARKE_RATE_LIMIT_REFILL_SECONDS`, `ARKE_RATE_LIMIT_ENFORCED`.
-2. If `ARKE_RATE_LIMIT_ENFORCED=false` (default), violations are logged but not rejected — check logs for rate-limit warnings.
-3. Increase `ARKE_RATE_LIMIT_BUCKET_SIZE` or decrease `ARKE_RATE_LIMIT_REFILL_SECONDS` to raise the effective limit.
+1. Review `ARKE_RATE_LIMIT_BUCKET_SIZE`, `ARKE_RATE_LIMIT_REFILL_SECONDS`,
+`ARKE_RATE_LIMIT_ENFORCED`.
+2. If `ARKE_RATE_LIMIT_ENFORCED=false` (default), violations are logged but
+not rejected — check logs for rate-limit warnings.
+3. Increase `ARKE_RATE_LIMIT_BUCKET_SIZE` or decrease
+`ARKE_RATE_LIMIT_REFILL_SECONDS` to raise the effective limit.
 
 ### Clients receive `Unavailable` on Connect
 
-1. Verify the backend broker is reachable from the Arke pod: `kubectl exec <pod> -- nc -zv <broker-host> <broker-port>`.
-2. Check TLS configuration: if the broker requires TLS, ensure `ConnectionConfiguration.Tls = true` and that `SAS_ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE` points to the correct CA bundle.
+1. Verify the backend broker is reachable from the Arke pod: `kubectl exec
+<pod> -- nc -zv <broker-host> <broker-port>`.
+2. Check TLS configuration: if the broker requires TLS, ensure
+`ConnectionConfiguration.Tls = true` and that
+`SAS_ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE` points to the correct CA bundle.
 3. Check broker credentials in `ConnectionConfiguration.Credentials`.
 
 ### Connections not cleaned up (connectionMap growing)
 
-The connection watcher runs every 30 seconds. If `prov.ClientExists()` in the broker provider is not correctly tracking disconnected clients, entries accumulate. Check provider-specific logs for `"Provider says client X does not exist"` to confirm the watcher is running.
+The connection watcher runs every 30 seconds. If `prov.ClientExists()` in the
+broker provider is not correctly tracking disconnected clients, entries
+accumulate. Check provider-specific logs for `"Provider says client X does not
+exist"` to confirm the watcher is running.
 
 ### Clients not receiving GOAWAY during scale-up
 
 1. Confirm the HPA name matches `ARKE_HPA_NAME` (default: `arke`).
 2. Verify the Arke pod has RBAC permission to read the HPA resource.
-3. Check logs for `"Monitoring Horizontal Pod Autoscaler"` at startup to confirm the goroutine started.
+3. Check logs for `"Monitoring Horizontal Pod Autoscaler"` at startup to
+confirm the goroutine started.
 
 ### High goroutine count
 
-Use the `/metrics` endpoint or `go tool pprof` to identify which goroutine stacks are accumulating. Each active `Consume` stream creates up to 4 goroutines (recv, subscribe, delivery, periodic ack). A goroutine count of `4 × active_subscriptions + baseline` is expected. Leak patterns typically show `subscribe` or `delivery` goroutines blocking on closed channels — check provider `Subscribe` implementations for correct context cancellation handling.
+Use the `/metrics` endpoint or `go tool pprof` to identify which goroutine
+stacks are accumulating. Each active `Consume` stream creates up to 4
+goroutines (recv, subscribe, delivery, periodic ack). A goroutine count of `4
+× active_subscriptions + baseline` is expected. Leak patterns typically show
+`subscribe` or `delivery` goroutines blocking on closed channels — check
+provider `Subscribe` implementations for correct context cancellation handling.
 
 ---
 
 ## Log Levels
 
-Arke uses `zerolog`. Log level is controlled by standard `zerolog` environment conventions. Useful levels:
+Arke uses `zerolog`. Log level is controlled by standard `zerolog` environment
+conventions. Useful levels:
 
 | Level | Use |
 | --- | --- |

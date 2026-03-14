@@ -1,6 +1,8 @@
 # Arke Security Policy
+
 Project maintainers and community contributors take security issues seriously.
-Efforts to disclose potential issues responsibly are appreciated, and viable contributions will be acknowledged. 
+Efforts to disclose potential issues responsibly are appreciated, and viable
+contributions will be acknowledged.
 To aid investigation of any reported vulnerabilities, please follow the [reporting guidelines](#reporting-guidelines) when submitting your findings.
 
 ## Reporting Guidelines
@@ -13,9 +15,11 @@ To report a suspected security issue, use private vulnerability reporting.
 Then provide the following information with suspected security issues:
 
 * Your name and affiliation
-* Version/build-date of project 
+* Version/build-date of project
 * Issue description
 * Steps to reproduce the issue
-* Current public knowledge of this vulnerability (for example, related CVE, security advisory, and so on), if known
+* Current public knowledge of this vulnerability (for example, related CVE,
+security advisory, and so on), if known
 
-The project release notes contain acknowledgments for contributors who provide security-related insights in their commits.
+The project release notes contain acknowledgments for contributors who provide
+security-related insights in their commits.

@@ -2,14 +2,23 @@
 
 ## Purpose
 
-This document specifies the contract that any backend message broker connector must satisfy to be registered with Arke. It is the primary reference for contributors who want to add support for a new broker (e.g. Kafka, MQTT, Azure Service Bus).
+This document specifies the contract that any backend message broker
+connector must satisfy to be registered with Arke. It is the primary
+reference for contributors who want to add support for a new broker
+(e.g. Kafka, MQTT, Azure Service Bus).
 
 ---
 
 ## Overview
 
-Arke's broker independence is provided by the `internal/provider` package, which defines a `Provider` interface and a global registry. At startup, one or more connector packages call `provider.Register()` from their `init()` functions. When a client connects, the `server` package calls `provider.GetProvider(type)` to retrieve (or lazily create) the matching singleton.
+Arke's broker independence is provided by the `internal/provider` package,
+which defines a `Provider` interface and a global registry. At startup, one
+or more connector packages call `provider.Register()` from their `init()`
+functions. When a client connects, the `server` package calls
+`provider.GetProvider(type)` to retrieve (or lazily create) the matching
+singleton.
 
+<!-- markdownlint-disable MD013 -->
 ```text
 provider.Register("amqp091", amqp091Factory)   ← called in amqp091/connectors.go init()
 
@@ -18,6 +27,7 @@ provider.GetProvider("amqp091")
         └── providerOnce.Do(amqp091Factory())  ← exactly once per provider type
               └── cached in registeredProviders map
 ```
+<!-- markdownlint-enable MD013 -->
 
 ---
 
@@ -25,6 +35,7 @@ provider.GetProvider("amqp091")
 
 Location: [`internal/provider/provider.go`](../../internal/provider/provider.go)
 
+<!-- markdownlint-disable MD013 -->
 ```go
 type Provider interface {
     // Connect establishes a connection to the backend broker using the supplied
@@ -86,12 +97,14 @@ type Provider interface {
     SourceStats(ctx context.Context, src *pb.Source) *pb.SourceStats
 }
 ```
+<!-- markdownlint-enable MD013 -->
 
 ---
 
 ## Factory Registration
 
-Every connector package must expose a zero-argument factory function and register it during package initialisation:
+Every connector package must expose a zero-argument factory function and
+register it during package initialisation:
 
 ```go
 // internal/provider/connectors/mybroker/connectors.go
@@ -107,13 +120,15 @@ func init() {
 }
 ```
 
-The `provider.Register` function is idempotent — duplicate registrations for the same name are silently ignored.
+The `provider.Register` function is idempotent — duplicate registrations
+for the same name are silently ignored.
 
 ---
 
 ## Activating a Connector
 
-A connector is activated by blank-importing its package in the [connectors.go](../../internal/provider/connectors/connectors.go) file:
+A connector is activated by blank-importing its package in the
+[connectors.go](../../internal/provider/connectors/connectors.go) file:
 
 ```go
 import (
@@ -121,12 +136,14 @@ import (
 )
 ```
 
-Without this import the `init()` function never runs and `provider.GetProvider("mybroker")` returns an error.
+Without this import the `init()` function never runs and
+`provider.GetProvider("mybroker")` returns an error.
 
 ---
 
 ## Provider Lifecycle
 
+<!-- markdownlint-disable MD013 -->
 ```text
 client Connect(cfg) RPC
     │
@@ -143,14 +160,21 @@ client Connect(cfg) RPC
 client Disconnect() RPC  OR  context cancellation
     └─► prov.Disconnect(ctx)  ← client-scoped teardown; provider singleton lives on
 ```
+<!-- markdownlint-enable MD013 -->
 
-**Important:** The `Provider` singleton is shared across all clients of that broker type. Implementations must store any per-client state keyed by the `clientIdentifier` extracted from the context (`util.GetClientIdentifier(ctx)`), not as struct-level fields.
+**Important:** The `Provider` singleton is shared across all clients of
+that broker type. Implementations must store any per-client state keyed by
+the `clientIdentifier` extracted from the context
+(`util.GetClientIdentifier(ctx)`), not as struct-level fields.
 
 ---
 
 ## Source Options Contract
 
-`SupportedSourceOptions()` must return every key that `Subscribe` reads from `pb.Source.Options`. The server rejects subscription requests that contain keys not present in this map, surfacing the error to the client before the provider is called.
+`SupportedSourceOptions()` must return every key that `Subscribe` reads
+from `pb.Source.Options`. The server rejects subscription requests that
+contain keys not present in this map, surfacing the error to the client
+before the provider is called.
 
 Defined option keys for the current AMQP 0.9.1 provider:
 
@@ -163,21 +187,26 @@ Defined option keys for the current AMQP 0.9.1 provider:
 | `Offset` | string | Stream starting offset (Streams only) |
 | `ConsumerGroup` | string | Consumer group name (Streams only) |
 
-New connectors should document their supported options in the same table format here and export accurate keys from `SupportedSourceOptions()`.
+New connectors should document their supported options in the same table
+format here and export accurate keys from `SupportedSourceOptions()`.
 
 ---
 
 ## Error Handling Conventions
 
 - Methods return `*pb.Error`, never a Go `error`. A `nil` return means success.
-- `pb.Error.IsFatal = true` signals to the server that the stream must be closed and the client notified.
-- `pb.Error.IsFatal = false` represents a per-message error; the stream may continue.
-- Implementations must not panic. If a panic is unavoidable, wrap the goroutine body with `util.RecoverPanic()`.
+- `pb.Error.IsFatal = true` signals to the server that the stream must be
+  closed and the client notified.
+- `pb.Error.IsFatal = false` represents a per-message error; the stream
+  may continue.
+- Implementations must not panic. If a panic is unavoidable, wrap the
+  goroutine body with `util.RecoverPanic()`.
 
 ---
 
 ## Concurrency Requirements
 
+<!-- markdownlint-disable MD013 -->
 | Expectation | Detail |
 | --- | --- |
 | `Connect` / `Disconnect` | Must be safe to call from multiple goroutines concurrently (different clients) |
@@ -185,11 +214,18 @@ New connectors should document their supported options in the same table format 
 | `Ack` / `Nack` / `Retry` / `DeadLetter` | May be called concurrently from the ack-handling goroutine in `ConsumerServer.Consume` |
 | `Stats` / `SourceStats` | Read-only; must not block indefinitely |
 | `ClientExists` | Read-only; called from the connection watcher goroutine every 30 s |
+<!-- markdownlint-enable MD013 -->
 
 ---
 
 ## Testing a New Connector
 
-1. **Unit tests** – Place in `internal/provider/connectors/<name>/<name>_test.go`. Mock the broker client using an interface shim (see `amqp091shim.go` for the pattern).
-2. **Integration tests** – Add a Docker Compose service for the broker in `tests/integration/docker-compose*.yml` and ensure the integration tests run successful against all supported brokers.
-3. **Registration smoke test** – Verify `provider.GetProvider("<name>")` returns a non-nil provider after blank-importing the connector package.
+1. **Unit tests** – Place in
+   `internal/provider/connectors/<name>/<name>_test.go`. Mock the broker
+   client using an interface shim (see `amqp091shim.go` for the pattern).
+2. **Integration tests** – Add a Docker Compose service for the broker in
+   `tests/integration/docker-compose*.yml` and ensure the integration
+   tests run successful against all supported brokers.
+3. **Registration smoke test** – Verify
+   `provider.GetProvider("<name>")` returns a non-nil provider after
+   blank-importing the connector package.
