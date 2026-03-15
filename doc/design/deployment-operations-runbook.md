@@ -298,8 +298,8 @@ not rejected — check logs for rate-limit warnings.
 
 ### Clients receive `Unavailable` on Connect
 
-1. Verify the backend broker is reachable from the Arke pod: `kubectl exec
-<pod> -- nc -zv <broker-host> <broker-port>`.
+1. Verify the backend broker is reachable from the Arke pod:
+  `kubectl exec <pod> -- nc -zv <broker-host> <broker-port>`.
 2. Check TLS configuration: if the broker requires TLS, ensure
 `ConnectionConfiguration.Tls = true` and that
 `SAS_ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE` points to the correct CA bundle.

@@ -3,7 +3,8 @@
 Project maintainers and community contributors take security issues seriously.
 Efforts to disclose potential issues responsibly are appreciated, and viable
 contributions will be acknowledged.
-To aid investigation of any reported vulnerabilities, please follow the [reporting guidelines](#reporting-guidelines) when submitting your findings.
+To aid investigation of any reported vulnerabilities, please follow the
+[reporting guidelines](#reporting-guidelines) when submitting your findings.
 
 ## Reporting Guidelines
 
