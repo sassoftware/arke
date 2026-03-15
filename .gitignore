@@ -16,3 +16,4 @@ arke
 test/healthz/healthz-client
 coverage/
 *.out
+gitleaks

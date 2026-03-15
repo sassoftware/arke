@@ -36,7 +36,7 @@ jobs:
     env:
       GOMEMLIMIT: 2GiB
       GOLANGCI_LINT_VERSION: v2.11.3
-      GITLEAKS_VERSION: v8.30.0
+      GITLEAKS_VERSION: 8.30.0
       TRIVY_SKIP_DB_UPDATE: true
       TRIVY_SKIP_JAVA_DB_UPDATE: true
 
@@ -127,8 +127,8 @@ jobs:
         if: always()
         run: |-
           # go install github.com/gitleaks/gitleaks/v8/cmd/gitleaks@${{ env.GITLEAKS_VERSION }} 2> ${{ env.ARTIFACT_DIR }}/gitleaks-install-log.txt
-          wget -qO- "https://github.com/gitleaks/gitleaks/releases/download/${{ env.GITLEAKS_VERSION }}/gitleaks_${{ env.GITLEAKS_VERSION }}_linux_x64.tar.gz" | tar -xzv
-          ./gitleaks_${{ env.GITLEAKS_VERSION }}_linux_x64/gitleaks detect --config ./.github/linters/gitleaks-config.toml -v
+          wget -qO- "https://github.com/gitleaks/gitleaks/releases/download/v${{ env.GITLEAKS_VERSION }}/gitleaks_${{ env.GITLEAKS_VERSION }}_linux_x64.tar.gz" | tar -xzv gitleaks
+          ./gitleaks detect --config ./.github/linters/gitleaks-config.toml -v
 
 
       # https://github.com/aquasecurity/trivy-action
