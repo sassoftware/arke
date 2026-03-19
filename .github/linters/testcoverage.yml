@@ -1,3 +1,4 @@
+---
 # (mandatory)
 # Path to coverage profile file (output of `go test -coverprofile` command).
 #
