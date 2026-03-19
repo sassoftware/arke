@@ -299,6 +299,8 @@ Please see our [Security Policy](SECURITY.md) for details.
 
 This project is licensed under the [Apache 2.0 License](LICENSE).
 
+This project's logo features the Go Gopher mascot, [created by Renee French](https://go.dev/brand) and licensed under the [Creative Commons 4.0 Attribution License](https://creativecommons.org/licenses/by/4.0/).
+
 ---
 
 ## Third-party dependencies
