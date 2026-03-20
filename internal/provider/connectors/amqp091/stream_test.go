@@ -146,7 +146,7 @@ type streamMessageResponseShimMock struct {
 func (mrs streamMessageResponseShimMock) IsConfirmed() bool {
 	return mrs.confirmed
 }
-func (mrs streamMessageResponseShimMock) GetPublishingId() int64 { //nolint:revive
+func (mrs streamMessageResponseShimMock) GetPublishingId() int64 {
 	return mrs.pubID
 }
 func (mrs streamMessageResponseShimMock) GetError() error {
