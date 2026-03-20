@@ -66,6 +66,10 @@ jobs:
 
       # https://github.com/marketplace/actions/markdown-linting-action
       #
+
+      - name: cat README.md
+        run: cat README.md && cp README.md ${{ env.ARTIFACT_DIR }}/README.md
+
       - name: Lint markdown files
         id: lint-markdown
         uses: avto-dev/markdown-lint@v1
