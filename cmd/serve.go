@@ -79,6 +79,7 @@ func run(ctx context.Context) error {
 		Build()
 
 	err = svr.Serve(ctx)
+
 	if err != nil {
 		switch err.(type) {
 		case *net.OpError:

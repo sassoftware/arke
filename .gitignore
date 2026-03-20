@@ -17,3 +17,4 @@ test/healthz/healthz-client
 coverage/
 *.out
 gitleaks
+.DS_Store

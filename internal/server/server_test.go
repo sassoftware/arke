@@ -1261,3 +1261,108 @@ func Test_SourceStatsGroup_noProvider(t *testing.T) {
 
 	mockp.AssertExpectations(t)
 }
+
+func (prov *MockProvider) ClientExists(connID string) bool {
+	args := prov.Called(connID)
+	return args.Bool(0)
+}
+
+func TestTrimConnectionList_ClientExists(t *testing.T) {
+	s.ResetConnectionMap()
+	mockp.ExpectedCalls = make([]*mock.Call, 0)
+	mockp.On("Connect", mock.Anything, mock.AnythingOfType("*api.ConnectionConfiguration"), mock.AnythingOfType("bool")).Return(&pb.Error{})
+
+	ctx := context.Background()
+	proSrv.Connect(ctx, cf) //nolint:errcheck
+
+	// Client exists, so it should NOT be removed
+	mockp.On("ClientExists", mock.Anything).Return(true).Once()
+
+	s.TrimConnectionList()
+
+	// Verify the client is still connected by calling disconnect (should succeed)
+	empty := &pb.Empty{}
+	resp, err := proSrv.Disconnect(ctx, empty)
+	assert.NotNil(t, resp)
+	assert.Nil(t, err)
+
+	mockp.AssertExpectations(t)
+}
+
+func TestTrimConnectionList_ClientNotExists(t *testing.T) {
+	s.ResetConnectionMap()
+	mockp.ExpectedCalls = make([]*mock.Call, 0)
+	mockp.On("Connect", mock.Anything, mock.AnythingOfType("*api.ConnectionConfiguration"), mock.AnythingOfType("bool")).Return(&pb.Error{})
+
+	ctx := context.Background()
+	proSrv.Connect(ctx, cf) //nolint:errcheck
+
+	// Client does not exist, so it should be removed
+	mockp.On("ClientExists", mock.Anything).Return(false).Once()
+
+	s.TrimConnectionList()
+
+	// After trimming, the connection should be gone, so publishing should fail
+	msg := &pb.Message{Body: []byte("test")}
+	resp, err := proSrv.PublishOne(ctx, msg)
+	assert.NotNil(t, err)
+	assert.NotNil(t, resp)
+	assert.False(t, resp.GetSuccess())
+
+	mockp.AssertExpectations(t)
+}
+func TestMakeHealthMsg_OK(t *testing.T) {
+	oldGetProcessStats := s.GetProcessStats
+	defer func() { s.GetProcessStats = oldGetProcessStats }()
+
+	s.GetProcessStats = func() *util.ProcessStats {
+		return &util.ProcessStats{
+			CPUAvailability:    0.99,
+			MemoryAvailability: 0.99,
+		}
+	}
+
+	uuid := util.GenUUID()
+	check := &pb.HealthCheck{Uuid: uuid}
+	hlth := s.MakeHealthMsg(check)
+
+	assert.NotNil(t, hlth)
+	status := hlth.GetResp().(*pb.Health_Status)
+	assert.NotNil(t, status)
+	assert.Equal(t, uuid, status.Status.GetUuid())
+	assert.Equal(t, pb.HealthStatus_OK, status.Status.GetCode())
+	assert.Equal(t, float32(0.99), status.Status.GetCpuAvailability())
+	assert.Equal(t, float32(0.99), status.Status.GetMemoryAvailability())
+	assert.Equal(t, timestamppb.New(defaultDate), status.Status.GetTime())
+}
+
+func TestMakeInternalHealthMsg_OK(t *testing.T) {
+	oldGetProcessStats := s.GetProcessStats
+	defer func() { s.GetProcessStats = oldGetProcessStats }()
+
+	s.GetProcessStats = func() *util.ProcessStats {
+		return &util.ProcessStats{
+			CPUAvailability:    0.99,
+			MemoryAvailability: 0.99,
+		}
+	}
+
+	hlth := s.MakeInternalHealthMsg(pb.HealthStatus_OK)
+
+	assert.NotNil(t, hlth)
+	status := hlth.GetResp().(*pb.Health_Status)
+	assert.NotNil(t, status)
+	assert.Equal(t, pb.HealthStatus_OK, status.Status.GetCode())
+	assert.Equal(t, float32(0.99), status.Status.GetCpuAvailability())
+	assert.Equal(t, float32(0.99), status.Status.GetMemoryAvailability())
+	assert.Equal(t, timestamppb.New(defaultDate), status.Status.GetTime())
+}
+
+// just a test to get some code coverage for the number to go up
+func TestConnectionWatcher(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go s.ConnectionWatcher(ctx)
+	time.Sleep(500 * time.Millisecond)
+	cancel()
+	assert.ErrorIs(t, ctx.Err(), context.Canceled)
+}

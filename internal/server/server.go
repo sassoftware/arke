@@ -44,34 +44,49 @@ var healthNotifiers = util.NewConcurrentMap()
 
 func init() {
 	if !strings.HasSuffix(os.Args[0], ".test") {
-		// ctx, _ := context.WithCancel(context.Background())
-		util.Logger.Debugf("Starting server connection watcher")
-		go connectionWatcher()
-		// go util.MonitorProcessStats(ctx)
+		// we expect the connection watcher to run in the background forever
+		// but we want to be able to cancel it for tests
+		ctx := context.Background()
+		go ConnectionWatcher(ctx)
 		go util.MonitorProcessStats()
-		util.Logger.Debug("Monitoring Horizontal Pod Autoscaler")
 	}
 }
 
-func connectionWatcher() {
+func ConnectionWatcher(ctx context.Context) {
+	util.Logger.Debugf("Starting server connection watcher")
 	// watch connection map
 	ticker := time.NewTicker(30 * time.Second)
 	for {
-		<-ticker.C
-		for _, connID := range connectionMap.GetList() {
-			if connConf, ok := connectionMap.Get(connID); ok {
-				providerType := connConf.(*pb.ConnectionConfiguration).GetProvider()
-				if prov, err := provider.GetProvider(providerType); err == nil {
-					// if the provider says the client doesn't exists, clean up this dead client
-					if !prov.ClientExists(connID) {
-						util.Logger.Debugf("Provider says client %s does not exist. Cleaning up dead client.", connID)
-						connectionMap.Delete(connID)
-					}
+		select {
+		case <-ticker.C:
+			TrimConnectionList()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func ResetConnectionMap() {
+	if !strings.HasSuffix(os.Args[0], ".test") {
+		panic("ResetConnectionMap should only be used in tests")
+	}
+	connectionMap = util.NewConcurrentMap()
+}
+
+func TrimConnectionList() {
+	for _, connID := range connectionMap.GetList() {
+		if connConf, ok := connectionMap.Get(connID); ok {
+			providerType := connConf.(*pb.ConnectionConfiguration).GetProvider()
+			if prov, err := provider.GetProvider(providerType); err == nil {
+				// if the provider says the client doesn't exists, clean up this dead client
+				if !prov.ClientExists(connID) {
+					util.Logger.Debugf("Provider says client %s does not exist. Cleaning up dead client.", connID)
+					connectionMap.Delete(connID)
 				}
-			} else {
-				// We had it in the list but then couldn't retrieve it, delete it.
-				connectionMap.Delete(connID)
 			}
+		} else {
+			// We had it in the list but then couldn't retrieve it, delete it.
+			connectionMap.Delete(connID)
 		}
 	}
 }
@@ -819,22 +834,7 @@ func (s *HealthzServer) Check(stream pb.Healthz_CheckServer) error {
 			if check := msg.GetCheck(); check != nil {
 				// client asked for a health check
 				util.Logger.Tracef("healthz check requested for %s with uuid %s", clientAddr, check.GetUuid())
-				hlth := &pb.Health{}
-				hs := &pb.Health_Status{}
-				hs.Status = &pb.HealthStatus{}
-				hs.Status.Uuid = check.GetUuid()
-				hs.Status.Code = pb.HealthStatus_OK
-				processStats := GetProcessStats()
-				hs.Status.CpuAvailability = processStats.CPUAvailability
-				hs.Status.MemoryAvailability = processStats.MemoryAvailability
-				hs.Status.Code = pb.HealthStatus_OK
-
-				// if mem usage > 90% or cpu usage has been high for an extended period then report unhealthy
-				cpuAndMemoryHealthSet(processStats, hs)
-
-				// set the time right before sending the response
-				hs.Status.Time = NewTimestampPB()
-				hlth.Resp = hs
+				hlth := MakeHealthMsg(check)
 				// We dont' care if this send fails
 				stream.Send(hlth) //nolint:errcheck
 			} else if status := msg.GetStatus(); status != nil {
@@ -854,17 +854,7 @@ func (s *HealthzServer) Check(stream pb.Healthz_CheckServer) error {
 			util.Logger.Debugf("Internal health notification received. Sending %s to %s", code.String(), clientAddr)
 
 			// Get current process stats for availability
-			processStats := GetProcessStats()
-
-			hlth := &pb.Health{}
-			hs := &pb.Health_Status{}
-			hs.Status = &pb.HealthStatus{
-				Code:               code,
-				Time:               NewTimestampPB(),
-				CpuAvailability:    processStats.CPUAvailability,
-				MemoryAvailability: processStats.MemoryAvailability,
-			}
-			hlth.Resp = hs
+			hlth := MakeInternalHealthMsg(code)
 			// We don't care if this send fails
 			stream.Send(hlth) //nolint:errcheck
 		case <-ctx.Done():
@@ -876,6 +866,41 @@ func (s *HealthzServer) Check(stream pb.Healthz_CheckServer) error {
 		}
 	}
 	return nil
+}
+
+func MakeInternalHealthMsg(code pb.HealthStatus_Code) *pb.Health {
+	processStats := GetProcessStats()
+
+	hlth := &pb.Health{}
+	hs := &pb.Health_Status{}
+	hs.Status = &pb.HealthStatus{
+		Code:               code,
+		Time:               NewTimestampPB(),
+		CpuAvailability:    processStats.CPUAvailability,
+		MemoryAvailability: processStats.MemoryAvailability,
+	}
+	hlth.Resp = hs
+	return hlth
+}
+
+func MakeHealthMsg(check *pb.HealthCheck) *pb.Health {
+	hlth := &pb.Health{}
+	hs := &pb.Health_Status{}
+	hs.Status = &pb.HealthStatus{}
+	hs.Status.Uuid = check.GetUuid()
+	hs.Status.Code = pb.HealthStatus_OK
+	processStats := GetProcessStats()
+	hs.Status.CpuAvailability = processStats.CPUAvailability
+	hs.Status.MemoryAvailability = processStats.MemoryAvailability
+	hs.Status.Code = pb.HealthStatus_OK
+
+	// if mem usage > 90% or cpu usage has been high for an extended period then report unhealthy
+	cpuAndMemoryHealthSet(processStats, hs)
+
+	// set the time right before sending the response
+	hs.Status.Time = NewTimestampPB()
+	hlth.Resp = hs
+	return hlth
 }
 
 func cpuAndMemoryHealthSet(processStats *util.ProcessStats, initialStatus *pb.Health_Status) {
