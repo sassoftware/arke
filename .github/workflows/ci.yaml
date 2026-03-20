@@ -35,7 +35,7 @@ jobs:
       pull-requests: read
     env:
       GOMEMLIMIT: 2GiB
-      GOLANGCI_LINT_VERSION: v2.11.3
+      GOLANGCI_LINT_VERSION: v2.11
       GITLEAKS_VERSION: 8.30.0
 
     services:
@@ -58,13 +58,11 @@ jobs:
       - name: Create artifact directory
         run: mkdir -p ${{ env.ARTIFACT_DIR}}
 
-      # https://golangci-lint.run/docs/welcome/install/ci/
-      - name: Lint go files
-        id: lint-go-files
-        if: always()
-        run: |-
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${{ env.GOLANGCI_LINT_VERSION }} 2> ${{ env.ARTIFACT_DIR }}/golangci-lint-install-log.txt
-          golangci-lint run --config=${{ env.LINT_DIR }}/golangci-config.yaml ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.11
+          args: --config=${{ env.LINT_DIR }}/golangci-config.yaml --allow-parallel-runners
 
       # https://github.com/marketplace/actions/markdown-linting-action
       #

@@ -28,7 +28,7 @@ var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to `file`")
 var memprofile = flag.String("memprofile", "", "write memory profile to `file`")
 var tlsSkipVerify = flag.Bool("tls-skip-verify", false, "Force TLS, but always skip verification")
 
-func run(ctx context.Context) error {
+func run(ctx context.Context) {
 	// Set up cpu and memory profiling if passed in as args
 	flag.Parse()
 	if *cpuprofile != "" {
@@ -78,20 +78,27 @@ func run(ctx context.Context) error {
 		WithRateLimit(rlp).
 		Build()
 
-	err = svr.Serve(ctx)
+	fatal := checkErr(svr.Serve(ctx))
+	if fatal {
+		util.Logger.Fatal(i18n.GenericError, err)
+	}
+}
 
+// if we get an error other than a net.OpError then we should fatally log.
+// returning true indicates a fatal error
+func checkErr(err error) bool {
 	if err != nil {
 		switch err.(type) {
 		case *net.OpError:
-			return nil
+			return false
 		default:
-			util.Logger.Fatal(i18n.GenericError, err)
+			return true
 		}
 	}
-	return err
+	return false
 }
 
 func main() {
 	ctx := context.Background()
-	run(ctx) //nolint:errcheck
+	run(ctx)
 }
