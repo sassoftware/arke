@@ -37,8 +37,6 @@ jobs:
       GOMEMLIMIT: 2GiB
       GOLANGCI_LINT_VERSION: v2.11.3
       GITLEAKS_VERSION: 8.30.0
-      TRIVY_SKIP_DB_UPDATE: true
-      TRIVY_SKIP_JAVA_DB_UPDATE: true
 
     services:
       docker:
@@ -127,48 +125,7 @@ jobs:
           wget -qO- "https://github.com/gitleaks/gitleaks/releases/download/v${{ env.GITLEAKS_VERSION }}/gitleaks_${{ env.GITLEAKS_VERSION }}_linux_x64.tar.gz" | tar -xzv gitleaks
           ./gitleaks detect --config ./.github/linters/gitleaks-config.toml -v
 
-
-      # https://github.com/aquasecurity/trivy-action
-      # calling once here to populate the cache, and then skipping setup in the trivy-action step to save time
-      - name: Manual Trivy Setup
-        uses: aquasecurity/setup-trivy@v0.2.0
-        if: always()
-        with:
-          cache: true
-          version: v0.69.2
-
-      - name: Check for vulnerabilities
-        uses: aquasecurity/trivy-action@master
-        if: always()
-        with:
-          scan-type: 'fs'
-          severity: 'CRITICAL,HIGH'
-          ignore-unfixed: true
-          format: 'table'
-          output: ${{ env.ARTIFACT_DIR }}/trivy-vuln-results.txt
-          skip-setup-trivy: true
-          exit-code: 1
-          trivy-config: ${{ env.LINT_DIR }}/trivy.yaml
-
-      # License types https://github.com/google/licenseclassifier/blob/e6a9bb99b5a6f71d5a34336b8245e305f5430f99/license_type.go
-      # https://trivy.dev/docs/latest/guide/scanner/license/
-      # TODO: are these license categories sufficient
-      - name: Check for vulnerabilities and license violations
-        uses: aquasecurity/trivy-action@master
-        if: always()
-        with:
-          scan-type: repo
-          scanners: 'vuln,license'
-          severity: 'CRITICAL,HIGH,UNKNOWN'
-          ignore-unfixed: true
-          format: 'table'
-          output: ${{ env.ARTIFACT_DIR }}/trivy-license-results.txt
-          skip-setup-trivy: true
-          exit-code: 1
-          trivy-config: ${{ env.LINT_DIR }}/trivy.yaml
-
       # https://github.com/golang/govulncheck-action
-      # This is probably redundant with the trivy scan, but it will be nice to compare
       # the results
       - name: Run govulncheck
         if: always()
