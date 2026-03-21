@@ -26,17 +26,61 @@ env:
   COV_DIR: ./artifacts/cov
 
 jobs:
-  lint-test-build:
+  lint-other-files:
     runs-on: ubuntu-latest
-    # https://hub.docker.com/_/golang/
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # https://github.com/actions/setup-go
+      - name: Setup go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # https://github.com/marketplace/actions/markdown-linting-action
+      - name: Lint markdown files
+        id: lint-markdown
+        uses: avto-dev/markdown-lint@v1
+        if: always()
+        with:
+          args: ./
+          config: ${{ env.LINT_DIR }}/markdown-lint.yml
+
+      # https://github.com/marketplace/actions/shellcheck
+      # Note: only checks for syntax errors, not style issues
+      - name: Lint shell scripts
+        id: lint-shell
+        if: always()
+        uses: ludeeus/action-shellcheck@master
+
+      - name: Run yamllint
+        if: always()
+        run: |
+          yamllint -c .github/linters/yamllint.yml .
+
+      - name: Check for secrets
+        id: betterleaks
+        if: always()
+        run: |-
+          go install github.com/betterleaks/betterleaks@latest
+          betterleaks git --config ./.github/linters/betterleaks-config.toml -v
+
+  go-lint:
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
       pull-requests: read
     env:
       GOMEMLIMIT: 2GiB
-      GOLANGCI_LINT_VERSION: v2.11
-      GITLEAKS_VERSION: 8.30.0
 
     services:
       docker:
@@ -55,81 +99,49 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Create artifact directory
-        run: mkdir -p ${{ env.ARTIFACT_DIR}}
-
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.11
           args: --config=${{ env.LINT_DIR }}/golangci-config.yaml --allow-parallel-runners
 
-      # https://github.com/marketplace/actions/markdown-linting-action
-      - name: Lint markdown files
-        id: lint-markdown
-        uses: avto-dev/markdown-lint@v1
-        if: always()
+  go-test:
+    runs-on: ubuntu-latest
+    # https://hub.docker.com/_/golang/
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: read
+    env:
+      GOMEMLIMIT: 2GiB
+
+    services:
+      docker:
+        image: docker:dind # Use the official Docker-in-Docker image
+        options: --privileged --shm-size=2g # The --privileged flag is required for DinD to function
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
         with:
-          args: ./
-          config: ${{ env.LINT_DIR }}/markdown-lint.yml
+          fetch-depth: 0
 
-      # https://github.com/hadolint/hadolint-action
-      # Note this has to be called multiple times for multiple dockerfiles
-      # Note: This does not check for style, only syntax errors :(
-      - name: Lint dockerfile
-        id: lint-dockerfile
-        run: |-
-          curl -sL -o ./hadolint "https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64"
-          chmod +x ./hadolint
-          for file in $(git ls-files | grep Dockerfile || true); do
-            echo "=== Linting $file"
-            ./hadolint "$file" --failure-threshold error
-            echo ""
-          done 2>&1 | tee ${{ env.ARTIFACT_DIR }}/hadolint-results.txt
+      - name: Create artifact directory
+        run: mkdir -p ${{ env.ARTIFACT_DIR}}
 
-      # https://github.com/marketplace/actions/shellcheck
-      # Note: only checks for syntax errors, not style issues
-      - name: Lint shell scripts
-        id: lint-shell
-        if: always()
-        run: |-
-          go install mvdan.cc/sh/v3/cmd/shfmt@latest 2> ${{ env.ARTIFACT_DIR }}/shfmt-install-log.txt
-
-          scversion="stable"
-          wget -qO- "https://github.com/koalaman/shellcheck/releases/download/${scversion?}/shellcheck-${scversion?}.linux.x86_64.tar.xz" | tar -xJv
-          cp shellcheck-${scversion}/shellcheck ./shellcheck
-
-          for file in $(git ls-files | grep "\.sh$"); do
-            echo "Linting $file"
-            shfmt -d  "$file"
-            ./shellcheck "$file"
-            echo ""
-          done 2>&1
-
-      - name: Run yamllint
-        if: always()
-        run: |
-          yamllint -c .github/linters/yamllint.yml .
-
-      # https://github.com/gitleaks/gitleaks-action
-      # license key applie for from https://gitleaks.io/
-      # BUG: this does not find "password" in cmd/main.go
-      - name: Check for secrets
-        id: gitleaks
-        if: always()
-        run: |-
-          # go install github.com/gitleaks/gitleaks/v8/cmd/gitleaks@${{ env.GITLEAKS_VERSION }} 2> ${{ env.ARTIFACT_DIR }}/gitleaks-install-log.txt
-          wget -qO- "https://github.com/gitleaks/gitleaks/releases/download/v${{ env.GITLEAKS_VERSION }}/gitleaks_${{ env.GITLEAKS_VERSION }}_linux_x64.tar.gz" | tar -xzv gitleaks
-          ./gitleaks detect --config ./.github/linters/gitleaks-config.toml -v
+      # https://github.com/actions/setup-go
+      - name: Setup go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
 
       # https://github.com/golang/govulncheck-action
       # the results
       - name: Run govulncheck
         if: always()
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest 2> ${{ env.ARTIFACT_DIR }}/govulncheck-install-log.txt
+          go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./... 2>&1 | tee ${{ env.ARTIFACT_DIR }}/govulncheck-results.txt
-
 
       # Run unit tests with coverage
       - name: Unit tests
@@ -161,11 +173,6 @@ jobs:
           go install github.com/vladopajic/go-test-coverage/v2@latest 2> ${{ env.ARTIFACT_DIR }}/go-test-coverage-install-log.txt
           go-test-coverage --config=${{ env.LINT_DIR }}/testcoverage.yml
 
-      - name: "Evaluate coverage result"
-        if: steps.check-coverage.outcome == 'failure'
-        shell: bash
-        run: echo "coverage check failed" && exit 1
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         if: always()
@@ -174,9 +181,3 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
           path: ${{ env.ARTIFACT_DIR }}/*
-
-      - name: Check for failure
-        if: ${{ failure() }}
-        run: |
-          echo "One or more steps failed. Check the workflow output and artifacts for details."
-          exit 1

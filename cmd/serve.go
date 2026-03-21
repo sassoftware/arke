@@ -78,7 +78,8 @@ func run(ctx context.Context) {
 		WithRateLimit(rlp).
 		Build()
 
-	fatal := checkErr(svr.Serve(ctx))
+	err = svr.Serve(ctx)
+	fatal := checkErr(err)
 	if fatal {
 		util.Logger.Fatal(i18n.GenericError, err)
 	}

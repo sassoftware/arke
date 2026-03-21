@@ -683,7 +683,7 @@ func TestProduceOneFailsWithoutConnect(t *testing.T) {
 	msg := &pb.Message{Body: []byte("message"), Address: address, Persistent: true}
 	_, err := c.PublishOne(ctx, msg)
 	assert.NotNil(t, err)
-	assert.Contains(t, err.Error(), "Could not find client identifier")
+	assert.Contains(t, err.Error(), "could not find client identifier")
 
 	// TODO: Why is the MessageResponse nil?
 	//assert.NotNil(t, resp)
@@ -1370,7 +1370,7 @@ func TestProduceFailsWithoutConnect(t *testing.T) {
 	assert.NotNil(t, r)
 	r, err = stream.Recv()
 	assert.Nil(t, r)
-	assert.Contains(t, err.Error(), "Could not find client identifier")
+	assert.Contains(t, err.Error(), "could not find client identifier")
 }
 
 func TestConsumerDisconnectOKWithoutConnect(t *testing.T) {

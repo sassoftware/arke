@@ -1,4 +1,4 @@
-title = "gitleaks config extensions"
+title = "betterleaks config extensions"
 
 [extend]
 useDefault = true
