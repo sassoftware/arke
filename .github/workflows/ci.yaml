@@ -141,7 +141,7 @@ jobs:
         if: always()
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./... 2>&1 | tee ${{ env.ARTIFACT_DIR }}/govulncheck-results.txt
+          govulncheck ./...
 
       # Run unit tests with coverage
       - name: Unit tests
@@ -150,8 +150,7 @@ jobs:
           mkdir -p ${{ env.COV_DIR }}
           # Note that cov dir has to be absolute path since each package test runs from the pkg directory
           # disable -race  for now, entered #11 to fix this
-          go test -count=1 -v -coverpkg=./... ./... -args -test.gocoverdir=$PWD/${{ env.COV_DIR }} 2>&1 | \
-            tee ${{ env.ARTIFACT_DIR }}/go-test-output.txt
+          go test -count=1 -v -coverpkg=./... ./... -args -test.gocoverdir=$PWD/${{ env.COV_DIR }}
 
       - name: Generate coverage report
         if: always()
@@ -162,22 +161,12 @@ jobs:
       - name: Display coverage summary
         if: always()
         run: |
-          go tool covdata percent -i=${{ env.COV_DIR }} 2>&1 | tee -a ${{ env.ARTIFACT_DIR }}/go-test-coverage-summary.txt
-
+          go tool covdata percent -i=${{ env.COV_DIR }}
 
       # https://github.com/vladopajic/go-test-coverage/blob/main/README.md#configuration
       - name: Check test coverage
         if: always()
         id: check-coverage
         run: |-
-          go install github.com/vladopajic/go-test-coverage/v2@latest 2> ${{ env.ARTIFACT_DIR }}/go-test-coverage-install-log.txt
+          go install github.com/vladopajic/go-test-coverage/v2@latest
           go-test-coverage --config=${{ env.LINT_DIR }}/testcoverage.yml
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
-        if: always()
-        with:
-          name: ci-artifacts
-          retention-days: 7
-          if-no-files-found: warn
-          path: ${{ env.ARTIFACT_DIR }}/*
