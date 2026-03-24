@@ -11,7 +11,7 @@ require (
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/rabbitmq/rabbitmq-stream-go-client v1.7.1
 	github.com/rs/zerolog v1.34.0
-	github.com/sassoftware/arke/api v1.7.3
+	github.com/sassoftware/arke/api v1.12.0
 	github.com/soheilhy/cmux v0.1.5
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/otel v1.42.0
