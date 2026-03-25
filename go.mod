@@ -9,7 +9,7 @@ require (
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.3
 	github.com/prometheus/client_golang v1.23.2
 	github.com/rabbitmq/amqp091-go v1.10.0
-	github.com/rabbitmq/rabbitmq-stream-go-client v1.7.1
+	github.com/rabbitmq/rabbitmq-stream-go-client v1.6.3
 	github.com/rs/zerolog v1.34.0
 	github.com/sassoftware/arke/api v1.12.0
 	github.com/soheilhy/cmux v0.1.5
