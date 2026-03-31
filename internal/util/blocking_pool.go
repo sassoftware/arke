@@ -77,3 +77,24 @@ func (p *BlockingPool) Put(x any) error {
 		return fmt.Errorf("pool is full, cannot accept item")
 	}
 }
+
+// Drain removes all idle items from the pool, calling dispose on each one.
+// The pool count is decremented for every item removed so that subsequent
+// calls to Get will allocate fresh items via the constructor.  Items that
+// are currently checked out (i.e. not yet Put back) are not affected.
+func (p *BlockingPool) Drain(dispose func(any)) {
+	for {
+		select {
+		case item, ok := <-p.pool:
+			if !ok {
+				return
+			}
+			p.count.Add(-1)
+			if dispose != nil && item != nil {
+				dispose(item)
+			}
+		default:
+			return
+		}
+	}
+}

@@ -214,3 +214,60 @@ func Test_BlockingPoolGetFromClosedChannelWhileWaiting(t *testing.T) {
 		t.Fatal("Should have returned nil after channel closed")
 	}
 }
+
+func Test_BlockingPoolDrain(t *testing.T) {
+	// Fill the pool with 3 objects.
+	pool := NewBlockingPool(context.Background(), 5, func() any { return &Obj{val: 1} })
+	o1 := pool.Get().(*Obj)
+	o2 := pool.Get().(*Obj)
+	o3 := pool.Get().(*Obj)
+	_ = pool.Put(o1)
+	_ = pool.Put(o2)
+	_ = pool.Put(o3)
+
+	disposed := 0
+	pool.Drain(func(item any) {
+		disposed++
+	})
+
+	// All 3 idle items must have been drained.
+	assert.Equal(t, 3, disposed)
+
+	// After draining, the pool channel must be empty.
+	select {
+	case <-pool.pool:
+		t.Fatal("expected pool to be empty after Drain")
+	default:
+	}
+
+	// count was decremented: new Get() calls must succeed and create fresh
+	// objects via the constructor.
+	fresh := pool.Get()
+	assert.NotNil(t, fresh)
+}
+
+func Test_BlockingPoolDrainEmpty(t *testing.T) {
+	// Draining an empty pool is a no-op; dispose must not be called.
+	pool := NewBlockingPool(context.Background(), 5, func() any { return &Obj{val: 1} })
+	called := false
+	pool.Drain(func(any) { called = true })
+	assert.False(t, called)
+}
+
+func Test_BlockingPoolDrainCheckedOutNotAffected(t *testing.T) {
+	// An item that has been checked out (not yet Put back) must not be
+	// affected by Drain; it must still be usable after the drain.
+	pool := NewBlockingPool(context.Background(), 2, func() any { return &Obj{val: 42} })
+	checkedOut := pool.Get().(*Obj)
+
+	// Put a second item so the pool has one idle entry.
+	idle := pool.Get().(*Obj)
+	_ = pool.Put(idle)
+
+	disposed := 0
+	pool.Drain(func(any) { disposed++ })
+	assert.Equal(t, 1, disposed, "only the idle item should be drained")
+
+	// The checked-out item remains valid.
+	assert.Equal(t, 42, checkedOut.val)
+}

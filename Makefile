@@ -185,5 +185,8 @@ integration: compose integration_test ## Runs compose and integration_test
 
 integration_all: integration integration_test_tls integration_test_tls_send_ca ## Runs all integration_test* targets.
 
+failover_test: ## Runs connection-resilience and failover integration tests (requires a running arke + RabbitMQ with management API)
+	cd tests/integration ; go test -count=1 -v -timeout 3m -tags=failover -run TestConnectionWatcher ./
+
 help: ## Lists the makefile's targets
 	@grep -E '^[a-z.A-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'

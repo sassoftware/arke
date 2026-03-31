@@ -1792,29 +1792,47 @@ func (bd *BrokerDetails) connectionWatcher() {
 	}
 }
 
+// waitWhileConnecting waits up to 30 seconds for an in-progress connection attempt to resolve.
+// It returns (true, true) if the connection is now established, (true, false) if it is closed,
+// and (false, false) if we should attempt our own connect (disconnected or timed out).
+func (bd *BrokerDetails) waitWhileConnecting() (shouldReturn bool, connected bool) {
+	for start := time.Now(); time.Since(start) < 30*time.Second; {
+		switch bd.state {
+		case provider.CONNECTED:
+			return true, true
+		case provider.CONNECTING:
+			time.Sleep(100 * time.Millisecond)
+		case provider.CLOSED:
+			return true, false
+		case provider.DISCONNECTED:
+			return false, false
+		}
+	}
+	return false, false
+}
+
+// drainChannelPool drains pool, closing any channels it contains.
+func drainChannelPool(pool *util.BlockingPool) {
+	if pool == nil {
+		return
+	}
+	pool.Drain(func(item any) {
+		if item != nil {
+			if ch, ok := item.(*amqp091ChannelShim); ok && ch != nil {
+				(*ch).Close()
+			}
+		}
+	})
+}
+
 func (bd *BrokerDetails) connect() (bool, error) {
 	if bd.clientDisconnect {
 		return false, nil
 	}
 
 	if bd.state == provider.CONNECTING {
-		for start := time.Now(); time.Since(start) < 30*time.Second; {
-			breakLoop := false
-			switch bd.state {
-			case provider.CONNECTED:
-				return true, nil
-			case provider.CONNECTING:
-				time.Sleep(100 * time.Millisecond)
-				continue
-			case provider.CLOSED:
-				return false, nil
-			case provider.DISCONNECTED:
-				breakLoop = true
-			}
-
-			if breakLoop {
-				break
-			}
+		if shouldReturn, connected := bd.waitWhileConnecting(); shouldReturn {
+			return connected, nil
 		}
 	}
 
@@ -1883,6 +1901,16 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	bd.state = provider.CONNECTED
 
 	util.Logger.Info(i18n.ClientConnected, bd.ClientIdentifier)
+
+	// Drain the publish channel pools.  On reconnect, bd.Connection has been
+	// replaced with a new connection object, but any amqp091Channel entries
+	// sitting idle in the pools still hold a pointer to the old (closed)
+	// connection.  Draining forces the pool to allocate fresh channels via
+	// its constructor on the next Get(), which reads bd.Connection at that
+	// time and therefore picks up the new connection.  On the initial connect
+	// the pools are empty, so this is a safe no-op.
+	drainChannelPool(bd.pubChannels)
+	drainChannelPool(bd.pubPCChannels)
 
 	// pre-load the list of exchanges to help prevent declaration
 	// errors (PSGO-2001)
