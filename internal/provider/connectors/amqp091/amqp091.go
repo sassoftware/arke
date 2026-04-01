@@ -462,11 +462,17 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 		return &newChan
 	}
 
+	validateChannel := func(item any) bool {
+		ch, ok := item.(*amqp091ChannelShim)
+		return ok && ch != nil && !(*ch).IsClosed()
+	}
+
 	bd.pubChannels = util.NewBlockingPool(
 		pubChCtx,
 		maxPubChannels,
 		newPubChannel,
 	)
+	bd.pubChannels.Validate = validateChannel
 
 	newPubPCChannel := func() any {
 		newChan, _ := bd.Connection.NewChannel(true)
@@ -481,6 +487,7 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 		maxPubPCChannels,
 		newPubPCChannel,
 	)
+	bd.pubPCChannels.Validate = validateChannel
 
 	_, bdErr := bd.connect()
 	if bdErr != nil {
@@ -1811,19 +1818,6 @@ func (bd *BrokerDetails) waitWhileConnecting() (shouldReturn bool, connected boo
 	return false, false
 }
 
-// drainChannelPool drains pool, closing any channels it contains.
-func drainChannelPool(pool *util.BlockingPool) {
-	if pool == nil {
-		return
-	}
-	pool.Drain(func(item any) {
-		if item != nil {
-			if ch, ok := item.(*amqp091ChannelShim); ok && ch != nil {
-				(*ch).Close()
-			}
-		}
-	})
-}
 
 func (bd *BrokerDetails) connect() (bool, error) {
 	if bd.clientDisconnect {
@@ -1901,16 +1895,6 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	bd.state = provider.CONNECTED
 
 	util.Logger.Info(i18n.ClientConnected, bd.ClientIdentifier)
-
-	// Drain the publish channel pools.  On reconnect, bd.Connection has been
-	// replaced with a new connection object, but any amqp091Channel entries
-	// sitting idle in the pools still hold a pointer to the old (closed)
-	// connection.  Draining forces the pool to allocate fresh channels via
-	// its constructor on the next Get(), which reads bd.Connection at that
-	// time and therefore picks up the new connection.  On the initial connect
-	// the pools are empty, so this is a safe no-op.
-	drainChannelPool(bd.pubChannels)
-	drainChannelPool(bd.pubPCChannels)
 
 	// pre-load the list of exchanges to help prevent declaration
 	// errors (PSGO-2001)

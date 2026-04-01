@@ -215,59 +215,57 @@ func Test_BlockingPoolGetFromClosedChannelWhileWaiting(t *testing.T) {
 	}
 }
 
-func Test_BlockingPoolDrain(t *testing.T) {
-	// Fill the pool with 3 objects.
-	pool := NewBlockingPool(context.Background(), 5, func() any { return &Obj{val: 1} })
-	o1 := pool.Get().(*Obj)
-	o2 := pool.Get().(*Obj)
-	o3 := pool.Get().(*Obj)
-	_ = pool.Put(o1)
-	_ = pool.Put(o2)
-	_ = pool.Put(o3)
 
-	disposed := 0
-	pool.Drain(func(item any) {
-		disposed++
-	})
 
-	// All 3 idle items must have been drained.
-	assert.Equal(t, 3, disposed)
+func Test_BlockingPoolValidateRejectsOnPut(t *testing.T) {
+	// A stale item returned via Put must be retired; the pool count must drop
+	// so that the next Get allocates a fresh item instead of blocking.
+	pool := NewBlockingPool(context.Background(), 1, func() any { return &Obj{val: 1} })
 
-	// After draining, the pool channel must be empty.
-	select {
-	case <-pool.pool:
-		t.Fatal("expected pool to be empty after Drain")
-	default:
+	o := pool.Get().(*Obj)
+	assert.NotNil(t, o)
+
+	// Mark as stale via the validator.
+	o.val = -1
+	pool.Validate = func(item any) bool {
+		return item.(*Obj).val >= 0
 	}
 
-	// count was decremented: new Get() calls must succeed and create fresh
-	// objects via the constructor.
-	fresh := pool.Get()
-	assert.NotNil(t, fresh)
+	err := pool.Put(o)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed validation")
+
+	// Count was decremented, so Get must succeed without blocking by creating
+	// a fresh item.
+	done := make(chan any, 1)
+	go func() { done <- pool.Get() }()
+	select {
+	case fresh := <-done:
+		assert.NotNil(t, fresh)
+		assert.Equal(t, 1, fresh.(*Obj).val, "should be a fresh item from constructor")
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Get blocked after stale Put; count not decremented correctly")
+	}
 }
 
-func Test_BlockingPoolDrainEmpty(t *testing.T) {
-	// Draining an empty pool is a no-op; dispose must not be called.
-	pool := NewBlockingPool(context.Background(), 5, func() any { return &Obj{val: 1} })
-	called := false
-	pool.Drain(func(any) { called = true })
-	assert.False(t, called)
-}
+func Test_BlockingPoolValidateSkipsOnGet(t *testing.T) {
+	// Items that go stale while idle in the pool must be skipped on Get and a
+	// fresh item returned instead.
+	pool := NewBlockingPool(context.Background(), 2, func() any { return &Obj{val: 1} })
 
-func Test_BlockingPoolDrainCheckedOutNotAffected(t *testing.T) {
-	// An item that has been checked out (not yet Put back) must not be
-	// affected by Drain; it must still be usable after the drain.
-	pool := NewBlockingPool(context.Background(), 2, func() any { return &Obj{val: 42} })
-	checkedOut := pool.Get().(*Obj)
+	o1 := pool.Get().(*Obj)
+	o2 := pool.Get().(*Obj)
+	o1.val = -1 // stale
+	o2.val = 42 // still good
 
-	// Put a second item so the pool has one idle entry.
-	idle := pool.Get().(*Obj)
-	_ = pool.Put(idle)
+	_ = pool.Put(o1) // stale, goes into pool first
+	_ = pool.Put(o2) // good
 
-	disposed := 0
-	pool.Drain(func(any) { disposed++ })
-	assert.Equal(t, 1, disposed, "only the idle item should be drained")
+	pool.Validate = func(item any) bool {
+		return item.(*Obj).val >= 0
+	}
 
-	// The checked-out item remains valid.
-	assert.Equal(t, 42, checkedOut.val)
+	result := pool.Get().(*Obj)
+	// o1 must have been skipped; result is either o2 or a fresh constructor item.
+	assert.True(t, result.val >= 0, "Get must not return a stale item")
 }

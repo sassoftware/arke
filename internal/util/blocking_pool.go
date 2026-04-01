@@ -10,11 +10,16 @@ import (
 )
 
 type BlockingPool struct {
-	ctx   context.Context
-	pool  chan any
-	New   func() any
-	count atomic.Int32
-	limit int32
+	ctx      context.Context
+	pool     chan any
+	New      func() any
+	// Validate is called on every item before it is handed to a caller (Get)
+	// or accepted back from a caller (Put).  Return true if the item is still
+	// healthy, false to retire it and let the pool allocate a fresh one.
+	// If Validate is nil all items are considered valid.
+	Validate func(any) bool
+	count    atomic.Int32
+	limit    int32
 }
 
 func NewBlockingPool(ctx context.Context, limit int, constructor func() any) *BlockingPool {
@@ -29,10 +34,14 @@ func NewBlockingPool(ctx context.Context, limit int, constructor func() any) *Bl
 func (p *BlockingPool) Get() any {
 	select {
 	case e, ok := <-p.pool:
-		if ok {
+		if !ok {
+			return nil
+		}
+		if p.Validate == nil || p.Validate(e) {
 			return e
 		}
-		return nil
+		// Item is stale; retire it and fall through to the allocation loop.
+		p.count.Add(-1)
 	default:
 		// Pool is empty
 	}
@@ -53,10 +62,15 @@ func (p *BlockingPool) Get() any {
 		case <-p.ctx.Done():
 			return nil
 		case e, ok := <-p.pool:
-			if ok {
+			if !ok {
+				return nil
+			}
+			if p.Validate == nil || p.Validate(e) {
 				return e
 			}
-			return nil
+			// Stale item; retire it and keep waiting so count drops below
+			// limit, allowing the next iteration to create a fresh one.
+			p.count.Add(-1)
 		}
 	}
 }
@@ -65,6 +79,11 @@ func (p *BlockingPool) Put(x any) error {
 	if x == nil {
 		Logger.Warn("cannot put nil value into pool")
 		return fmt.Errorf("cannot put nil value into pool")
+	}
+	if p.Validate != nil && !p.Validate(x) {
+		Logger.Debugf("item failed validation on Put, retiring from pool")
+		p.count.Add(-1)
+		return fmt.Errorf("item failed validation, retired from pool")
 	}
 	select {
 	case p.pool <- x:
@@ -78,23 +97,4 @@ func (p *BlockingPool) Put(x any) error {
 	}
 }
 
-// Drain removes all idle items from the pool, calling dispose on each one.
-// The pool count is decremented for every item removed so that subsequent
-// calls to Get will allocate fresh items via the constructor.  Items that
-// are currently checked out (i.e. not yet Put back) are not affected.
-func (p *BlockingPool) Drain(dispose func(any)) {
-	for {
-		select {
-		case item, ok := <-p.pool:
-			if !ok {
-				return
-			}
-			p.count.Add(-1)
-			if dispose != nil && item != nil {
-				dispose(item)
-			}
-		default:
-			return
-		}
-	}
-}
+
