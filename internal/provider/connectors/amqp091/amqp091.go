@@ -1818,7 +1818,6 @@ func (bd *BrokerDetails) waitWhileConnecting() (shouldReturn bool, connected boo
 	return false, false
 }
 
-
 func (bd *BrokerDetails) connect() (bool, error) {
 	if bd.clientDisconnect {
 		return false, nil

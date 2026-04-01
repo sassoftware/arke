@@ -215,8 +215,6 @@ func Test_BlockingPoolGetFromClosedChannelWhileWaiting(t *testing.T) {
 	}
 }
 
-
-
 func Test_BlockingPoolValidateRejectsOnPut(t *testing.T) {
 	// A stale item returned via Put must be retired; the pool count must drop
 	// so that the next Get allocates a fresh item instead of blocking.

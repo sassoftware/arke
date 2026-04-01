@@ -10,9 +10,9 @@ import (
 )
 
 type BlockingPool struct {
-	ctx      context.Context
-	pool     chan any
-	New      func() any
+	ctx  context.Context
+	pool chan any
+	New  func() any
 	// Validate is called on every item before it is handed to a caller (Get)
 	// or accepted back from a caller (Put).  Return true if the item is still
 	// healthy, false to retire it and let the pool allocate a fresh one.
@@ -96,5 +96,3 @@ func (p *BlockingPool) Put(x any) error {
 		return fmt.Errorf("pool is full, cannot accept item")
 	}
 }
-
-

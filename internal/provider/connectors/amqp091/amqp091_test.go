@@ -1863,6 +1863,7 @@ func Test_PublishOne(t *testing.T) {
 		cmock := &amqpChannelMock{}
 		cmock.On("Publish", address.GetName(), address.GetSubjects()[0], expectedMsg).Return(nil)
 		cmock.On("ExchangeDeclare", address.GetName(), "headers", address.GetAutoDelete()).Return(nil).Once()
+		cmock.On("IsClosed").Return(false)
 		amock := &amqpConnectionMock{}
 		amock.On("Connect").Return(nil)
 		amock.On("IsClosed").Return(false)
@@ -1908,6 +1909,7 @@ func Test_PublishOneFailed(t *testing.T) {
 	cmock := &amqpChannelMock{}
 	cmock.On("Publish", address.GetName(), address.GetSubjects()[0], expectedMsg).Return(errors.New("puberr"))
 	cmock.On("ExchangeDeclare", address.GetName(), "headers", address.GetAutoDelete()).Return(nil).Once()
+	cmock.On("IsClosed").Return(false)
 	amock := &amqpConnectionMock{}
 	amock.On("Connect").Return(nil)
 	amock.On("IsClosed").Return(false)
