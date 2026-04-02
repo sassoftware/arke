@@ -1802,7 +1802,7 @@ func (bd *BrokerDetails) connectionWatcher() {
 // waitWhileConnecting waits up to 30 seconds for an in-progress connection attempt to resolve.
 // It returns (true, true) if the connection is now established, (true, false) if it is closed,
 // and (false, false) if we should attempt our own connect (disconnected or timed out).
-func (bd *BrokerDetails) waitWhileConnecting() (shouldReturn bool, connected bool) {
+func (bd *BrokerDetails) waitWhileConnecting() (bool, bool) {
 	for start := time.Now(); time.Since(start) < 30*time.Second; {
 		switch bd.state {
 		case provider.CONNECTED:
