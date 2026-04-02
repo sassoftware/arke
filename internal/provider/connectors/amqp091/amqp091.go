@@ -1800,22 +1800,21 @@ func (bd *BrokerDetails) connectionWatcher() {
 }
 
 // waitWhileConnecting waits up to 30 seconds for an in-progress connection attempt to resolve.
-// It returns (true, true) if the connection is now established, (true, false) if it is closed,
-// and (false, false) if we should attempt our own connect (disconnected or timed out).
-func (bd *BrokerDetails) waitWhileConnecting() (bool, bool) {
+// It returns the resulting state: CONNECTED, CLOSED, or DISCONNECTED (also used for timeouts).
+func (bd *BrokerDetails) waitWhileConnecting() uint16 {
 	for start := time.Now(); time.Since(start) < 30*time.Second; {
 		switch bd.state {
 		case provider.CONNECTED:
-			return true, true
+			return provider.CONNECTED
 		case provider.CONNECTING:
 			time.Sleep(100 * time.Millisecond)
 		case provider.CLOSED:
-			return true, false
+			return provider.CLOSED
 		case provider.DISCONNECTED:
-			return false, false
+			return provider.DISCONNECTED
 		}
 	}
-	return false, false
+	return provider.DISCONNECTED
 }
 
 func (bd *BrokerDetails) connect() (bool, error) {
@@ -1824,8 +1823,11 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	}
 
 	if bd.state == provider.CONNECTING {
-		if shouldReturn, connected := bd.waitWhileConnecting(); shouldReturn {
-			return connected, nil
+		switch bd.waitWhileConnecting() {
+		case provider.CONNECTED:
+			return true, nil
+		case provider.CLOSED:
+			return false, nil
 		}
 	}
 
