@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	met "github.com/armon/go-metrics"
-	promet "github.com/armon/go-metrics/prometheus"
+	met "github.com/hashicorp/go-metrics"
+	promet "github.com/hashicorp/go-metrics/prometheus"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"

@@ -311,7 +311,7 @@ This project's logo features the Go Gopher mascot, [created by Renee French](htt
 | Dependency | License |
 |---|---|
 | `github.com/KimMachineGun/automemlimit` | [LICENSE](https://github.com/KimMachineGun/automemlimit/blob/main/LICENSE) |
-| `github.com/armon/go-metrics` | [LICENSE](https://github.com/armon/go-metrics/blob/master/LICENSE) |
+| `github.com/hashicorp/go-metrics` | [LICENSE](https://github.com/hashicorp/go-metrics/blob/master/LICENSE) |
 | `github.com/google/uuid` | [LICENSE](https://github.com/google/uuid/blob/master/LICENSE) |
 | `github.com/grpc-ecosystem/go-grpc-middleware/v2` | [LICENSE](https://github.com/grpc-ecosystem/go-grpc-middleware/blob/main/LICENSE) |
 | `github.com/prometheus/client_golang` | [LICENSE](https://github.com/prometheus/client_golang/blob/main/LICENSE) |

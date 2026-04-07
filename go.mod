@@ -4,9 +4,9 @@ go 1.25.0
 
 require (
 	github.com/KimMachineGun/automemlimit v0.7.5
-	github.com/armon/go-metrics v0.3.10
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.3
+	github.com/hashicorp/go-metrics v0.5.4
 	github.com/prometheus/client_golang v1.23.2
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/rabbitmq/rabbitmq-stream-go-client v1.6.3

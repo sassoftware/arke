@@ -8,7 +8,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/armon/go-metrics/prometheus"
+	"github.com/hashicorp/go-metrics/prometheus"
 	"github.com/sassoftware/arke/api"
 	prometheusmetrics "github.com/sassoftware/arke/internal/metrics/prometheus"
 	"google.golang.org/grpc"
