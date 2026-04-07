@@ -4,7 +4,7 @@
 package metrics
 
 import (
-	met "github.com/armon/go-metrics"
+	met "github.com/hashicorp/go-metrics"
 )
 
 // LabelSet go-metrics Label. Avoid importing go-metrics anywhere but here

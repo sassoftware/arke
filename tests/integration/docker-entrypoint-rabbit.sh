@@ -7,6 +7,13 @@ until rabbitmqctl status; do
 	sleep 1
 done
 
+rabbitmqctl add_user admin admin
+rabbitmqctl set_user_tags admin administrator
+rabbitmqctl set_permissions -p / admin ".*" ".*" ".*"
+
+rabbitmqctl set_user_tags guest monitoring
+rabbitmqctl set_permissions -p / guest ".*" ".*" ".*"
+
 # retry qq
 
 # streams - max age 5 days, max segment size 50MB

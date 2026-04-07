@@ -15,6 +15,11 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      - dependency-name: github.com/rabbitmq/rabbitmq-stream-go-client
+        versions:
+          - "1.7.0"
+          - "1.7.1"
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
