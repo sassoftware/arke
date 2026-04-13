@@ -1216,9 +1216,8 @@ func TestGetPublishRate(t *testing.T) {
 	pc := pb.NewProducerClient(producerConnection)
 	pctx := context.Background()
 	defer pc.Disconnect(pctx, &pb.Empty{})
-	producerCfg := cfg.ConnectionConfigurationFromEnv()
-	producerCfg.ClientName = "publish_rate_producer"
-	authResp, err := pc.Connect(ctx, &producerCfg)
+	producerCfg := connectConfig("publish_rate_producer")
+	authResp, err := pc.Connect(ctx, producerCfg)
 	assert.Nil(t, err, "should not get an error connecting producer client: %v", err)
 	assert.NotNil(t, authResp, "should have gotten a response from connect")
 	assert.True(t, authResp.GetSuccess(), "should have successfully connected producer client: %v", authResp.GetError())
