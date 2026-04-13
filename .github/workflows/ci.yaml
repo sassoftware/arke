@@ -62,8 +62,9 @@ jobs:
         if: always()
         uses: ludeeus/action-shellcheck@00b27aa7cb85167568cb48a3838b75f4265f2bca
 
+      # yamllint does not exist in the act image so skip it if we're in act
       - name: Run yamllint
-        if: always()
+        if: ${{ !env.ACT }}
         run: |
           yamllint -c .github/linters/yamllint.yml .
 

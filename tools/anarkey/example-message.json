@@ -1,0 +1,8 @@
+{
+    "headers": {
+        "content-type": "application/json",
+        "x-correlation-id": "@id@",
+        "source": "load-test"
+    },
+    "body": "{\"id\":\"@id@\",\"timestamp\":\"2026-02-13T00:00:00.000Z\",\"event\":\"test.event\",\"data\":{\"message\":\"Load test message with unique ID: @id@\"}}"
+}

@@ -1,0 +1,27 @@
+{
+  "config": {
+    "arke_host": "localhost",
+    "arke_port": 50051,
+    "arke_tls": false,
+    "broker_host": "localhost",
+    "broker_port": 5672,
+    "broker_username": "guest",
+    "broker_password": "guest",
+    "broker_tls": false,
+    "broker_provider": "amqp091",
+    "num_publisher_connections": 1,
+    "num_consumer_connections": 1
+  },
+  "stream_config": {
+    "num_publisher_streams": 1,
+    "num_consumer_streams": 1,
+    "source_type": 2,
+    "source_name": "mystream",
+    "address_name": "mystream",
+    "subject": "mystream",
+    "message_count": 0,
+    "is_continuous": true,
+    "publish_rate_limit": 2000,
+    "message_file": "example-message.json"
+  }
+}

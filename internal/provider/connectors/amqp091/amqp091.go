@@ -1933,7 +1933,7 @@ func (bd *BrokerDetails) loadExchanges() {
 		return
 	}
 	if marshErr := json.Unmarshal(body, &results); marshErr != nil {
-		util.Logger.Debugf("Error unmarshaling exchanges from management API: %s", err.Error())
+		util.Logger.Debugf("Error unmarshaling exchanges from management API: %s", marshErr.Error())
 		return
 	}
 	util.Logger.Debugf("Loaded exchanges from management API: %s", string(body))

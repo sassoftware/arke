@@ -18,3 +18,4 @@ coverage/
 *.out
 gitleaks
 .DS_Store
+tools/anarkey/logs
