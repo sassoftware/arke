@@ -1221,7 +1221,7 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 		return nil
 	}
 
-	latch := util.NewBlockingLatch(uint(source.GetPrefetchCount())) //nolint:gosec
+	latch := util.NewBlockingLatch(ctx, uint(source.GetPrefetchCount())) //nolint:gosec
 
 	consumerName, cErr := bd.getConsumerName(source)
 	if cErr != nil {
@@ -1259,7 +1259,9 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 
 		// Increment the latch before we put the message on the channel
 		// Increment will wait for Decrement to be called if we have hit the ceiling
-		latch.Increment()
+		if err := latch.Increment(); err != nil {
+			return
+		}
 		messageChannel <- m
 		stm := streamMessage{Body: message.GetData(), Headers: m.GetHeaders()}
 		stm.Ack = func() {

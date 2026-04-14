@@ -3,19 +3,24 @@
 
 package util
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 type BlockingLatch struct {
+	ctx    context.Context
 	count  uint
 	max    uint
 	lock   *sync.Mutex
 	notMax *sync.Cond
 }
 
-func NewBlockingLatch(m uint) *BlockingLatch {
+func NewBlockingLatch(ctx context.Context, m uint) *BlockingLatch {
 	lock := new(sync.Mutex)
 
 	bl := &BlockingLatch{
+		ctx:    ctx,
 		count:  0,
 		max:    m,
 		lock:   lock,
@@ -24,15 +29,22 @@ func NewBlockingLatch(m uint) *BlockingLatch {
 	return bl
 }
 
-func (bl *BlockingLatch) WaitForEmpty() {
+func (bl *BlockingLatch) WaitForEmpty() error {
+	stop := context.AfterFunc(bl.ctx, func() {
+		bl.notMax.Broadcast()
+	})
+	defer stop()
+
 	bl.lock.Lock()
 	defer bl.lock.Unlock()
 	for {
-		if bl.count > 0 {
-			bl.notMax.Wait()
-		} else {
-			return
+		if bl.count == 0 {
+			return nil
 		}
+		if err := bl.ctx.Err(); err != nil {
+			return err
+		}
+		bl.notMax.Wait()
 	}
 }
 
@@ -56,12 +68,6 @@ func (bl *BlockingLatch) GetMax() uint {
 	return bl.max
 }
 
-/*func (bl *BlockingLatch) inc() {
-	bl.lock.Lock()
-	bl.count++
-	bl.lock.Unlock()
-}*/
-
 func (bl *BlockingLatch) Decrement() {
 	bl.lock.Lock()
 	bl.count--
@@ -69,11 +75,22 @@ func (bl *BlockingLatch) Decrement() {
 	bl.lock.Unlock()
 }
 
-func (bl *BlockingLatch) Increment() {
+func (bl *BlockingLatch) Increment() error {
+	stop := context.AfterFunc(bl.ctx, func() {
+		bl.notMax.Broadcast()
+	})
+	defer stop()
+
 	bl.lock.Lock()
-	if bl.count >= bl.max {
+	defer bl.lock.Unlock()
+	for {
+		if bl.count < bl.max {
+			bl.count++
+			return nil
+		}
+		if err := bl.ctx.Err(); err != nil {
+			return err
+		}
 		bl.notMax.Wait()
 	}
-	bl.count++
-	bl.lock.Unlock()
 }
