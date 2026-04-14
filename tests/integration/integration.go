@@ -5,23 +5,46 @@ package integration
 
 import (
 	"embed"
+	"fmt"
 	"os"
 	"path"
 )
 
-//go:embed integration_test.go
+//go:embed *_test.go
 var testFiles embed.FS
 
-func WriteIntegrationTestFile(outDir string) error {
-	fn := "integration_test.go"
+func WriteIntegrationTestFiles(outDir string) error {
 	err := os.MkdirAll(outDir, 0775)
 	if err != nil {
 		return err
 	}
+
+	files, err := testFiles.ReadDir(".")
+	if err != nil {
+		return err
+	}
+
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		if path.Ext(file.Name()) == ".go" {
+			err := writeTestFile(file.Name(), outDir)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func writeTestFile(fn, outDir string) error {
 	outfile := path.Join(outDir, fn)
 	contents, err := testFiles.ReadFile(fn)
 	if err != nil {
 		return err
 	}
+	fmt.Println("Writing test file:", outfile)
 	return os.WriteFile(outfile, contents, 0644)
 }
