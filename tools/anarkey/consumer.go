@@ -65,7 +65,7 @@ func (c *Consumer) Start() error {
 
 	options := map[string]string{}
 	if c.config.SourceType == api.Source_STREAM {
-		options["Offset"] = "last"
+		options["Offset"] = "next"
 	}
 
 	// Send source

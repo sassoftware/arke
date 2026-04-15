@@ -274,7 +274,7 @@ func (sc *streamConnection) GetLastOffset(streamName string, consumerName string
 }
 
 func (sc *streamConnection) StoreOffset(streamName string, consumerName string, offset int64) error {
-	util.Logger.Debugf("StoreOffset (%s)(%s)(%d)", consumerName, streamName, offset)
+	util.Logger.Tracef("StoreOffset (%s)(%s)(%d)", consumerName, streamName, offset)
 	return sc.env.StoreOffset(consumerName, streamName, offset)
 }
 
