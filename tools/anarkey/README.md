@@ -16,7 +16,7 @@ built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 ## Building
 
 ```bash
-go build -o build/anarkey ./tools/anarkey
+go build -o build/anarkey .
 ```
 
 or
