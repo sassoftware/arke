@@ -15,6 +15,7 @@ import (
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/internal/util"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 )
 
@@ -32,7 +33,7 @@ func main() {
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-	conn, err := grpc.NewClient(address, grpc.WithInsecure(), grpc.WithKeepaliveParams(kacp)) //nolint:staticcheck
+	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithKeepaliveParams(kacp))
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
 	}

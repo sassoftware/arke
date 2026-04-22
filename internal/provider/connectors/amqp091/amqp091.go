@@ -452,7 +452,7 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 	bd := BrokerDetails{
 		connectionConfig: cf,
 		ClientIdentifier: clientIdentifier,
-		ErrorChannel:     make(chan amqp091Error),
+		ErrorChannel:     make(chan amqp091Error, 1),
 		activeMessages:   activeMessages,
 		tlsSkipVerify:    tlsSkipVerify,
 		tlsConfig:        prov.tlsConfig,
@@ -747,13 +747,11 @@ func (prov *amqp091provider) declareQueue(source *pb.Source, bd *BrokerDetails, 
 }
 
 func (bd *BrokerDetails) getManagementClient() *http.Client {
-	client := &http.Client{}
-
 	if bd.tlsEnabled {
 		tr := &http.Transport{TLSClientConfig: bd.tlsConfig}
-		client = &http.Client{Transport: tr}
+		return &http.Client{Transport: tr, Timeout: 5 * time.Second}
 	}
-	return client
+	return &http.Client{Timeout: 5 * time.Second}
 }
 
 func (bd *BrokerDetails) doManagementRequest(method, urn string) ([]map[string]interface{}, error) {
@@ -1779,7 +1777,7 @@ func (prov *amqp091provider) SourceStats(ctx context.Context, source *pb.Source)
 }
 
 func sleepRandomReconnect() {
-	util.SleepRandom(500, provider.ReconnectDelay)
+	util.SleepRandom(100, provider.ReconnectDelay)
 }
 
 // connectionWatcher Called at the end of BrokerDetails.connect(), we monitor the bd.ErrorChannel and try to reconnect
@@ -1789,17 +1787,33 @@ func (bd *BrokerDetails) connectionWatcher() {
 		select {
 		case <-bd.shutdownChan:
 			return
-		case err, ok := <-bd.ErrorChannel:
+		case <-bd.ErrorChannel:
+			// Any receive on ErrorChannel means the AMQP connection has been
+			// closed.  The relay goroutine in NotifyClose only ever sends here
+			// when it receives from the underlying amqpErrors channel, which
+			// fires when the connection is torn down (either an AMQP close
+			// frame or a TCP-level close/RST).  Unconditionally reconnecting
+			// avoids a race where IsClosed() is still false at the time of
+			// the check even though the connection is genuinely gone.
 			bd.Lock()
-			if !ok || (err != (amqp091Error{}) && err.Code() != 0) {
-				bd.state = provider.DISCONNECTED
-				sleepRandomReconnect()
-				bd.Unlock()
-				// Ignore this error because we will reconnect in 30 seconds
-				bd.connect() //nolint:errcheck
-				continue
-			}
+			bd.state = provider.DISCONNECTED
 			bd.Unlock()
+			// Retry until we reconnect or the client explicitly disconnects.
+			// Without this loop, a single failed connect() would leave the
+			// watcher waiting for the 30-second fallback timer before trying
+			// again (because ErrorChannel is drained and no relay goroutine
+			// will send another notification until a new connection is made).
+			for !bd.clientDisconnect {
+				sleepRandomReconnect()
+				if ok, _ := bd.connect(); ok {
+					break
+				}
+				// connect() failed; reset state so the next attempt can proceed.
+				bd.Lock()
+				bd.state = provider.DISCONNECTED
+				bd.Unlock()
+			}
+			continue
 		case <-time.After(30 * time.Second):
 			// if we never get an error on the bd.ErrorChannel, try again after 30 seconds
 			// this is to help deal with race condition where we're not listening on the bd.ErrorChannel
@@ -1908,15 +1922,16 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	}
 
 	bd.Connection = conn
-	bd.ErrorChannel = make(chan amqp091Error)
+	bd.ErrorChannel = make(chan amqp091Error, 1)
 	bd.ErrorChannel = bd.Connection.NotifyClose(bd.ErrorChannel) // this looks unneeded but it aids in unit testing
 	bd.state = provider.CONNECTED
 
 	util.Logger.Info(i18n.ClientConnected, bd.ClientIdentifier)
 
 	// pre-load the list of exchanges to help prevent declaration
-	// errors (PSGO-2001)
-	bd.loadExchanges()
+	// errors (PSGO-2001); done in the background so it does not delay
+	// reconnection from the caller's perspective.
+	go bd.loadExchanges()
 
 	return true, nil
 }

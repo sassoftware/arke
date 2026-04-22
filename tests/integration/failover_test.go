@@ -157,12 +157,35 @@ func (m *rabbitManagementClient) waitForConnections(minCount int, timeout time.D
 				return names, nil
 			}
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 	if lastErr != nil {
 		return nil, fmt.Errorf("timed out waiting for %d connection(s) after %s (management API %s – last error: %w) – check that ARKE_BROKER_HOSTNAME/ARKE_BROKER_ADMIN_PORT/ARKE_BROKER_USERNAME/ARKE_BROKER_PASSWORD are set correctly", minCount, timeout, m.baseURL, lastErr)
 	}
 	return nil, fmt.Errorf("timed out waiting for %d connection(s) after %s (last observed count: %d, management API %s) – the broker may not be connected or may be using a different vhost", minCount, timeout, lastCount, m.baseURL)
+}
+
+// waitForNoConnections polls until there are zero active connections or the deadline is reached.
+func (m *rabbitManagementClient) waitForNoConnections(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	var lastCount int
+	for time.Now().Before(deadline) {
+		names, err := m.listConnectionNames()
+		if err != nil {
+			lastErr = err
+		} else {
+			lastCount = len(names)
+			if len(names) == 0 {
+				return nil
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return fmt.Errorf("timed out waiting for 0 connections after %s (management API %s – last error: %w)", timeout, m.baseURL, lastErr)
+	}
+	return fmt.Errorf("timed out waiting for 0 connections after %s (last observed count: %d, management API %s)", timeout, lastCount, m.baseURL)
 }
 
 // ---------------------------------------------------------------------------
@@ -270,29 +293,43 @@ func TestConnectionWatcher_ReconnectsAfterBrokerClosesConnection(t *testing.T) {
 
 	// --- Step 3: forcefully close all broker connections -------------
 	t.Log("closing all RabbitMQ connections via management API")
+	closeStart := time.Now()
 	require.NoError(t, mgmt.closeAllConnections(), "management API must be reachable to run failover tests")
+	t.Logf("closeAllConnections returned after %s", time.Since(closeStart).Round(time.Millisecond))
 
-	// --- Step 4: wait for connectionWatcher to reconnect -------------
-	// connectionWatcher detects the non-zero error on ErrorChannel, sleeps
-	// a random backoff (500 ms – ReconnectDelay), then calls bd.connect().
-	// We allow up to 30 s.
-	t.Log("waiting for arke to reconnect (up to 30 s)...")
-	connsAfterReconnect, err := mgmt.waitForConnections(1, 30*time.Second)
-	require.NoError(t, err,
-		"arke should re-establish a connection to RabbitMQ within 30 s of the broker closing it")
-	t.Logf("arke reconnected; active connections: %v", connsAfterReconnect)
-
-	// --- Step 5: verify publish works on the recovered session -------
+	// --- Step 4: poll publish until arke has reconnected ------------
+	// Polling publishOne directly avoids any RabbitMQ stats-collection lag.
+	// The management API only reflects a new connection after its internal
+	// collection cycle (collect_statistics_interval), which can add 0.5-3 s
+	// of artificial delay even though arke itself reconnects in < 1 s.
+	//
+	// connectionWatcher wakes on bd.ErrorChannel unconditionally (any receive
+	// means the connection is gone), sleeps 100-500 ms (ReconnectDelay=500),
+	// then does a TCP+AMQP handshake (~10 ms on a local broker).
+	// Worst case reconnect latency: ~700 ms.  We allow 10 s for safety.
+	t.Log("polling publish to detect reconnect (up to 10 s)...")
+	reconnectStart := time.Now()
 	var publishErr error
-	for attempt := 1; attempt <= 5; attempt++ {
+	for time.Now().Before(reconnectStart.Add(10 * time.Second)) {
 		publishErr = session.publishOne(address)
 		if publishErr == nil {
 			break
 		}
-		t.Logf("publish attempt %d failed: %v – retrying", attempt, publishErr)
-		time.Sleep(2 * time.Second)
+		t.Logf("publish not yet recovered: %v – retrying in 200 ms", publishErr)
+		time.Sleep(200 * time.Millisecond)
 	}
-	assert.NoError(t, publishErr, "publish should succeed after arke reconnects to the broker")
+	t.Logf("reconnect detected after %s", time.Since(reconnectStart).Round(time.Millisecond))
+	require.NoError(t, publishErr,
+		"arke should re-establish a connection to RabbitMQ within 10 s of the broker closing it")
+
+	// --- Step 5: confirm a new AMQP connection is visible in RabbitMQ -
+	// This is a secondary check to verify connectionWatcher created a real
+	// new AMQP connection (not just that local publish state was satisfied).
+	// The management API may lag by up to collect_statistics_interval (500 ms),
+	// so we give it a generous window; it does not need to be fast.
+	connsAfterReconnect, err := mgmt.waitForConnections(1, 10*time.Second)
+	require.NoError(t, err, "management API should show a new RabbitMQ connection after reconnect")
+	t.Logf("active connections after reconnect: %v", connsAfterReconnect)
 }
 
 // TestConnectionWatcher_PublishRecovery verifies that after the broker
@@ -340,6 +377,104 @@ func TestConnectionWatcher_PublishRecovery(t *testing.T) {
 		time.Sleep(2 * time.Second)
 	}
 	assert.NoError(t, lastErr, "publish should recover within 30 s after broker-initiated disconnect")
+}
+
+// TestPublishStream_RecoveryDelay measures how long a streaming Publish RPC
+// takes to recover after the broker forcefully closes the connection.
+//
+// Unlike PublishOne (a stateless unary call retried by the caller), the
+// streaming Publish RPC keeps a single long-lived gRPC stream open.  When
+// the broker drops, the server-side Publish handler propagates the error to
+// the client on the stream, then calls WaitForConnect which polls until
+// connectionWatcher has re-established the AMQP connection.  Once reconnected
+// the outer Publish loop restarts and the same gRPC stream resumes — the
+// client never needs to re-open the stream.
+//
+// Sequence after closeAllConnections:
+//  1. connectionWatcher wakes (ErrorChannel notification), sleeps 100-500 ms,
+//     calls connect() → state=CONNECTED.
+//  2. prov.Publish (server-side) returns the broker error.
+//  3. Server outer loop is blocked at "errChan <- err" until the client sends
+//     the next message, which unblocks the server goroutine.
+//  4. Server goroutine sends an error response to the client and exits.
+//  5. Server calls WaitForConnect — which may return immediately if step 1
+//     already completed, or polls until it does.
+//  6. Server resumes the stream loop; client's next message succeeds.
+//
+// The test keeps sending every 200 ms so each stage unblocks promptly.
+// Total worst-case latency: reconnect backoff (500 ms) + WaitForConnect poll
+// (500 ms) ≈ 1 s.  We allow 15 s for safety.
+func TestPublishStream_RecoveryDelay(t *testing.T) {
+	mgmt := newRabbitManagementClient()
+
+	subjects := []string{"sas.test.failover.PSRD"}
+	address := &pb.Address{Name: "amq.topic", Subjects: subjects, Type: pb.Address_TOPIC}
+	msg := &pb.Message{Body: []byte("failover-stream-test"), Address: address}
+
+	// --- Step 1: open a persistent Publish stream --------------------
+	conn := connect()
+	defer conn.Close()
+	pc := pb.NewProducerClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	defer pc.Disconnect(ctx, &pb.Empty{})
+
+	connConfig := connectConfig(t.Name())
+	authResp, err := pc.Connect(ctx, connConfig)
+	require.NoError(t, err)
+	require.True(t, authResp.GetSuccess(), "arke broker Connect must succeed: %s", authResp.GetError().GetMessage())
+
+	stream, err := pc.Publish(ctx)
+	require.NoError(t, err, "Publish stream must open")
+	defer stream.CloseSend()
+
+	// sendAndRecv performs one Send/Recv round-trip on the stream.
+	sendAndRecv := func() error {
+		if sendErr := stream.Send(msg); sendErr != nil {
+			return fmt.Errorf("stream.Send: %w", sendErr)
+		}
+		r, recvErr := stream.Recv()
+		if recvErr != nil {
+			return fmt.Errorf("stream.Recv: %w", recvErr)
+		}
+		if !r.GetSuccess() {
+			return fmt.Errorf("broker error: %s", r.GetError().GetMessage())
+		}
+		return nil
+	}
+
+	// --- Step 2: warm-up ---------------------------------------------
+	require.NoError(t, sendAndRecv(), "baseline publish on stream must succeed")
+
+	// --- Step 3: drop all broker connections -------------------------
+	_, err = mgmt.waitForConnections(1, 10*time.Second)
+	require.NoError(t, err, "must see at least one connection before disruption")
+
+	t.Log("closing all RabbitMQ connections")
+	require.NoError(t, mgmt.closeAllConnections())
+
+	// --- Step 4: measure time to first successful publish on stream --
+	// Each sendAndRecv polls the stream.  The first call after the drop
+	// returns an error response: the server propagates the broker error and
+	// the client's send simultaneously unblocks the server goroutine that
+	// was waiting on errChan.  Subsequent calls buffer in gRPC while the
+	// server is inside WaitForConnect; as soon as WaitForConnect returns the
+	// server drains the buffer and responds with Success.
+	//
+	// We poll every 200 ms so each stage unblocks within one poll interval.
+	recoveryStart := time.Now()
+	var lastErr error
+	for time.Now().Before(recoveryStart.Add(15 * time.Second)) {
+		lastErr = sendAndRecv()
+		if lastErr == nil {
+			break
+		}
+		t.Logf("stream not yet recovered: %v – retrying in 200 ms", lastErr)
+		time.Sleep(200 * time.Millisecond)
+	}
+	elapsed := time.Since(recoveryStart).Round(time.Millisecond)
+	t.Logf("stream publish recovered after %s", elapsed)
+	require.NoError(t, lastErr, "streaming Publish should recover within 15 s of broker disconnect")
 }
 
 // TestConnectionWatcher_SubscribeErrorOnDisconnect verifies that an active

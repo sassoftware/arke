@@ -18,5 +18,5 @@ const (
 	// CONNECTTIMEOUT Default timeout for waiting for connection in WaitForConnect()
 	CONNECTTIMEOUT = 15
 	// ReconnectDelay Maximum time to wait before a if we failed to connect
-	ReconnectDelay = 2000
+	ReconnectDelay = 500
 )
