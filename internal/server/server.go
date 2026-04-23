@@ -27,7 +27,7 @@ import (
 
 const (
 	EnvMaxConnectRetries = "MAX_RECONNECT_RETRIES"
-	EnvMaxConnectDelay   = "MAX_RECONNECT_RETRIES"
+	EnvMaxConnectDelay   = "MAX_RECONNECT_DELAY"
 )
 
 var GetClientAddr = util.GetClientAddr
