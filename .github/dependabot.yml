@@ -16,10 +16,9 @@ updates:
           - minor
           - patch
     ignore:
-      - dependency-name: github.com/rabbitmq/rabbitmq-stream-go-client
-        versions:
-          - "1.7.0"
-          - "1.7.1"
+      - dependency-name: k8s.io/client-go
+      - dependency-name: k8s.io/apimachinery
+      - dependency-name: k8s.io/api
   - package-ecosystem: gomod
     directory: "/api"
     schedule:
@@ -38,11 +37,6 @@ updates:
         update-types:
           - minor
           - patch
-    ignore:
-      - dependency-name: github.com/rabbitmq/rabbitmq-stream-go-client
-        versions:
-          - "1.7.0"
-          - "1.7.1"
   - package-ecosystem: gomod
     directory: "/tools/anarkey"
     schedule:
