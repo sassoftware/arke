@@ -190,7 +190,7 @@ func stockMessageConfirm(orig streamMessage) message.StreamMessage {
 func stockStreamConsumerContext() stream.ConsumerContext {
 	con := &stream.Consumer{}
 	setFieldValue(con, "currentOffset", int64(5))
-	newMux := new(sync.Mutex)
+	newMux := new(sync.RWMutex)
 	setFieldValue(con, "mutex", newMux)
 	return stream.ConsumerContext{Consumer: con}
 }
