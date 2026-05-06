@@ -960,8 +960,11 @@ func (prov *amqp091provider) declareBinding(source *pb.Source, bd *BrokerDetails
 		}
 	}
 
-	removed := bd.cleanupBindings(source, subjects)
-	util.Logger.Tracef("removed %d bindings from %s", len(removed), source.GetName())
+	// Streams manage their own topology; skip AMQP binding reconciliation.
+	if source.GetAddress().GetType() != pb.Address_STREAM {
+		removed := bd.cleanupBindings(source, subjects)
+		util.Logger.Tracef("removed %d bindings from %s", len(removed), source.GetName())
+	}
 
 	bd.knownBindings.Add(knownBindingKey, true)
 	return nil
