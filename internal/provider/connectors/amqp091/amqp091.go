@@ -960,11 +960,8 @@ func (prov *amqp091provider) declareBinding(source *pb.Source, bd *BrokerDetails
 		}
 	}
 
-	// Streams manage their own topology; skip AMQP binding reconciliation.
-	if source.GetAddress().GetType() != pb.Address_STREAM {
-		removed := bd.cleanupBindings(source, subjects)
-		util.Logger.Tracef("removed %d bindings from %s", len(removed), source.GetName())
-	}
+	removed := bd.cleanupBindings(source, subjects)
+	util.Logger.Tracef("removed %d bindings from %s", len(removed), source.GetName())
 
 	bd.knownBindings.Add(knownBindingKey, true)
 	return nil
@@ -1226,9 +1223,29 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 		ttl = val
 	}
 
+	amqpChannel, err := bd.Connection.NewChannel(false)
+	if err != nil {
+		return &pb.Error{Message: err.Error()}
+	}
+	defer amqpChannel.Close()
+
+	if source.GetAddress().GetType() != pb.Address_STREAM {
+		err := prov.declareExchange(source.GetAddress(), bd)
+		if err != nil {
+			util.Logger.Debugf("Failed to declare exchange for source %s: %v", source.GetName(), err)
+		}
+	}
+
 	dErr := bd.StreamConnection.DeclareStream(source.GetName(), ttl)
 	if dErr != nil {
 		return &pb.Error{IsFatal: true, Message: fmt.Sprintf("failed to declare stream: %s", dErr.Error())}
+	}
+
+	if source.GetAddress().GetType() != pb.Address_STREAM {
+		err := prov.declareBinding(source, bd, true)
+		if err != nil {
+			util.Logger.Debugf("Failed to declare binding for source %s: %s", source.GetName(), err.Error())
+		}
 	}
 
 	if source.GetDeclareOnly() {
