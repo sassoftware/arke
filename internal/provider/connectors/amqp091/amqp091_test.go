@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -2818,4 +2819,214 @@ func TestCopyHeaderToTimestamp(t *testing.T) {
 	addTimeStampHeader(msg.Headers)
 	// Assert that the new header is set
 	assert.Equal(t, msg.Headers[rabbitReceivedTimeHeaderName], msg.Headers[timeStampInMSHeaderName])
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for commit 92c8502 unit tests
+// ---------------------------------------------------------------------------
+
+// notifyCapturingConnMock wraps amqpConnectionMock and records every channel
+// argument passed to NotifyClose so tests can verify its capacity.
+// The other methods (Connect, Close, IsClosed, NewChannel) are promoted from
+// amqpConnectionMock and continue to use testify expectations.
+type notifyCapturingConnMock struct {
+	amqpConnectionMock
+	mu       sync.Mutex
+	captures []chan amqp091Error
+}
+
+func (m *notifyCapturingConnMock) NotifyClose(ch chan amqp091Error) chan amqp091Error {
+	m.mu.Lock()
+	m.captures = append(m.captures, ch)
+	m.mu.Unlock()
+	return ch // return the same channel so the provider uses the one we inspect
+}
+
+// notifyCapturingChanMock wraps amqpChannelMock and records every channel
+// argument passed to NotifyClose.  notified is closed on the first call,
+// allowing tests to synchronise on the moment Publish enters its select loop.
+type notifyCapturingChanMock struct {
+	amqpChannelMock
+	mu       sync.Mutex
+	captures []chan amqp091Error
+	notified chan struct{}
+}
+
+func newNotifyCapturingChanMock() *notifyCapturingChanMock {
+	return &notifyCapturingChanMock{notified: make(chan struct{})}
+}
+
+func (m *notifyCapturingChanMock) NotifyClose(ch chan amqp091Error) chan amqp091Error {
+	m.mu.Lock()
+	m.captures = append(m.captures, ch)
+	m.mu.Unlock()
+	select {
+	case <-m.notified: // already closed
+	default:
+		close(m.notified)
+	}
+	return ch
+}
+
+// ---------------------------------------------------------------------------
+// commit 92c8502 unit tests
+// ---------------------------------------------------------------------------
+
+// Test_Publish_ContextCancellation_ExitsPromptly verifies the ctx.Done() case
+// added to the amqp091 Publish select loop in commit 92c8502.
+//
+// The test calls prov.Publish directly (bypassing the gRPC server goroutine)
+// with a messageChannel that is never closed.  Without the ctx.Done() branch
+// there is no exit path once the context is cancelled: the select cannot
+// receive from messageChannel (empty), connErrChan, or cancelChan (both idle
+// mocks), so Publish blocks indefinitely.  With the fix, ctx.Done() fires
+// immediately and Publish returns nil.
+func Test_Publish_ContextCancellation_ExitsPromptly(t *testing.T) {
+	prov := NewAMQP091Provider()
+
+	oldGetClientIdentifier := GetClientIdentifier
+	GetClientIdentifier = func(context.Context) (string, error) {
+		return "test-ctx-cancel-92c8502", nil
+	}
+	defer func() { GetClientIdentifier = oldGetClientIdentifier }()
+
+	chanMock := &amqpChannelMock{}
+	// Buffered so the deferred send in prov.Publish can drain without blocking.
+	chanErrChan := make(chan amqp091Error, 1)
+	chanMock.On("NotifyClose").Return(chanErrChan)
+	chanMock.On("Close").Return(nil)
+
+	connMock := &amqpConnectionMock{}
+	connMock.On("Connect").Return(nil)
+	connMock.On("IsClosed").Return(false)
+	// Buffered so the deferred send in prov.Publish can drain without blocking.
+	connErrChan := make(chan amqp091Error, 1)
+	connMock.On("NotifyClose").Return(connErrChan)
+	connMock.On("NewChannel", false).Return(chanMock, nil)
+
+	oldNewAmqpConn091 := NewAmqpConn091
+	NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
+		return connMock
+	}
+	defer func() { NewAmqpConn091 = oldNewAmqpConn091 }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cc := &pb.ConnectionConfiguration{}
+	assert.Nil(t, prov.Connect(ctx, cc, false))
+
+	// messageChannel is never closed and never has messages.  The only exit
+	// from the Publish select loop is ctx.Done() (post-fix) or an AMQP error
+	// notification.  Neither connErrChan nor chanErrChan will fire here.
+	messageChannel := make(chan *pb.Message)
+	errChan := make(chan *pb.Error, 1)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		prov.Publish(ctx, messageChannel, errChan)
+	}()
+
+	// Give Publish time to enter the select loop before cancelling.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// Publish exited promptly after context cancellation.
+	case <-time.After(2 * time.Second):
+		t.Fatal("prov.Publish did not exit within 2 s after context cancellation; " +
+			"the ctx.Done() case in the Publish select loop may be missing (commit 92c8502)")
+	}
+}
+
+// Test_Publish_NotifyCloseChannelsAreBuffered verifies that the channels
+// passed to NotifyClose inside the amqp091 Publish function have capacity >= 1
+// (commit 92c8502).
+//
+// The AMQP library (amqp091-go) documents: "It is recommended that callers of
+// NotifyClose use a buffered channel.  The library will drop sends to full or
+// closed channels."  A capacity-0 (unbuffered) channel means a close
+// notification can be silently dropped if the Publish goroutine is not
+// blocking in the select at the exact moment the broker closes the connection.
+//
+// This test captures the channel arguments via a custom mock and asserts
+// cap >= 1.  It fails on the pre-fix code (make(chan amqp091Error), cap=0)
+// and passes on the post-fix code (make(chan amqp091Error, 1), cap=1).
+func Test_Publish_NotifyCloseChannelsAreBuffered(t *testing.T) {
+	prov := NewAMQP091Provider()
+
+	oldGetClientIdentifier := GetClientIdentifier
+	GetClientIdentifier = func(context.Context) (string, error) {
+		return "test-buffered-notify-92c8502", nil
+	}
+	defer func() { GetClientIdentifier = oldGetClientIdentifier }()
+
+	chanCapture := newNotifyCapturingChanMock()
+	chanCapture.On("Close").Return(nil)
+
+	connCapture := &notifyCapturingConnMock{}
+	connCapture.On("Connect").Return(nil)
+	connCapture.On("IsClosed").Return(false)
+	connCapture.On("NewChannel", false).Return(chanCapture, nil)
+
+	oldNewAmqpConn091 := NewAmqpConn091
+	NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
+		return connCapture
+	}
+	defer func() { NewAmqpConn091 = oldNewAmqpConn091 }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cc := &pb.ConnectionConfiguration{}
+	assert.Nil(t, prov.Connect(ctx, cc, false))
+
+	messageChannel := make(chan *pb.Message)
+	errChan := make(chan *pb.Error, 1)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		prov.Publish(ctx, messageChannel, errChan)
+	}()
+
+	// Wait until prov.Publish has called amqpChannel.NotifyClose, which is the
+	// last NotifyClose call before the select loop starts.  At this point both
+	// connection and channel NotifyClose have been called by prov.Publish.
+	select {
+	case <-chanCapture.notified:
+	case <-time.After(2 * time.Second):
+		t.Fatal("prov.Publish did not call amqpChannel.NotifyClose within 2 s")
+	}
+
+	// Close messageChannel to exit Publish via the nil-message path.  This
+	// works regardless of whether ctx.Done() is present in the select loop,
+	// keeping this test focused solely on channel capacity.
+	close(messageChannel)
+	<-done
+
+	chanCapture.mu.Lock()
+	chanCaps := append([]chan amqp091Error(nil), chanCapture.captures...)
+	chanCapture.mu.Unlock()
+
+	connCapture.mu.Lock()
+	connCaps := append([]chan amqp091Error(nil), connCapture.captures...)
+	connCapture.mu.Unlock()
+
+	// amqpChannel.NotifyClose is called exactly once by Publish (for cancelChan).
+	if assert.Len(t, chanCaps, 1, "Publish should call amqpChannel.NotifyClose exactly once") {
+		assert.GreaterOrEqual(t, cap(chanCaps[0]), 1,
+			"cancelChan passed to amqpChannel.NotifyClose must have capacity >= 1 "+
+				"(AMQP library drops notifications on full or unbuffered channels; commit 92c8502)")
+	}
+
+	// bd.Connection.NotifyClose is called once by bd.connect() (unbuffered, always)
+	// and once by prov.Publish (must be buffered after the fix).
+	if assert.GreaterOrEqual(t, len(connCaps), 2,
+		"bd.Connection.NotifyClose should be called at least twice: once during connect, once during Publish") {
+		lastCap := connCaps[len(connCaps)-1]
+		assert.GreaterOrEqual(t, cap(lastCap), 1,
+			"connErrChan passed to bd.Connection.NotifyClose in Publish must have capacity >= 1 "+
+				"(AMQP library drops notifications on full or unbuffered channels; commit 92c8502)")
+	}
 }
