@@ -24,6 +24,7 @@ env:
   ARTIFACT_DIR: ./artifacts
   LINT_DIR: ./.github/linters
   COV_DIR: ./artifacts/cov
+  BETTERLEAKS_VERSION: 1.1.2
 
 jobs:
   lint-other-files:
@@ -70,8 +71,21 @@ jobs:
         id: betterleaks
         if: always()
         run: |-
-          go install github.com/betterleaks/betterleaks@latest
-          betterleaks git --config ./.github/linters/betterleaks-config.toml -v
+          outfile="$(pwd)/betterleaks"
+          arch=$(uname -m)
+          if [[ "$arch" == "x86_64" ]]; then
+            arch="x64"
+          elif [[ "$arch" == "aarch64" ]]; then
+            arch="arm64"
+          else
+            echo "Unsupported architecture: $arch"
+            exit 1
+          fi
+          os=$(uname -s | tr '[:upper:]' '[:lower:]')
+          url="https://github.com/betterleaks/betterleaks/releases/download/v${{ env.BETTERLEAKS_VERSION }}/betterleaks_${{ env.BETTERLEAKS_VERSION }}_${os}_${arch}.tar.gz"
+          echo "Downloading betterleaks from $url"
+          curl -sSL "$url" |  tar zxf - > "$outfile"
+          "$outfile" git --config ./.github/linters/betterleaks-config.toml -v
 
   go-lint:
     runs-on: ubuntu-latest
