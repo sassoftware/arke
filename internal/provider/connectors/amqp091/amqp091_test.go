@@ -2868,12 +2868,7 @@ func (m *notifyCapturingChanMock) NotifyClose(ch chan amqp091Error) chan amqp091
 	return ch
 }
 
-// ---------------------------------------------------------------------------
-// commit 92c8502 unit tests
-// ---------------------------------------------------------------------------
-
-// Test_Publish_ContextCancellation_ExitsPromptly verifies the ctx.Done() case
-// added to the amqp091 Publish select loop in commit 92c8502.
+// Test_Publish_ContextCancellation_ExitsPromptly verifies the ctx.Done()
 //
 // The test calls prov.Publish directly (bypassing the gRPC server goroutine)
 // with a messageChannel that is never closed.  Without the ctx.Done() branch
@@ -2942,7 +2937,6 @@ func Test_Publish_ContextCancellation_ExitsPromptly(t *testing.T) {
 
 // Test_Publish_NotifyCloseChannelsAreBuffered verifies that the channels
 // passed to NotifyClose inside the amqp091 Publish function have capacity >= 1
-// (commit 92c8502).
 //
 // The AMQP library (amqp091-go) documents: "It is recommended that callers of
 // NotifyClose use a buffered channel.  The library will drop sends to full or
@@ -2958,7 +2952,7 @@ func Test_Publish_NotifyCloseChannelsAreBuffered(t *testing.T) {
 
 	oldGetClientIdentifier := GetClientIdentifier
 	GetClientIdentifier = func(context.Context) (string, error) {
-		return "test-buffered-notify-92c8502", nil
+		return "test-buffered", nil
 	}
 	defer func() { GetClientIdentifier = oldGetClientIdentifier }()
 
@@ -3017,7 +3011,7 @@ func Test_Publish_NotifyCloseChannelsAreBuffered(t *testing.T) {
 	if assert.Len(t, chanCaps, 1, "Publish should call amqpChannel.NotifyClose exactly once") {
 		assert.GreaterOrEqual(t, cap(chanCaps[0]), 1,
 			"cancelChan passed to amqpChannel.NotifyClose must have capacity >= 1 "+
-				"(AMQP library drops notifications on full or unbuffered channels; commit 92c8502)")
+				"(AMQP library drops notifications on full or unbuffered channels;)")
 	}
 
 	// bd.Connection.NotifyClose is called once by bd.connect() (unbuffered, always)
@@ -3027,6 +3021,6 @@ func Test_Publish_NotifyCloseChannelsAreBuffered(t *testing.T) {
 		lastCap := connCaps[len(connCaps)-1]
 		assert.GreaterOrEqual(t, cap(lastCap), 1,
 			"connErrChan passed to bd.Connection.NotifyClose in Publish must have capacity >= 1 "+
-				"(AMQP library drops notifications on full or unbuffered channels; commit 92c8502)")
+				"(AMQP library drops notifications on full or unbuffered channels;)")
 	}
 }
