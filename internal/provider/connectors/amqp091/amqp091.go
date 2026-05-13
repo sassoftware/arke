@@ -1029,9 +1029,9 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 
 	util.Logger.Info(i18n.ClientSubscribe, bd.ClientIdentifier, source.GetName())
 
-	connErrChan := make(chan amqp091Error)
+	connErrChan := make(chan amqp091Error, 1)
 	connErrChan = bd.Connection.NotifyClose(connErrChan)
-	cancelChan := make(chan amqp091Error)
+	cancelChan := make(chan amqp091Error, 1)
 	cancelChan = amqpChannel.NotifyClose(cancelChan)
 
 	defer func() {
@@ -1338,9 +1338,9 @@ func (prov *amqp091provider) Publish(ctx context.Context, messageChannel <-chan 
 	}
 	defer amqpChannel.Close()
 
-	connErrChan := make(chan amqp091Error)
+	connErrChan := make(chan amqp091Error, 1)
 	connErrChan = bd.Connection.NotifyClose(connErrChan)
-	cancelChan := make(chan amqp091Error)
+	cancelChan := make(chan amqp091Error, 1)
 	cancelChan = amqpChannel.NotifyClose(cancelChan)
 
 	defer func() {
@@ -1357,6 +1357,8 @@ func (prov *amqp091provider) Publish(ctx context.Context, messageChannel <-chan 
 
 	for {
 		select {
+		case <-ctx.Done():
+			return nil
 		case cancelErr, ok := <-cancelChan:
 			if !ok {
 				util.Logger.Debugf("Channel to broker closed during publish %v", bd.ClientIdentifier)
