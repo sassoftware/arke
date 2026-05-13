@@ -3022,13 +3022,115 @@ func Test_Publish_NotifyCloseChannelsAreBuffered(t *testing.T) {
 				"(AMQP library drops notifications on full or unbuffered channels;)")
 	}
 
-	// bd.Connection.NotifyClose is called once by bd.connect() (unbuffered, always)
-	// and once by prov.Publish (must be buffered after the fix).
+	// bd.Connection.NotifyClose is called once by bd.connect() and once by
+	// prov.Publish.  We only assert capacity on the Publish-created channel
+	// (the last capture); the bd.connect() channel is verified independently.
 	if assert.GreaterOrEqual(t, len(connCaps), 2,
 		"bd.Connection.NotifyClose should be called at least twice: once during connect, once during Publish") {
 		lastCap := connCaps[len(connCaps)-1]
 		assert.GreaterOrEqual(t, cap(lastCap), 1,
 			"connErrChan passed to bd.Connection.NotifyClose in Publish must have capacity >= 1 "+
+				"(AMQP library drops notifications on full or unbuffered channels;)")
+	}
+}
+
+// Test_QueueSubscribe_NotifyCloseChannelsAreBuffered mirrors
+// Test_Publish_NotifyCloseChannelsAreBuffered for the queueSubscribe path.
+// The same fix (commit 92c8502) changes the NotifyClose channels inside
+// queueSubscribe from unbuffered to capacity-1.  This test captures the
+// channel arguments via the same custom mocks used by the Publish test and
+// asserts cap >= 1, so a future regression that re-introduces an unbuffered
+// channel here will be caught immediately.
+func Test_QueueSubscribe_NotifyCloseChannelsAreBuffered(t *testing.T) {
+	prov := NewAMQP091Provider()
+
+	oldGetClientIdentifier := GetClientIdentifier
+	GetClientIdentifier = func(context.Context) (string, error) {
+		return "test-subscribe-buffered", nil
+	}
+	defer func() { GetClientIdentifier = oldGetClientIdentifier }()
+
+	chanCapture := newNotifyCapturingChanMock()
+	chanCapture.On("Close").Return(nil)
+	chanCapture.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	chanCapture.On("QueueDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	chanCapture.On("QueueBind", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	msgs := make(chan amqp091Message)
+	chanCapture.On("Consume", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(msgs, nil)
+
+	connCapture := &notifyCapturingConnMock{}
+	connCapture.On("Connect").Return(nil)
+	connCapture.On("IsClosed").Return(false)
+	connCapture.On("NewChannel", false).Return(chanCapture, nil)
+
+	oldNewAmqpConn091 := NewAmqpConn091
+	NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
+		return connCapture
+	}
+	defer func() { NewAmqpConn091 = oldNewAmqpConn091 }()
+
+	msrv := mockManagementRequestServer()
+	defer msrv.Close()
+	u, serr := url.Parse(msrv.URL)
+	assert.Nil(t, serr)
+
+	cc := &pb.ConnectionConfiguration{}
+	cc.Tenant = testTenant
+	cc.Host = u.Hostname()
+	port, _ := strconv.Atoi(u.Port())
+	cc.AdminPort = int32(port) //nolint:gosec
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	assert.Nil(t, prov.Connect(ctx, cc, false))
+
+	src := &pb.Source{
+		Name:    "queue",
+		Address: &pb.Address{Name: "address", Subjects: []string{"#"}},
+	}
+	mc := make(chan *pb.Message)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		prov.Subscribe(ctx, src, mc)
+	}()
+
+	// Wait until queueSubscribe has called amqpChannel.NotifyClose, which is
+	// the last NotifyClose call before the select loop starts.
+	select {
+	case <-chanCapture.notified:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queueSubscribe did not call amqpChannel.NotifyClose within 2 s")
+	}
+
+	// Closing the messages channel exits queueSubscribe via the !ok branch
+	// (independent of ctx.Done()), keeping this test focused on cap().
+	close(msgs)
+	<-done
+
+	chanCapture.mu.Lock()
+	chanCaps := append([]chan amqp091Error(nil), chanCapture.captures...)
+	chanCapture.mu.Unlock()
+
+	connCapture.mu.Lock()
+	connCaps := append([]chan amqp091Error(nil), connCapture.captures...)
+	connCapture.mu.Unlock()
+
+	// amqpChannel.NotifyClose is called exactly once by queueSubscribe.
+	if assert.Len(t, chanCaps, 1, "queueSubscribe should call amqpChannel.NotifyClose exactly once") {
+		assert.GreaterOrEqual(t, cap(chanCaps[0]), 1,
+			"cancelChan passed to amqpChannel.NotifyClose must have capacity >= 1 "+
+				"(AMQP library drops notifications on full or unbuffered channels;)")
+	}
+
+	// bd.Connection.NotifyClose is called once by bd.connect() and once by
+	// queueSubscribe.  Assert capacity on the Subscribe-created channel.
+	if assert.GreaterOrEqual(t, len(connCaps), 2,
+		"bd.Connection.NotifyClose should be called at least twice: once during connect, once during Subscribe") {
+		lastCap := connCaps[len(connCaps)-1]
+		assert.GreaterOrEqual(t, cap(lastCap), 1,
+			"connErrChan passed to bd.Connection.NotifyClose in queueSubscribe must have capacity >= 1 "+
 				"(AMQP library drops notifications on full or unbuffered channels;)")
 	}
 }
