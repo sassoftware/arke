@@ -2894,9 +2894,17 @@ func Test_Publish_ContextCancellation_ExitsPromptly(t *testing.T) {
 	connMock := &amqpConnectionMock{}
 	connMock.On("Connect").Return(nil)
 	connMock.On("IsClosed").Return(false)
-	// Buffered so the deferred send in prov.Publish can drain without blocking.
+	// Return distinct channels for the two NotifyClose calls: one for
+	// bd.connect() (which becomes bd.ErrorChannel watched by the
+	// connectionWatcher goroutine) and a separate buffered one for prov.Publish
+	// (which receives the deferred "Publish done" send).  Aliasing both onto a
+	// single channel causes Publish's defer to wake the watcher, which then
+	// races with the test's deferred NewAmqpConn091 restore as it calls
+	// bd.connect() again.  In production these are independent channels too.
+	watcherChan := make(chan amqp091Error, 1)
 	connErrChan := make(chan amqp091Error, 1)
-	connMock.On("NotifyClose").Return(connErrChan)
+	connMock.On("NotifyClose").Return(watcherChan).Once()
+	connMock.On("NotifyClose").Return(connErrChan).Once()
 	connMock.On("NewChannel", false).Return(chanMock, nil)
 
 	oldNewAmqpConn091 := NewAmqpConn091
