@@ -24,6 +24,7 @@ import (
 )
 
 var initResourcesOnce sync.Once
+var tracingResource *sdkresource.Resource
 var tracingEnabled bool
 
 const (
@@ -61,9 +62,8 @@ func getTelemetryEnabled() bool {
 }
 
 func initResource() *sdkresource.Resource {
-	var resource *sdkresource.Resource
 	initResourcesOnce.Do(func() {
-		resource, _ = sdkresource.New(
+		tracingResource, _ = sdkresource.New(
 			context.Background(),
 			sdkresource.WithTelemetrySDK(),
 			sdkresource.WithOS(),
@@ -76,7 +76,7 @@ func initResource() *sdkresource.Resource {
 			),
 		)
 	})
-	return resource
+	return tracingResource
 }
 
 func Enabled() bool {

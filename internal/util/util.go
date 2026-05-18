@@ -97,6 +97,10 @@ func NewTimestampPB() *timestamppb.Timestamp {
 }
 
 func SleepRandom(sleepMin int, sleepMax int) {
+	if sleepMax <= sleepMin {
+		time.Sleep(time.Duration(sleepMin) * time.Millisecond)
+		return
+	}
 	rn := rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec
 
 	splay := time.Duration(rn.Intn(sleepMax-sleepMin)+sleepMin) * time.Millisecond

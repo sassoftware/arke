@@ -57,5 +57,7 @@ func (cm *ConcurrentMap) GetList() []string {
 
 // Length Return the length of the map
 func (cm *ConcurrentMap) Length() int {
+	cm.RLock()
+	defer cm.RUnlock()
 	return len(cm.items)
 }
