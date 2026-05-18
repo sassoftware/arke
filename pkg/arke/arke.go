@@ -252,7 +252,7 @@ func (a Arke) listener() (net.Listener, error) {
 
 	tlsCfg, err := a.tlsConfig()
 	if err != nil {
-		lis.Close() //nolint:errcheck
+		lis.Close()
 		return nil, err
 	}
 	if tlsCfg != nil {
