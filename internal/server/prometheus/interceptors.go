@@ -127,9 +127,6 @@ func StreamInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamS
 	labelset.AddLabel("method", fullMethod)
 	status := "ok"
 
-	// increment this before we call the long running handler
-	prometheus.Stats.Sink.IncrCounterWithLabels(metrics.RequestTotalCounter, 1, labelset.Labels)
-
 	start := time.Now()
 
 	err := handler(srv, newWrappedStream(ss, fullMethod))
