@@ -251,7 +251,11 @@ func (a Arke) listener() (net.Listener, error) {
 	}
 
 	tlsCfg, err := a.tlsConfig()
-	if tlsCfg != nil && err == nil {
+	if err != nil {
+		lis.Close() //nolint:errcheck
+		return nil, err
+	}
+	if tlsCfg != nil {
 		lis = tls.NewListener(lis, tlsCfg)
 	}
 
@@ -288,9 +292,15 @@ func (a *Arke) Serve(ctx context.Context) error {
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
+	defer signal.Stop(c)
 	go func() {
-		for range c {
-			a.server.Stop()
+		for {
+			select {
+			case <-c:
+				a.server.Stop()
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
@@ -338,7 +348,7 @@ func (a *Arke) Serve(ctx context.Context) error {
 	if a.ratelimiter != nil {
 		go a.ratelimiter.StartClientCull(ctx)
 	}
-	serveErrChan := make(chan error)
+	serveErrChan := make(chan error, 1)
 	go func(as *Arke) {
 		if err := as.mux.Serve(); err != nil {
 			switch err.(type) { //nolint:gocritic
@@ -347,6 +357,7 @@ func (a *Arke) Serve(ctx context.Context) error {
 				return
 			}
 			serveErrChan <- err
+			return
 		}
 		serveErrChan <- nil
 	}(a)
