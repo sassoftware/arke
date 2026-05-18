@@ -126,6 +126,23 @@ func Test_GetConfig(t *testing.T) {
 	assert.Equal(t, "foo", strVal)
 }
 
+func Test_SleepRandom(t *testing.T) {
+	// Normal range: should sleep at least sleepMin ms.
+	start := time.Now()
+	SleepRandom(5, 15)
+	assert.GreaterOrEqual(t, time.Since(start), 5*time.Millisecond)
+
+	// sleepMax == sleepMin: previously panicked in rand.Intn(0); now sleeps sleepMin.
+	start = time.Now()
+	SleepRandom(10, 10)
+	assert.GreaterOrEqual(t, time.Since(start), 10*time.Millisecond)
+
+	// sleepMax < sleepMin: previously panicked in rand.Intn(<0); now sleeps sleepMin.
+	start = time.Now()
+	SleepRandom(10, 5)
+	assert.GreaterOrEqual(t, time.Since(start), 10*time.Millisecond)
+}
+
 func TestServceNameFromClientAddr(t *testing.T) {
 	tests := []struct {
 		name       string

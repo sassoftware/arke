@@ -4,6 +4,8 @@
 package util
 
 import (
+	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -57,4 +59,36 @@ func TestConcurrentMapGetList(t *testing.T) {
 	cMap.Add("testItem", testItem)
 	cMap.Add("testItem2", testItem)
 	assert.Len(t, cMap.GetList(), 2)
+}
+
+// TestConcurrentMap_LengthIsRaceFree exercises Length() concurrently with
+// Add/Delete under -race. Without the read-lock in Length(), the race detector
+// flags the unsynchronized len(cm.items) read against the locked writes.
+func TestConcurrentMap_LengthIsRaceFree(t *testing.T) {
+	cMap := NewConcurrentMap()
+	const workers = 8
+	const iters = 500
+
+	var wg sync.WaitGroup
+	wg.Add(workers * 2)
+
+	for w := 0; w < workers; w++ {
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				key := strconv.Itoa(id*iters + i)
+				cMap.Add(key, i)
+				cMap.Delete(key)
+			}
+		}(w)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				_ = cMap.Length()
+			}
+		}()
+	}
+
+	wg.Wait()
+	assert.Equal(t, 0, cMap.Length())
 }

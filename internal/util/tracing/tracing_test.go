@@ -67,6 +67,18 @@ func Test_getTelemetryCollectorAddress_set(t *testing.T) {
 	assert.Equal(t, "localhost:12345", addr)
 }
 
+// Test_initResource_returnsSamePointer guards against a regression where
+// initResource declared the *sdkresource.Resource locally; the sync.Once body
+// would only run on the first call, leaving subsequent calls to return a
+// freshly-declared nil. With the package-level tracingResource, every call
+// must return the same non-nil pointer.
+func Test_initResource_returnsSamePointer(t *testing.T) {
+	r1 := initResource()
+	r2 := initResource()
+	assert.NotNil(t, r1)
+	assert.Same(t, r1, r2)
+}
+
 func Test_SpanFromHeaders(t *testing.T) {
 	os.Setenv(EnvOtelSdkDisabled, "false")
 	defer os.Setenv(EnvOtelSdkDisabled, "true")
