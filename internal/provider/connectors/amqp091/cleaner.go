@@ -5,6 +5,7 @@ package amqp091
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/sassoftware/arke/internal/provider"
@@ -32,9 +33,10 @@ func connectionCleaner(ctx context.Context) {
 			for _, connID := range prov.connections.GetList() {
 				if conn, ok := prov.connections.Get(connID); ok {
 					bd := conn.(*BrokerDetails)
-					util.Logger.Tracef("Client %v has %d open streams", connID, bd.ActiveStreams)
+					activeStreams := atomic.LoadInt64(&bd.ActiveStreams)
+					util.Logger.Tracef("Client %v has %d open streams", connID, activeStreams)
 					lastKnown := time.Since(bd.lastPubSubEvent)
-					if bd.ActiveStreams < 1 && lastKnown > cleanInterval {
+					if activeStreams < 1 && lastKnown > cleanInterval {
 						util.Logger.Debugf("Client %v has had no streams open for %v. Assuming dead. Disconnecting.", connID, lastKnown)
 						prov.disconnectClientByIdentifier(connID)
 					}

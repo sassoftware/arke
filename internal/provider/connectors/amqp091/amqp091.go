@@ -1306,7 +1306,14 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 		atomic.AddInt64(&bd.consumed, 1)
 	}
 
-	consumer, _ := bd.StreamConnection.NewConsumer(source.GetName(), consumerName, offset, handleMessages, source.GetSingleActiveConsumer())
+	consumer, consErr := bd.StreamConnection.NewConsumer(source.GetName(), consumerName, offset, handleMessages, source.GetSingleActiveConsumer())
+	if consErr != nil || consumer == nil {
+		msg := "failed to create stream consumer"
+		if consErr != nil {
+			msg = consErr.Error()
+		}
+		return &pb.Error{Message: msg}
+	}
 	bd.incrementStreamCount()
 	defer bd.decrementStreamCount()
 	<-ctx.Done()
@@ -1993,9 +2000,9 @@ func (prov *amqp091provider) Stats() *provider.Stats {
 		conn := connRaw.(*BrokerDetails)
 		clientStat.ID = conn.ClientIdentifier
 		clientStat.ActiveMessages = conn.activeMessages.Length()
-		clientStat.Streams = int(conn.ActiveStreams)
-		clientStat.Produced = int(conn.produced)
-		clientStat.Consumed = int(conn.consumed)
+		clientStat.Streams = int(atomic.LoadInt64(&conn.ActiveStreams))
+		clientStat.Produced = int(atomic.LoadInt64(&conn.produced))
+		clientStat.Consumed = int(atomic.LoadInt64(&conn.consumed))
 		stats.Clients = append(stats.Clients, clientStat)
 	}
 	return stats
