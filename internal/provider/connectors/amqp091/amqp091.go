@@ -354,18 +354,18 @@ func (prov *amqp091provider) Retry(ctx context.Context, origSource *pb.Source, m
 				return nil
 			}(bd)
 
-			_ = prov.declareExchange(retrySource.GetAddress(), bd, amqpChannel)
+			_ = prov.declareExchange(retrySource.GetAddress(), bd)
 
 			retrySpan.AddEvent("retry address created")
 
-			declareErr := prov.declareQueue(retrySource, bd, amqpChannel, false)
+			declareErr := prov.declareQueue(retrySource, bd, false)
 			if declareErr != nil {
 				util.Logger.Debugf("Failed to declare retry queue [%s]", retrySource.GetName())
 			}
 
 			retrySpan.AddEvent("retry queue created")
 
-			declareErr = prov.declareBinding(retrySource, bd, amqpChannel, false)
+			declareErr = prov.declareBinding(retrySource, bd, false)
 			if declareErr != nil {
 				util.Logger.Debugf("Failed to bind retry queue [%s] to exchange [%s]", retrySource.GetName(), retrySource.GetAddress().GetName())
 			}
@@ -524,12 +524,6 @@ func (prov *amqp091provider) setupDeadLetter(ctx context.Context, origSource *pb
 		return &pb.Error{Message: err.Error()}
 	}
 
-	amqpChannel, err := bd.Connection.NewChannel(false)
-	if err != nil {
-		return &pb.Error{Message: err.Error()}
-	}
-	defer amqpChannel.Close()
-
 	// setup exchange/queue/binding
 	subjects := make([]string, 0)
 	sourceName := fmt.Sprintf("%s.dlq", strings.Replace(origSource.GetName(), ".quorum", "", 1))
@@ -550,11 +544,11 @@ func (prov *amqp091provider) setupDeadLetter(ctx context.Context, origSource *pb
 		},
 	}
 
-	_ = prov.declareExchange(source.GetAddress(), bd, amqpChannel)
+	_ = prov.declareExchange(source.GetAddress(), bd)
 
-	_ = prov.declareQueue(source, bd, amqpChannel, true)
+	_ = prov.declareQueue(source, bd, true)
 
-	err = prov.declareBinding(source, bd, amqpChannel, true)
+	err = prov.declareBinding(source, bd, true)
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
@@ -625,10 +619,15 @@ func (bd *BrokerDetails) decrementStreamCount() {
 	bd.updateLastPubSubEvent()
 }
 
-func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDetails, amqpChannel amqp091ChannelShim) error {
+func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDetails) error {
 	// don't try to declare an exchange with amq. in the name
 	if strings.Contains(address.GetName(), "amq.") {
 		return nil
+	}
+
+	amqpChannel, err := bd.Connection.StandbyChannel()
+	if err != nil {
+		return err
 	}
 
 	known := bd.exchangeKnown(address.GetName())
@@ -653,7 +652,7 @@ func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDeta
 	if parent := address.GetParentAddress(); parent != nil {
 		known = bd.exchangeKnown(parent.GetName())
 		if !known {
-			err := prov.declareExchange(parent, bd, amqpChannel)
+			err := prov.declareExchange(parent, bd)
 			if err != nil {
 				util.Logger.Warn(i18n.ExchangeDeclareError, err.Error())
 			}
@@ -686,10 +685,15 @@ func isQuorum(source *pb.Source) bool {
 	return source.GetType() == pb.Source_QUEUE
 }
 
-func (prov *amqp091provider) declareQueue(source *pb.Source, bd *BrokerDetails, amqpChannel amqp091ChannelShim, force bool) error {
+func (prov *amqp091provider) declareQueue(source *pb.Source, bd *BrokerDetails, force bool) error {
 	known := bd.queueKnown(source.GetName())
 	if known && !force {
 		return nil
+	}
+
+	amqpChannel, err := bd.Connection.StandbyChannel()
+	if err != nil {
+		return err
 	}
 
 	args := make(amqp091Table)
@@ -886,7 +890,7 @@ func (bd *BrokerDetails) cleanupBindings(source *pb.Source, subjects []string) [
 	return removed
 }
 
-func (prov *amqp091provider) declareBinding(source *pb.Source, bd *BrokerDetails, amqpChannel amqp091ChannelShim, force bool) error { //nolint:gocognit,unparam
+func (prov *amqp091provider) declareBinding(source *pb.Source, bd *BrokerDetails, force bool) error { //nolint:gocognit
 	knownBindingKey := fmt.Sprintf("%s:%s", source.GetName(), strings.Join(source.Address.GetSubjects(), ":"))
 	known := bd.bindingKnown(knownBindingKey)
 	if known && !force {
@@ -928,6 +932,11 @@ func (prov *amqp091provider) declareBinding(source *pb.Source, bd *BrokerDetails
 		// If subjects aren't included in the address, fake an empty one so
 		// we ensure we bind unless we have no Filters
 		subjects = append(subjects, "")
+	}
+
+	amqpChannel, err := bd.Connection.StandbyChannel()
+	if err != nil {
+		return err
 	}
 
 	for _, subject := range subjects {
@@ -997,18 +1006,18 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 	}
 	defer amqpChannel.Close()
 
-	_ = prov.declareExchange(source.GetAddress(), bd, amqpChannel)
+	_ = prov.declareExchange(source.GetAddress(), bd)
 
 	subSpan.AddEvent("address created")
 
-	err = prov.declareQueue(source, bd, amqpChannel, true)
+	err = prov.declareQueue(source, bd, true)
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
 
 	subSpan.AddEvent("queue created")
 
-	err = prov.declareBinding(source, bd, amqpChannel, true)
+	err = prov.declareBinding(source, bd, true)
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
@@ -1534,7 +1543,7 @@ func (prov *amqp091provider) prepareAndSend(ctx context.Context, msg *pb.Message
 		deliveryMode = 2
 	}
 
-	_ = prov.declareExchange(msg.GetAddress(), bd, amqpChannel)
+	_ = prov.declareExchange(msg.GetAddress(), bd)
 	span.AddEvent("address created")
 
 	amqpMessage := amqp091Message{}
