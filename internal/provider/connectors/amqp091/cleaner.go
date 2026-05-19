@@ -35,7 +35,7 @@ func connectionCleaner(ctx context.Context) {
 					bd := conn.(*BrokerDetails)
 					activeStreams := atomic.LoadInt64(&bd.ActiveStreams)
 					util.Logger.Tracef("Client %v has %d open streams", connID, activeStreams)
-					lastKnown := time.Since(bd.lastPubSubEvent)
+					lastKnown := time.Since(time.Unix(0, atomic.LoadInt64(&bd.lastPubSubEvent)))
 					if activeStreams < 1 && lastKnown > cleanInterval {
 						util.Logger.Debugf("Client %v has had no streams open for %v. Assuming dead. Disconnecting.", connID, lastKnown)
 						prov.disconnectClientByIdentifier(connID)

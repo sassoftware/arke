@@ -107,7 +107,7 @@ type BrokerDetails struct {
 	consumed         int64
 	produced         int64
 	clientDisconnect atomic.Bool
-	lastPubSubEvent  time.Time
+	lastPubSubEvent  int64
 	tlsConfig        *tls.Config
 	tlsEnabled       bool
 	shutdownChan     chan bool
@@ -467,7 +467,7 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 		produced:         0,
 		consumed:         0,
 		ActiveStreams:    0,
-		lastPubSubEvent:  time.Now(),
+		lastPubSubEvent:  time.Now().UnixNano(),
 		shutdownChan:     make(chan bool, 1),
 		pubChannelCtx:    pubChCtx,
 		pubChannelCancel: pubChCancel,
@@ -617,7 +617,7 @@ func (bd *BrokerDetails) bindingKnown(name string) bool {
 }
 
 func (bd *BrokerDetails) updateLastPubSubEvent() {
-	bd.lastPubSubEvent = time.Now()
+	atomic.StoreInt64(&bd.lastPubSubEvent, time.Now().UnixNano())
 }
 
 func (bd *BrokerDetails) incrementStreamCount() {

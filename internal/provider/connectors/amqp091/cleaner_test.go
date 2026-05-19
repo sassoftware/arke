@@ -48,7 +48,7 @@ func TestConnectionCleaner_CleansInactiveConnections(t *testing.T) {
 	prov := provy.(*amqp091provider)
 	prov.connections.Add("test-conn", &BrokerDetails{
 		ClientIdentifier: "test-conn",
-		lastPubSubEvent:  time.Now().Add(-3 * time.Second), // Simulate inactivity
+		lastPubSubEvent:  time.Now().Add(-3 * time.Second).UnixNano(), // Simulate inactivity
 		shutdownChan:     shutdownChan,
 		pubChannelCancel: cancel,
 	})
