@@ -52,6 +52,7 @@ type amqp091Connection struct {
 	channelLock           sync.Mutex
 	// should not be used for publishing and subscribing. only use for declaring exchanges/bindings/queue
 	standbyChannel *amqp091Channel
+	standbyLock    sync.Mutex
 }
 
 // amqp091Channel A channel
@@ -92,7 +93,6 @@ func (ac *amqp091Connection) Connect() error {
 		return err
 	}
 	ac.connection = conn
-	_, _ = ac.StandbyChannel() // initialize the standby channel
 	return nil
 }
 
@@ -162,6 +162,8 @@ func (ac *amqp091Connection) IsClosed() bool {
 }
 
 func (ac *amqp091Connection) StandbyChannel() (amqp091ChannelShim, error) {
+	ac.standbyLock.Lock()
+	defer ac.standbyLock.Unlock()
 	// ensure the channel exists and is connected
 	if ac.standbyChannel == nil {
 		ch, err := ac.NewChannel(false)
