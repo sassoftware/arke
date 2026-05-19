@@ -7,7 +7,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/google/uuid v1.6.0
 	github.com/sassoftware/arke/api v1.13.0
-	google.golang.org/grpc v1.81.0
+	google.golang.org/grpc v1.81.1
 )
 
 require (
