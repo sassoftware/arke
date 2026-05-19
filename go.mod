@@ -9,7 +9,7 @@ require (
 	github.com/hashicorp/go-metrics v0.5.4
 	github.com/prometheus/client_golang v1.23.2
 	github.com/rabbitmq/amqp091-go v1.11.0
-	github.com/rabbitmq/rabbitmq-stream-go-client v1.8.0
+	github.com/rabbitmq/rabbitmq-stream-go-client v1.8.1
 	github.com/rs/zerolog v1.35.1
 	github.com/sassoftware/arke/api v1.13.0
 	github.com/soheilhy/cmux v0.1.5
@@ -21,7 +21,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.43.0
 	golang.org/x/text v0.37.0
 	golang.org/x/time v0.15.0
-	google.golang.org/grpc v1.81.0
+	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.11
 	k8s.io/api v0.35.4
 	k8s.io/apimachinery v0.35.4
@@ -47,7 +47,7 @@ require (
 	github.com/hashicorp/golang-lru v0.5.4 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.18.5 // indirect
+	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
