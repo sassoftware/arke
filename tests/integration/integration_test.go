@@ -3608,3 +3608,89 @@ func TestStreamHeaderReceivedTimeEqualsTimestampInMs(t *testing.T) {
 	assert.True(t, ok2, "header 'timestamp_in_ms' not found")
 	assert.Equal(t, receivedTime, timestampInMs, "header values do not match")
 }
+
+func TestMismatchedExchangeParams(t *testing.T) {
+	// PSEVT-73 / PSEVT-78: When a second producer declares an already-existing
+	// exchange with different parameters, RabbitMQ returns a 406 PRECONDITION_FAILED.
+	// Arke should ignore that error and allow publishing to continue
+	//
+	//  1. Consumer subscribes to a exchange declared with autoDelete=false
+	//  2. Producer 1 publishes successfully (parameters match, no conflict).
+	//  3. Producer 2 uses a new connection and declares the same exchange but
+	//     with autoDelete=true, which triggers the 406
+	//  4. Publishing must still succeed and the consumer must still receive the
+	//     message.
+
+	const exchangeName = "sas.test.mismatch"
+	const routingKey = "sas.test.mismatch.key"
+	const consumerName = "sas.test.mismatch.Consumer"
+
+	// Consumer setup
+	consumerConn := connect()
+	defer consumerConn.Close()
+
+	address := &pb.Address{
+		Name:     exchangeName,
+		Subjects: []string{routingKey},
+		Type:     pb.Address_TOPIC,
+		// AutoDelete defaults to false
+	}
+	source := &pb.Source{Name: consumerName, Address: address, PrefetchCount: 5}
+
+	messages := make(chan *pb.Message, 10)
+	done := make(chan bool, 1)
+	clientConnected := make(chan bool, 1)
+
+	c := pb.NewConsumerClient(consumerConn)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	go consumeMessages(consumerConn, c, ctx, messages, done, clientConnected, source, defaultHandler, t)
+	<-clientConnected
+
+	// Producer 1: declare exchange with matching AutoDelete=false and publish a
+	// message
+	prod1Conn := connect()
+	defer prod1Conn.Close()
+	pc1 := pb.NewProducerClient(prod1Conn)
+	pctx := context.Background()
+	defer pc1.Disconnect(pctx, &pb.Empty{})
+
+	msg1 := &pb.Message{Body: []byte("producer1"), Address: address}
+	err := mf.ProduceMessagesUnary(pctx, pc1, 1, msg1, false, t.Name()+".producer1")
+	assert.Nil(t, err, "producer 1 publish should succeed: %v", err)
+
+	// Producer 2: use a new connection and publish with the same exchange but
+	// declared as autoDelete=True to trigger a 406. Publishing should continue
+	prod2Conn := connect()
+	defer prod2Conn.Close()
+	pc2 := pb.NewProducerClient(prod2Conn)
+	defer pc2.Disconnect(pctx, &pb.Empty{})
+
+	mismatchedAddress := &pb.Address{
+		Name:       exchangeName,
+		Subjects:   []string{routingKey},
+		Type:       pb.Address_TOPIC,
+		AutoDelete: true, // conflicts with the already-declared exchange
+	}
+	msg2 := &pb.Message{Body: []byte("producer2"), Address: mismatchedAddress}
+	err = mf.ProduceMessagesUnary(pctx, pc2, 3, msg2, false, t.Name()+".producer2")
+	assert.Nil(t, err, "producer 2 publish must succeed despite 406 on exchange redeclaration: %v", err)
+
+	// Expect 4 total messages: 1 from producer 1 + 3 from producer 2.
+	expectedMsgCount := 4
+	msgCount := 0
+outer:
+	for start := time.Now(); time.Since(start) < 5*time.Second; {
+		select {
+		case <-messages:
+			msgCount++
+		case <-done:
+			break outer
+		case <-time.After(1 * time.Second):
+			break outer
+		}
+	}
+
+	assert.Equal(t, expectedMsgCount, msgCount, "all messages must be received after a mismatched exchange redeclaration")
+}
