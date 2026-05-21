@@ -180,9 +180,13 @@ func consumeMessages(conn *grpc.ClientConn, c pb.ConsumerClient, ctx context.Con
 	stream.SendMsg(m)
 	defer stream.CloseSend()
 
-	if _, ok := os.LookupEnv("ARKE_BROKER_TYPE"); ok {
-		time.Sleep(500 * time.Millisecond)
-	}
+	// Wait for the broker to finish setting up the consumer/subscription before
+	// signaling that the client is ready.  Without this delay there is a race on
+	// first run: stream-based tests require the broker to *create* the stream as
+	// well as register the consumer, which can take longer than the round-trip of
+	// stream.SendMsg alone.  The original guard (os.LookupEnv("ARKE_BROKER_TYPE"))
+	// only applied the sleep in some environments, leaving local runs vulnerable.
+	time.Sleep(500 * time.Millisecond)
 
 	clientConnected <- true
 
@@ -692,7 +696,7 @@ func TestProduceTwoStreamConsumeTwo(t *testing.T) {
 	done2 := make(chan bool)
 	clientConnected2 := make(chan bool)
 	address2 := &pb.Address{Name: "sas.test.stream.TPTSCT2", Subjects: subjects, Type: pb.Address_STREAM}
-	source2 := &pb.Source{Name: "sas.test.stream.TPTSCT2", Address: address, PrefetchCount: 1,
+	source2 := &pb.Source{Name: "sas.test.stream.TPTSCT2", Address: address2, PrefetchCount: 1,
 		Type: pb.Source_STREAM, Options: options}
 	c2 := pb.NewConsumerClient(consumerConnection)
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
@@ -1158,7 +1162,7 @@ func TestProduceSingleConsumeNack(t *testing.T) {
 
 	msgCount := 0
 
-	breakLoop := true
+	breakLoop := false
 	for start := time.Now(); time.Since(start) < 5*time.Second; {
 		select {
 		case <-messages:
@@ -1177,18 +1181,19 @@ func TestProduceSingleConsumeNack(t *testing.T) {
 
 func TestGetPublishRate(t *testing.T) {
 
-	// in order to generate a publish rate, the publishes must be spread out over sample intervals
-	// which by default is 5s.
-	//
+	// To generate a measurable publish rate, messages must be spread out over
+	// time so that every RabbitMQ stats-collection window contains traffic.
+	// The test environment uses collect_statistics_interval=500ms (rabbitmq.conf),
+	// so publishing must be continuous -- not bursty -- to produce a stable rate.
 
-	// how far apart are the samples we request from broker
-	sampleInterval := 5
-	// how many samples to get
-	intervals := 3 // 15s
+	// target publish rate = msgsPerInterval / sampleInterval (msgs/s)
+	sampleInterval := 5  // seconds per interval
+	// number of intervals to publish
+	intervals := 3 // 25 s total when combined with the two warm-up intervals below
 
 	msgsPerInterval := 100
 
-	t.Logf("Note that this test will take about %d seconds to run due to the sample intervals configured", sampleInterval*intervals)
+	t.Logf("Note that this test will take about %d seconds to run due to the sample intervals configured", (intervals+2)*sampleInterval)
 	// consumer setup
 	messages := make(chan *pb.Message)
 	done := make(chan bool)
@@ -1229,7 +1234,13 @@ func TestGetPublishRate(t *testing.T) {
 	stream, err := pc.Publish(ctx)
 	assert.Nil(t, err, "should not get an error creating publish stream: %v", err)
 
-	sleepDuration := time.Duration(sampleInterval) * time.Second
+	// Spread messages evenly over sampleInterval seconds so that every RabbitMQ
+	// stats-collection window (500 ms per rabbitmq.conf) always contains messages,
+	// producing a stable ~20 msg/s reading in the management API.  Bursty
+	// publishing (fast batch then 5 s silence) kept the "active" window to ~300 ms
+	// -- shorter than one stats tick -- so the 1-second poll loop always landed in
+	// a silent window and saw rate=0.
+	msgInterval := time.Duration(sampleInterval) * time.Second / time.Duration(msgsPerInterval)
 
 	for i := range intervals + 2 {
 		t.Logf("Interval %d", i)
@@ -1242,22 +1253,42 @@ func TestGetPublishRate(t *testing.T) {
 			assert.NotNil(t, r, "msg %d: should have received a message response from stream", m)
 			assert.True(t, r.GetSuccess(), "msg %d: message response should indicate success: %v", m, r.GetError().GetMessage())
 			totalMsgsPublished++
+			// Throttle to target rate; per-message pacing also eliminates the
+			// need for a separate inter-interval sleep.
+			time.Sleep(msgInterval)
 		}
-		time.Sleep(sleepDuration)
+		// No inter-interval sleep: per-message pacing maintains the target rate
+		// continuously across interval boundaries.
 	}
 
-	stats, err := c.SourceStats(ctx, source)
-	assert.Nil(t, err, "should not get an error from source stats: %+v", err)
-	assert.NotNil(t, stats, "should have gotten source stats back")
-	t.Logf("Source stats: %+v", stats)
+	// With rate-throttled continuous publishing, the management-API stats window
+	// should show a non-zero rate immediately after publishing ends.  Poll briefly
+	// (well under one sampleInterval) to handle the rare case where our query
+	// lands exactly on a stats-collection boundary.
+	estimatedPublishRate := msgsPerInterval / sampleInterval
+	allowableVariance := 0.2 * float64(estimatedPublishRate)
+	var stats *pb.SourceStats
+	pollDeadline := time.Now().Add(time.Duration(sampleInterval) * time.Second)
+	for {
+		var statsErr error
+		stats, statsErr = c.SourceStats(ctx, source)
+		assert.Nil(t, statsErr, "should not get an error from source stats: %+v", statsErr)
+		assert.NotNil(t, stats, "should have gotten source stats back")
+		t.Logf("Source stats: %+v", stats)
+		if stats.GetPublishRate() > 0 && stats.GetDeliverRate() > 0 {
+			break
+		}
+		if time.Now().After(pollDeadline) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond) // shorter than the 500 ms stats window
+	}
 
 	assert.Greater(t, stats.GetPublishRate(), float32(0), "publish rate should be greater than 0")
 	assert.Greater(t, stats.GetDeliverRate(), float32(0), "deliver rate should be greater than 0")
 
 	// estimated publish rate should be about msgsPerInterval/sampleInterval, but allow for
 	// some variance
-	estimatedPublishRate := msgsPerInterval / sampleInterval
-	allowableVariance := 0.2 * float64(estimatedPublishRate)
 	assert.InDelta(t, estimatedPublishRate, float64(stats.GetPublishRate()), allowableVariance, "publish rate should be within expected range")
 	assert.InDelta(t, estimatedPublishRate, float64(stats.GetDeliverRate()), allowableVariance, "deliver rate should be within expected range")
 }
@@ -3163,11 +3194,12 @@ func TestConsumeSourceStats(t *testing.T) {
 		clientConnected := make(chan bool)
 
 		consumerConnection := connect()
+		defer consumerConnection.Close()
 		c := pb.NewConsumerClient(consumerConnection)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
+		// NOTE: do NOT defer cancel() here — we call it explicitly below so the
+		// goroutine exits before we query SourceStats.
 		defer c.Disconnect(ctx, &pb.Empty{})
-		defer consumerConnection.Close()
 
 		address := &pb.Address{Name: dot.name, Type: dot.addressType}
 		source := &pb.Source{SingleActiveConsumer: true, Name: dot.name, Address: address, PrefetchCount: 5, Type: dot.sourceType, Options: map[string]string{"Offset": "first", "ConsumerGroup": "MyGroupName"}}
@@ -3191,7 +3223,47 @@ func TestConsumeSourceStats(t *testing.T) {
 			}
 		}
 
-		stats, ssErr := c.SourceStats(ctx, source)
+		// Cancel the consumer context so the consumeMessages goroutine's
+		// stream.Recv() returns an error promptly and its deferred
+		// c.Disconnect() removes the consumer from the broker. Without this the
+		// goroutine keeps running for up to 30 s, so RabbitMQ still reports
+		// consumer_count=1 when we call SourceStats below.
+		cancel()
+		select {
+		case <-done:
+			// goroutine has exited; its deferred c.Disconnect() has run
+		case <-time.After(10 * time.Second):
+			t.Log("timed out waiting for consumer goroutine to exit")
+		}
+
+		// The consumer's broker session was removed by the deferred Disconnect
+		// above, so we need a fresh connection to query SourceStats.
+		statsConn := connect()
+		defer statsConn.Close()
+		statsC := pb.NewConsumerClient(statsConn)
+		statsCtx, statsCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer statsCancel()
+		defer statsC.Disconnect(statsCtx, &pb.Empty{})
+		statsConnResp, statsConnErr := statsC.Connect(statsCtx, connectConfig(t.Name()))
+		assert.Nil(t, statsConnErr)
+		assert.True(t, statsConnResp.GetSuccess())
+
+		// Poll until the consumer count settles: the RabbitMQ management API can
+		// lag briefly behind the actual connection state.
+		var stats *pb.SourceStats
+		var ssErr error
+		ccPollDeadline := time.Now().Add(5 * time.Second)
+		for {
+			stats, ssErr = statsC.SourceStats(statsCtx, source)
+			if ssErr == nil && stats.ConsumerCount == dot.expectedConsumerCount {
+				break
+			}
+			if time.Now().After(ccPollDeadline) {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
 		assert.Nil(t, ssErr)
 		assert.NotNil(t, stats)
 		assert.Equal(t, dot.expectedConsumerCount, stats.ConsumerCount)
@@ -3233,16 +3305,40 @@ func TestConsumeSourceStats(t *testing.T) {
 			assert.Nil(t, err)
 
 			consumerConnection := connect()
+			defer consumerConnection.Close()
 			connConfig := connectConfig(t.Name())
 			c := pb.NewConsumerClient(consumerConnection)
 			connResp, err := c.Connect(pctx, connConfig)
 			assert.Nil(t, err)
 			assert.NotNil(t, connResp)
 			assert.True(t, connResp.GetSuccess())
-			stats, ssErr := c.SourceStats(pctx, source)
+			defer c.Disconnect(pctx, &pb.Empty{})
+
+			// updateStatsForStream stores the fake consumer's offset asynchronously:
+			// NewConsumer() returns before the handleMessages callback has run, so
+			// GetLastOffset may return the stale value from the previous stats call
+			// (4) rather than the new tail (9). Poll until LastOffset > CurrentOffset,
+			// which confirms both that the new messages are reflected AND that the
+			// assertion logic is correct (stream tail ahead of consumer position).
+			var stats *pb.SourceStats
+			var ssErr error
+			pollDeadline := time.Now().Add(15 * time.Second)
+			for {
+				stats, ssErr = c.SourceStats(pctx, source)
+				if ssErr == nil && stats.GetLastOffset() > stats.GetCurrentOffset() {
+					break
+				}
+				if time.Now().After(pollDeadline) {
+					break
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
 			assert.Nil(t, ssErr)
 			assert.NotNil(t, stats)
-			assert.Greater(t, stats.GetCurrentOffset(), stats.GetLastOffset(), dot.name)
+			// LastOffset is the stream's tail; CurrentOffset is the consumer group's
+			// committed position. After publishing new messages, the stream has advanced
+			// past what the group consumed, so LastOffset must be greater.
+			assert.Greater(t, stats.GetLastOffset(), stats.GetCurrentOffset(), dot.name)
 		}
 	}
 }
@@ -3373,11 +3469,12 @@ func TestConsumeSourceStatsGroup(t *testing.T) {
 		clientConnected := make(chan bool)
 
 		consumerConnection := connect()
+		defer consumerConnection.Close()
 		c := pb.NewConsumerClient(consumerConnection)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
+		// NOTE: do NOT defer cancel() here — we call it explicitly below so the
+		// goroutine exits before we query SourceStatsGroup.
 		defer c.Disconnect(ctx, &pb.Empty{})
-		defer consumerConnection.Close()
 
 		address := &pb.Address{Name: dot.name, Type: dot.addressType}
 		source := &pb.Source{SingleActiveConsumer: true, Name: dot.name, Address: address, PrefetchCount: 5, Type: dot.sourceType, Options: map[string]string{"Offset": "first", "ConsumerGroup": "MyGroupName"}}
@@ -3403,7 +3500,56 @@ func TestConsumeSourceStatsGroup(t *testing.T) {
 			}
 		}
 
-		statsCollection, ssErr := c.SourceStatsGroup(ctx, sources)
+		// Cancel the consumer context so the consumeMessages goroutine's
+		// stream.Recv() returns an error promptly and its deferred
+		// c.Disconnect() removes the consumer from the broker. Without this the
+		// goroutine keeps running for up to 30 s, so RabbitMQ still reports
+		// consumer_count=1 when we call SourceStatsGroup below.
+		cancel()
+		select {
+		case <-done:
+			// goroutine has exited; its deferred c.Disconnect() has run
+		case <-time.After(10 * time.Second):
+			t.Log("timed out waiting for consumer goroutine to exit")
+		}
+
+		// The consumer's broker session was removed by the deferred Disconnect
+		// above, so we need a fresh connection to query SourceStatsGroup.
+		statsConn := connect()
+		defer statsConn.Close()
+		statsC := pb.NewConsumerClient(statsConn)
+		statsCtx, statsCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer statsCancel()
+		defer statsC.Disconnect(statsCtx, &pb.Empty{})
+		statsConnResp, statsConnErr := statsC.Connect(statsCtx, connectConfig(t.Name()))
+		assert.Nil(t, statsConnErr)
+		assert.True(t, statsConnResp.GetSuccess())
+
+		// Poll until all consumer counts settle: the RabbitMQ management API can
+		// lag briefly behind the actual connection state.
+		var statsCollection *pb.SourceStatsCollection
+		var ssErr error
+		ccPollDeadline := time.Now().Add(5 * time.Second)
+		for {
+			statsCollection, ssErr = statsC.SourceStatsGroup(statsCtx, sources)
+			allMatch := ssErr == nil
+			if allMatch {
+				for _, stats := range statsCollection.GetStats() {
+					if stats.ConsumerCount != dot.expectedConsumerCount {
+						allMatch = false
+						break
+					}
+				}
+			}
+			if allMatch {
+				break
+			}
+			if time.Now().After(ccPollDeadline) {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
 		assert.Nil(t, ssErr)
 		assert.NotNil(t, statsCollection)
 		for _, stats := range statsCollection.Stats {
@@ -3450,17 +3596,46 @@ func TestConsumeSourceStatsGroup(t *testing.T) {
 			assert.Nil(t, err)
 
 			consumerConnection := connect()
+			defer consumerConnection.Close()
 			connConfig := connectConfig(t.Name())
 			c := pb.NewConsumerClient(consumerConnection)
 			connResp, err := c.Connect(pctx, connConfig)
 			assert.Nil(t, err)
 			assert.NotNil(t, connResp)
 			assert.True(t, connResp.GetSuccess())
-			statsCollection, ssErr := c.SourceStatsGroup(pctx, sources)
+			defer c.Disconnect(pctx, &pb.Empty{})
+
+			// Same async-offset-store race as in TestConsumeSourceStats: poll
+			// until every entry in the collection shows LastOffset > CurrentOffset.
+			// The earlier per-index subtraction (- int64(i)) was a flawed attempt
+			// to compensate for this race; the correct fix is to wait for the
+			// stale offset to be refreshed by the fake consumer's callback.
+			var statsCollection *pb.SourceStatsCollection
+			var ssErr error
+			pollDeadline := time.Now().Add(15 * time.Second)
+			for {
+				statsCollection, ssErr = c.SourceStatsGroup(pctx, sources)
+				allGood := ssErr == nil
+				if allGood {
+					for _, stats := range statsCollection.GetStats() {
+						if stats.GetLastOffset() <= stats.GetCurrentOffset() {
+							allGood = false
+							break
+						}
+					}
+				}
+				if allGood {
+					break
+				}
+				if time.Now().After(pollDeadline) {
+					break
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
 			assert.Nil(t, ssErr)
 			assert.NotNil(t, statsCollection)
-			for i := 0; i < len(statsCollection.Stats); i++ {
-				assert.Greater(t, statsCollection.Stats[i].GetCurrentOffset(), statsCollection.Stats[i].GetLastOffset()-int64(i), dot.name)
+			for _, stats := range statsCollection.Stats {
+				assert.Greater(t, stats.GetLastOffset(), stats.GetCurrentOffset(), dot.name)
 			}
 		}
 	}
