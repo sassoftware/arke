@@ -175,10 +175,18 @@ func consumeMessages(conn *grpc.ClientConn, c pb.ConsumerClient, ctx context.Con
 		log.Panicf("could not subscribe: %v", err)
 	}
 
-	m := &pb.Consume{}
-	m.Msg = &pb.Consume_Src{Src: source}
-	stream.SendMsg(m)
-	defer stream.CloseSend()
+	// subscribeToSource sends the initial source-subscription message on a stream.
+	subscribeToSource := func(s pb.Consumer_ConsumeClient) {
+		m := &pb.Consume{}
+		m.Msg = &pb.Consume_Src{Src: source}
+		s.SendMsg(m)
+	}
+	subscribeToSource(stream)
+
+	// activeStream always points to the current open stream so the deferred
+	// CloseSend operates on whichever stream is live when the function returns.
+	activeStream := stream
+	defer func() { activeStream.CloseSend() }()
 
 	// Wait for the broker to finish setting up the consumer/subscription before
 	// signaling that the client is ready.  Without this delay there is a race on
@@ -198,9 +206,26 @@ func consumeMessages(conn *grpc.ClientConn, c pb.ConsumerClient, ctx context.Con
 		if recvErr != nil {
 			if recvErr == io.EOF {
 				log.Println("EOF")
-				break
+				// When the broker closes the stream after a nack+delay (retry
+				// scenario), the retried message will re-appear in the queue
+				// after the delay.  Reconnect so we can receive it, as long as
+				// the context is still live.
+				select {
+				case <-ctx.Done():
+					// context expired; truly done
+				default:
+					newStream, newErr := c.Consume(ctx)
+					if newErr == nil {
+						activeStream.CloseSend()
+						stream = newStream
+						activeStream = newStream
+						subscribeToSource(stream)
+						continue
+					}
+				}
+			} else {
+				log.Printf("Error receiving from stream: %v", recvErr)
 			}
-			log.Printf("Error receiving from stream: %v", recvErr)
 			break
 		}
 		if resp == nil {
@@ -208,7 +233,11 @@ func consumeMessages(conn *grpc.ClientConn, c pb.ConsumerClient, ctx context.Con
 		}
 		if resp.GetMsg() != nil {
 			wg.Add(1)
-			go func(stop *bool) {
+			// Capture the current stream so the goroutine always acks on the
+			// stream that delivered this particular message, even if stream is
+			// reassigned by a reconnect while the goroutine is in flight.
+			currentStream := stream
+			go func(stop *bool, s pb.Consumer_ConsumeClient) {
 				defer wg.Done()
 				if *stop {
 					return
@@ -239,7 +268,7 @@ func consumeMessages(conn *grpc.ClientConn, c pb.ConsumerClient, ctx context.Con
 					nack = false
 				}
 				ret := &pb.Consume{Msg: &pb.Consume_Ack{Ack: &pb.MessageConsumed{Nack: nack, RequeueDelay: int32(delay), Uuid: message.GetUuid()}}}
-				err = stream.Send(ret)
+				err = s.Send(ret)
 
 				if err != nil {
 					log.Println(err)
@@ -247,7 +276,7 @@ func consumeMessages(conn *grpc.ClientConn, c pb.ConsumerClient, ctx context.Con
 				}
 
 				messages <- message
-			}(&stop)
+			}(&stop, currentStream)
 		} else if resp.GetConsumedResponse() != nil {
 			assert.NotEmpty(t, resp.GetConsumedResponse().GetUuid())
 		}
@@ -1187,7 +1216,7 @@ func TestGetPublishRate(t *testing.T) {
 	// so publishing must be continuous -- not bursty -- to produce a stable rate.
 
 	// target publish rate = msgsPerInterval / sampleInterval (msgs/s)
-	sampleInterval := 5  // seconds per interval
+	sampleInterval := 5 // seconds per interval
 	// number of intervals to publish
 	intervals := 3 // 25 s total when combined with the two warm-up intervals below
 
@@ -1242,6 +1271,41 @@ func TestGetPublishRate(t *testing.T) {
 	// a silent window and saw rate=0.
 	msgInterval := time.Duration(sampleInterval) * time.Second / time.Duration(msgsPerInterval)
 
+	estimatedPublishRate := msgsPerInterval / sampleInterval
+	allowableVariance := 0.2 * float64(estimatedPublishRate)
+
+	// Poll for stats concurrently with publishing so that the captured reading
+	// reflects the in-flight rate.  Polling AFTER publishing stops causes the
+	// RabbitMQ rolling-average window to decay (e.g. 20 msg/s → 4 msg/s) before
+	// the first non-zero sample is returned, which causes a flaky assertion.
+	type statsResult struct {
+		stats *pb.SourceStats
+		err   error
+	}
+	statsCh := make(chan statsResult, 1)
+	go func() {
+		// Wait for the two warmup intervals before sampling so that the rate
+		// has had time to reach a steady state.
+		time.Sleep(time.Duration(2*sampleInterval) * time.Second)
+		pollDeadline := time.Now().Add(time.Duration(intervals*sampleInterval) * time.Second)
+		for time.Now().Before(pollDeadline) {
+			s, statsErr := c.SourceStats(ctx, source)
+			if statsErr != nil {
+				statsCh <- statsResult{nil, statsErr}
+				return
+			}
+			if s.GetPublishRate() > 0 && s.GetDeliverRate() > 0 {
+				statsCh <- statsResult{s, nil}
+				return
+			}
+			time.Sleep(500 * time.Millisecond) // align with RabbitMQ stats tick
+		}
+		// Timed out waiting for a non-zero reading during publishing; send
+		// whatever we have so the main goroutine can report the failure.
+		s, statsErr := c.SourceStats(ctx, source)
+		statsCh <- statsResult{s, statsErr}
+	}()
+
 	for i := range intervals + 2 {
 		t.Logf("Interval %d", i)
 		for m := range msgsPerInterval {
@@ -1261,28 +1325,12 @@ func TestGetPublishRate(t *testing.T) {
 		// continuously across interval boundaries.
 	}
 
-	// With rate-throttled continuous publishing, the management-API stats window
-	// should show a non-zero rate immediately after publishing ends.  Poll briefly
-	// (well under one sampleInterval) to handle the rare case where our query
-	// lands exactly on a stats-collection boundary.
-	estimatedPublishRate := msgsPerInterval / sampleInterval
-	allowableVariance := 0.2 * float64(estimatedPublishRate)
-	var stats *pb.SourceStats
-	pollDeadline := time.Now().Add(time.Duration(sampleInterval) * time.Second)
-	for {
-		var statsErr error
-		stats, statsErr = c.SourceStats(ctx, source)
-		assert.Nil(t, statsErr, "should not get an error from source stats: %+v", statsErr)
-		assert.NotNil(t, stats, "should have gotten source stats back")
-		t.Logf("Source stats: %+v", stats)
-		if stats.GetPublishRate() > 0 && stats.GetDeliverRate() > 0 {
-			break
-		}
-		if time.Now().After(pollDeadline) {
-			break
-		}
-		time.Sleep(200 * time.Millisecond) // shorter than the 500 ms stats window
-	}
+	// Collect the stats reading that was captured during active publishing.
+	result := <-statsCh
+	assert.Nil(t, result.err, "should not get an error from source stats: %+v", result.err)
+	assert.NotNil(t, result.stats, "should have gotten source stats back")
+	stats := result.stats
+	t.Logf("Source stats: %+v", stats)
 
 	assert.Greater(t, stats.GetPublishRate(), float32(0), "publish rate should be greater than 0")
 	assert.Greater(t, stats.GetDeliverRate(), float32(0), "deliver rate should be greater than 0")
