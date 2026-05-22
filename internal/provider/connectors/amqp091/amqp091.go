@@ -410,9 +410,9 @@ func updateRetryCountHeader(rm *amqp091Message) {
 		case int32:
 			retryCount = v
 		case int64:
-			retryCount = int32(v)
+			retryCount = int32(v) //nolint:gosec
 		case int:
-			retryCount = int32(v)
+			retryCount = int32(v) //nolint:gosec
 		default:
 			util.Logger.Warn(fmt.Sprintf("Retry count header has unexpected type %T, resetting to 0", retryCountHeader))
 		}
