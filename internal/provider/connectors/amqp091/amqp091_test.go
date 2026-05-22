@@ -832,13 +832,12 @@ func Test_Retry(t *testing.T) {
 	mm.DeliveryTag = 1
 	delMock.On("Ack").Return(nil)
 	mm.SetDelivery(&delMock)
-	go func() {
-		msgs <- mm
-	}()
-
 	mm.Headers = amqp091Table{
 		retryCountHeaderName: 1,
 	}
+	go func() {
+		msgs <- mm
+	}()
 
 	cancels := make(chan amqp091Error)
 	cmock.On("NotifyClose").Return(cancels)
@@ -2364,11 +2363,11 @@ func Test_connect_clientDisconnect(t *testing.T) {
 
 func Test_connect_connecting_connected(t *testing.T) {
 	bd := BrokerDetails{}
-	bd.state = provider.CONNECTING
+	bd.state.Store(provider.CONNECTING)
 	bd.clientDisconnect = false
 	go func() {
 		time.Sleep(1 * time.Second)
-		bd.state = provider.CONNECTED
+		bd.state.Store(provider.CONNECTED)
 	}()
 	ok, err := bd.connect()
 	assert.True(t, ok)
@@ -2377,11 +2376,11 @@ func Test_connect_connecting_connected(t *testing.T) {
 
 func Test_connect_connecting_closed(t *testing.T) {
 	bd := BrokerDetails{}
-	bd.state = provider.CONNECTING
+	bd.state.Store(provider.CONNECTING)
 	bd.clientDisconnect = false
 	go func() {
 		time.Sleep(1 * time.Second)
-		bd.state = provider.CLOSED
+		bd.state.Store(provider.CLOSED)
 	}()
 	ok, err := bd.connect()
 	assert.False(t, ok)
@@ -2390,7 +2389,7 @@ func Test_connect_connecting_closed(t *testing.T) {
 
 func Test_connect_connecting_disconnected(t *testing.T) {
 	bd := BrokerDetails{}
-	bd.state = provider.CONNECTING
+	bd.state.Store(provider.CONNECTING)
 	bd.clientDisconnect = false
 
 	msrv := mockManagementRequestServer()
@@ -2420,7 +2419,7 @@ func Test_connect_connecting_disconnected(t *testing.T) {
 
 	go func() {
 		time.Sleep(1 * time.Second)
-		bd.state = provider.DISCONNECTED
+		bd.state.Store(provider.DISCONNECTED)
 	}()
 	ok, err := bd.connect()
 	assert.True(t, ok)
