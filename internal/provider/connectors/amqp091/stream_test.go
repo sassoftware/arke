@@ -752,6 +752,126 @@ func Test_streamSubscribe(t *testing.T) {
 	}
 }
 
+// Test_streamSubscribe_NewConsumerResult covers what streamSubscribe does with
+// each (consumer, err) combination returned by StreamConnection.NewConsumer.
+// The upstream rabbitmq-stream-go-client returns a non-nil error (e.g.
+// "Invalid Offset") in some cases where the consumer it hands back is still
+// usable, so the gate must be nil-on-consumer rather than err != nil.
+func Test_streamSubscribe_NewConsumerResult(t *testing.T) {
+	prov := NewAMQP091Provider().(*amqp091provider)
+
+	origNewAmqpConn091 := NewAmqpConn091
+	origNewStreamConn := NewStreamConn
+	origGetClientIdentifier := GetClientIdentifier
+	GetClientIdentifier = func(context.Context) (string, error) {
+		return "1234", nil
+	}
+	defer func() {
+		GetClientIdentifier = origGetClientIdentifier
+		NewAmqpConn091 = origNewAmqpConn091
+		NewStreamConn = origNewStreamConn
+	}()
+
+	address := stockAddress()
+	address.Type = pb.Address_STREAM
+
+	subTests := []struct {
+		name        string
+		consumerNil bool
+		consumerErr error
+		wantErr     bool
+		wantErrMsg  string
+	}{
+		{
+			name:        "non-nil consumer with error succeeds",
+			consumerNil: false,
+			consumerErr: errors.New("Invalid Offset"),
+			wantErr:     false,
+		},
+		{
+			name:        "nil consumer with error surfaces the error",
+			consumerNil: true,
+			consumerErr: errors.New("connection refused"),
+			wantErr:     true,
+			wantErrMsg:  "connection refused",
+		},
+		{
+			name:        "nil consumer with no error fails",
+			consumerNil: true,
+			consumerErr: nil,
+			wantErr:     true,
+			wantErrMsg:  "failed to create stream consumer",
+		},
+	}
+
+	for _, subt := range subTests {
+		t.Run(subt.name, func(t *testing.T) {
+			src := &pb.Source{
+				Name:          "srcname",
+				Address:       address,
+				Options:       map[string]string{"Offset": "0"},
+				Type:          pb.Source_STREAM,
+				PrefetchCount: 4,
+			}
+
+			bd := &BrokerDetails{}
+			bd.activeMessages = util.NewConcurrentMap()
+			ctx, cancel := context.WithCancel(t.Context())
+
+			mc := make(chan *pb.Message, 1)
+			go func() {
+				for range mc {
+				}
+			}()
+			defer close(mc)
+
+			errs := make(chan amqp091Error)
+
+			amock := &amqpConnectionMock{}
+			amock.On("Connect").Return(nil)
+			amock.On("IsClosed").Return(false)
+			amock.On("Close").Return(nil)
+			amock.On("NotifyClose").Return(errs)
+			NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
+				return amock
+			}
+
+			smock := &streamConnectionMock{}
+			smock.On("Connect").Return(nil)
+			smock.On("IsClosed").Return(false)
+			smock.On("DeclareStream").Return(nil)
+
+			if subt.consumerNil {
+				smock.On("NewConsumer", src.GetName(), src.GetName(), "0", mock.Anything, mock.AnythingOfType("bool")).Return(nil, subt.consumerErr)
+			} else {
+				pmock := &streamConsumerMock{}
+				pmock.On("Close").Return(nil)
+				smock.On("NewConsumer", src.GetName(), src.GetName(), "0", mock.Anything, mock.AnythingOfType("bool")).Return(pmock, subt.consumerErr)
+			}
+
+			NewStreamConn = func(string, string, *tls.Config) streamConnectionShim {
+				return smock
+			}
+
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				cancel()
+			}()
+
+			err := prov.streamSubscribe(ctx, bd, src, mc)
+
+			if subt.wantErr {
+				assert.NotNil(t, err)
+				if err != nil {
+					assert.Contains(t, err.GetMessage(), subt.wantErrMsg)
+				}
+			} else {
+				assert.Nil(t, err)
+			}
+		})
+	}
+}
+
 func Test_SubscribeStreamAutoDeleteOrExclusive(t *testing.T) {
 	prov := NewAMQP091Provider()
 

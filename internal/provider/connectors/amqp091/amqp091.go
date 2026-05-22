@@ -1306,8 +1306,11 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 		atomic.AddInt64(&bd.consumed, 1)
 	}
 
+	// NewConsumer can return a non-nil error (e.g. "Invalid Offset" when offset
+	// is the default) while still handing back a usable consumer, so gate on
+	// consumer == nil rather than on the error.
 	consumer, consErr := bd.StreamConnection.NewConsumer(source.GetName(), consumerName, offset, handleMessages, source.GetSingleActiveConsumer())
-	if consErr != nil || consumer == nil {
+	if consumer == nil {
 		msg := "failed to create stream consumer"
 		if consErr != nil {
 			msg = consErr.Error()
