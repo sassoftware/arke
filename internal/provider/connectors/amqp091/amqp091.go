@@ -100,7 +100,7 @@ type BrokerDetails struct {
 	knownQueues      *util.ConcurrentMap
 	knownBindings    *util.ConcurrentMap
 	activeMessages   *util.ConcurrentMap
-	state            uint16
+	state            atomic.Uint32
 	connectionConfig *pb.ConnectionConfiguration
 	tlsSkipVerify    bool
 	ActiveStreams    int64
@@ -157,7 +157,6 @@ func (prov *amqp091provider) getBrokerDetails(ctx context.Context) (*BrokerDetai
 	}
 
 	if bd := prov.getBrokerDetailsByIdentifier(clientIdentifier); bd != nil {
-		bd.tlsConfig = prov.tlsConfig
 		return bd, nil
 	}
 
@@ -1100,10 +1099,10 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 			if cancelErr != (amqp091Error{}) {
 				util.Logger.Debugf("Received channel notify for client during subscribe %v : %v", bd.ClientIdentifier, cancelErr)
 				return &pb.Error{Message: cancelErr.Error()}
-			} else if bd.state != provider.CONNECTED {
+			} else if s := bd.state.Load(); s != provider.CONNECTED {
 				// The connection was closed without an error on the channel, so this was expected.
 				// TODO: Should we check for DISCONNECTED/CONNECTING as well?
-				util.Logger.Debugf("Received channel state not connected during subscribe %v : %v", bd.ClientIdentifier, bd.state)
+				util.Logger.Debugf("Received channel state not connected during subscribe %v : %v", bd.ClientIdentifier, s)
 				return nil
 			}
 		case chanErr, ok := <-connErrChan:
@@ -1115,10 +1114,10 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 			if chanErr != (amqp091Error{}) {
 				util.Logger.Debugf("Received connection notify for client during subscribe %v : %v", bd.ClientIdentifier, chanErr)
 				return &pb.Error{Message: chanErr.Error()}
-			} else if bd.state != provider.CONNECTED {
+			} else if s := bd.state.Load(); s != provider.CONNECTED {
 				// The connection was closed without an error on the channel, so this was expected.
 				// TODO: Should we check for DISCONNECTED/CONNECTING as well?
-				util.Logger.Debugf("Received connection state not connected during subscribe %v : %v", bd.ClientIdentifier, bd.state)
+				util.Logger.Debugf("Received connection state not connected during subscribe %v : %v", bd.ClientIdentifier, s)
 				return nil
 			}
 		case msg, ok := <-messages:
@@ -1401,10 +1400,10 @@ func (prov *amqp091provider) Publish(ctx context.Context, messageChannel <-chan 
 			if cancelErr != (amqp091Error{}) {
 				util.Logger.Debugf("Received channel notify for client during publish %v : %v", bd.ClientIdentifier, cancelErr)
 				return &pb.Error{Message: cancelErr.Error()}
-			} else if bd.state != provider.CONNECTED {
+			} else if s := bd.state.Load(); s != provider.CONNECTED {
 				// The connection was closed without an error on the channel, so this was expected.
 				// TODO: Should we check for DISCONNECTED/CONNECTING as well?
-				util.Logger.Debugf("Received channel state not connected during publish %v : %v", bd.ClientIdentifier, bd.state)
+				util.Logger.Debugf("Received channel state not connected during publish %v : %v", bd.ClientIdentifier, s)
 				return nil
 			}
 		case chanErr, ok := <-connErrChan:
@@ -1417,10 +1416,10 @@ func (prov *amqp091provider) Publish(ctx context.Context, messageChannel <-chan 
 				util.Logger.Debugf("Received connection notify for client during publish %v : %v", bd.ClientIdentifier, chanErr)
 				retError := &pb.Error{Message: chanErr.Error()}
 				return retError
-			} else if bd.state != provider.CONNECTED {
+			} else if s := bd.state.Load(); s != provider.CONNECTED {
 				// The connection was closed without an error on the channel, so this was expected.
 				// TODO: Should we check for DISCONNECTED/CONNECTING as well?
-				util.Logger.Debugf("Received connection state not connected during publish %v : %v", bd.ClientIdentifier, bd.state)
+				util.Logger.Debugf("Received connection state not connected during publish %v : %v", bd.ClientIdentifier, s)
 				return nil
 			}
 		case message := <-messageChannel:
@@ -1652,7 +1651,7 @@ func (prov *amqp091provider) WaitForConnect(ctx context.Context) bool {
 	defer bd.decrementStreamCount()
 
 	for start := time.Now(); time.Since(start) < provider.CONNECTTIMEOUT*time.Second; {
-		if bd.state == provider.CONNECTED {
+		if bd.state.Load() == provider.CONNECTED {
 			util.Logger.Info(i18n.ClientConnected, bd.ClientIdentifier)
 			return true
 		}
@@ -1806,9 +1805,7 @@ func (bd *BrokerDetails) connectionWatcher() {
 			// frame or a TCP-level close/RST).  Unconditionally reconnecting
 			// avoids a race where IsClosed() is still false at the time of
 			// the check even though the connection is genuinely gone.
-			bd.Lock()
-			bd.state = provider.DISCONNECTED
-			bd.Unlock()
+			bd.state.Store(provider.DISCONNECTED)
 			// Retry until we reconnect or the client explicitly disconnects.
 			// Without this loop, a single failed connect() would leave the
 			// watcher waiting for the 30-second fallback timer before trying
@@ -1820,9 +1817,7 @@ func (bd *BrokerDetails) connectionWatcher() {
 					break
 				}
 				// connect() failed; reset state so the next attempt can proceed.
-				bd.Lock()
-				bd.state = provider.DISCONNECTED
-				bd.Unlock()
+				bd.state.Store(provider.DISCONNECTED)
 			}
 			continue
 		case <-time.After(30 * time.Second):
@@ -1830,9 +1825,7 @@ func (bd *BrokerDetails) connectionWatcher() {
 			// this is to help deal with race condition where we're not listening on the bd.ErrorChannel
 			// when there is an error on the connection
 			if bd.Connection.IsClosed() {
-				bd.Lock()
-				bd.state = provider.DISCONNECTED
-				bd.Unlock()
+				bd.state.Store(provider.DISCONNECTED)
 				// Ignore this error because we will reconnect in 30 seconds
 				bd.connect() //nolint:errcheck
 			}
@@ -1843,9 +1836,9 @@ func (bd *BrokerDetails) connectionWatcher() {
 
 // waitWhileConnecting waits up to 30 seconds for an in-progress connection attempt to resolve.
 // It returns the resulting state: CONNECTED, CLOSED, or DISCONNECTED (also used for timeouts).
-func (bd *BrokerDetails) waitWhileConnecting() uint16 {
+func (bd *BrokerDetails) waitWhileConnecting() uint32 {
 	for start := time.Now(); time.Since(start) < 30*time.Second; {
-		switch bd.state {
+		switch bd.state.Load() {
 		case provider.CONNECTED:
 			return provider.CONNECTED
 		case provider.CONNECTING:
@@ -1864,7 +1857,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 		return false, nil
 	}
 
-	if bd.state == provider.CONNECTING {
+	if bd.state.Load() == provider.CONNECTING {
 		switch bd.waitWhileConnecting() {
 		case provider.CONNECTED:
 			return true, nil
@@ -1875,11 +1868,11 @@ func (bd *BrokerDetails) connect() (bool, error) {
 
 	bd.Lock()
 	defer bd.Unlock()
-	if bd.state == provider.CONNECTED {
+	if bd.state.Load() == provider.CONNECTED {
 		return true, nil
 	}
 
-	bd.state = provider.CONNECTING
+	bd.state.Store(provider.CONNECTING)
 	var conn amqp091ConnectionShim
 	var err error
 
@@ -1928,14 +1921,14 @@ func (bd *BrokerDetails) connect() (bool, error) {
 
 	if err != nil {
 		util.Logger.Warn(i18n.BrokerConnectError, err.Error())
-		bd.state = provider.CLOSED
+		bd.state.Store(provider.CLOSED)
 		return false, err
 	}
 
 	bd.Connection = conn
 	bd.ErrorChannel = make(chan amqp091Error, 1)
 	bd.ErrorChannel = bd.Connection.NotifyClose(bd.ErrorChannel) // this looks unneeded but it aids in unit testing
-	bd.state = provider.CONNECTED
+	bd.state.Store(provider.CONNECTED)
 
 	util.Logger.Info(i18n.ClientConnected, bd.ClientIdentifier)
 
