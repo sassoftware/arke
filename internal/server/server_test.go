@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sync"
 	"testing"
 	"time"
 
@@ -169,8 +170,26 @@ func (stream *MockProducerPublishServerStream) Send(*pb.MessageResponse) error {
 type MockProvider struct {
 	mock.Mock
 	provider.Provider
-	MockMessages         []*pb.Message
+	msgsMu               sync.Mutex
+	mockMessages         []*pb.Message
 	SubscribeReturnDelay time.Duration
+}
+
+// SetMockMessages installs the messages Subscribe will deliver on its next
+// invocation. Synchronized so tests can swap messages while a previous test's
+// Subscribe goroutine is still winding down (see takeMockMessages).
+func (prov *MockProvider) SetMockMessages(msgs []*pb.Message) {
+	prov.msgsMu.Lock()
+	defer prov.msgsMu.Unlock()
+	prov.mockMessages = msgs
+}
+
+func (prov *MockProvider) takeMockMessages() []*pb.Message {
+	prov.msgsMu.Lock()
+	defer prov.msgsMu.Unlock()
+	msgs := prov.mockMessages
+	prov.mockMessages = nil
+	return msgs
 }
 
 type MockContext struct {
@@ -266,14 +285,12 @@ func (prov *MockProvider) Connect(ctx context.Context, cf *pb.ConnectionConfigur
 func (prov *MockProvider) Subscribe(ctx context.Context, source *pb.Source, messageChannel chan<- *pb.Message) *pb.Error {
 	args := prov.Called(ctx, source, messageChannel)
 	// Subscribe should be long running. Our tests need time to process the
-	// MockMessages below before an error is returned so we Sleep at the end.
+	// mock messages below before an error is returned so we Sleep at the end.
 	defer time.Sleep(prov.SubscribeReturnDelay)
 
-	for _, msg := range prov.MockMessages {
+	for _, msg := range prov.takeMockMessages() {
 		messageChannel <- msg
 	}
-
-	prov.MockMessages = make([]*pb.Message, 0)
 
 	var err *pb.Error
 	errArg := args.Get(0)
@@ -708,7 +725,7 @@ func TestConsumerServerConsume(t *testing.T) {
 	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("one")})
 	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("two")})
 
-	mockp.MockMessages = messages
+	mockp.SetMockMessages(messages)
 
 	stream.On("Send", mock.AnythingOfType("*api.ConsumeResponse")).Return(nil, nil).Times(3)
 	stream.On("Recv").Return(cnsm, nil).Once()
@@ -743,7 +760,7 @@ func TestConsumerServerSubscribeReturnNil(t *testing.T) {
 	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("one")})
 	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("two")})
 
-	mockp.MockMessages = messages
+	mockp.SetMockMessages(messages)
 	mockp.SubscribeReturnDelay = 50 * time.Millisecond
 
 	stream.On("Send", mock.AnythingOfType("*api.ConsumeResponse")).Return(nil, nil).Times(3)
@@ -828,7 +845,7 @@ func TestConsumerServerConsume_Nack(t *testing.T) {
 	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("one")})
 	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("two")})
 
-	mockp.MockMessages = messages
+	mockp.SetMockMessages(messages)
 
 	stream.On("Send", mock.AnythingOfType("*api.ConsumeResponse")).Return(nil, nil).Times(3)
 	stream.On("Recv").Return(cnsm, nil).Once()
@@ -863,7 +880,7 @@ func TestConsumerServerConsume_DLQ(t *testing.T) {
 	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("one")})
 	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("two")})
 
-	mockp.MockMessages = messages
+	mockp.SetMockMessages(messages)
 
 	stream.On("Send", mock.AnythingOfType("*api.ConsumeResponse")).Return(nil, nil).Times(3)
 	stream.On("Recv").Return(cnsm, nil).Once()
@@ -898,7 +915,7 @@ func TestConsumerServerConsume_DLQFail(t *testing.T) {
 	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("one")})
 	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("two")})
 
-	mockp.MockMessages = messages
+	mockp.SetMockMessages(messages)
 
 	stream.On("Send", mock.AnythingOfType("*api.ConsumeResponse")).Return(nil, nil).Times(3)
 	stream.On("Recv").Return(cnsm, nil).Once()
@@ -934,7 +951,7 @@ func TestConsumerServerConsume_Retry(t *testing.T) {
 	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("one")})
 	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("two")})
 
-	mockp.MockMessages = messages
+	mockp.SetMockMessages(messages)
 
 	stream.On("Send", mock.AnythingOfType("*api.ConsumeResponse")).Return(nil, nil).Times(3)
 	stream.On("Recv").Return(cnsm, nil).Once()
@@ -988,7 +1005,7 @@ func TestConsumerServerConsume_AckErr(t *testing.T) {
 	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("one")})
 	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("two")})
 
-	mockp.MockMessages = messages
+	mockp.SetMockMessages(messages)
 
 	stream.On("Send", mock.AnythingOfType("*api.ConsumeResponse")).Return(nil, nil).Times(3)
 	stream.On("Recv").Return(cnsm, nil).Once()
