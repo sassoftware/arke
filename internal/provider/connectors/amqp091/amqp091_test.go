@@ -2348,7 +2348,7 @@ func Test_SetupDeadLetter_no_BD(t *testing.T) {
 
 func Test_connect_clientDisconnect(t *testing.T) {
 	bd := BrokerDetails{}
-	bd.clientDisconnect = true
+	bd.clientDisconnect.Store(true)
 	ok, err := bd.connect()
 	assert.False(t, ok)
 	assert.Nil(t, err)
@@ -2357,7 +2357,6 @@ func Test_connect_clientDisconnect(t *testing.T) {
 func Test_connect_connecting_connected(t *testing.T) {
 	bd := BrokerDetails{}
 	bd.state = provider.CONNECTING
-	bd.clientDisconnect = false
 	go func() {
 		time.Sleep(1 * time.Second)
 		bd.state = provider.CONNECTED
@@ -2370,7 +2369,6 @@ func Test_connect_connecting_connected(t *testing.T) {
 func Test_connect_connecting_closed(t *testing.T) {
 	bd := BrokerDetails{}
 	bd.state = provider.CONNECTING
-	bd.clientDisconnect = false
 	go func() {
 		time.Sleep(1 * time.Second)
 		bd.state = provider.CLOSED
@@ -2383,7 +2381,6 @@ func Test_connect_connecting_closed(t *testing.T) {
 func Test_connect_connecting_disconnected(t *testing.T) {
 	bd := BrokerDetails{}
 	bd.state = provider.CONNECTING
-	bd.clientDisconnect = false
 
 	msrv := mockManagementRequestServer()
 	defer msrv.Close()
