@@ -1130,13 +1130,21 @@ func Test_updateRetryCountHeader(t *testing.T) {
 			},
 			expected: 4,
 		},
-		"fail to convert plain int header": {
+		"convert plain int header": {
 			msg: amqp091Message{
 				Headers: amqp091Table{
 					retryCountHeaderName: 3,
 				},
 			},
-			expected: 1,
+			expected: 4,
+		},
+		"convert int64 header": {
+			msg: amqp091Message{
+				Headers: amqp091Table{
+					retryCountHeaderName: int64(3),
+				},
+			},
+			expected: 4,
 		},
 		"fail to convert string numeric header": {
 			msg: amqp091Message{
