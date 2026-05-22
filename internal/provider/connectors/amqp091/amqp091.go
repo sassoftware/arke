@@ -405,11 +405,16 @@ func updateRetryCountHeader(rm *amqp091Message) {
 	var retryCount int32
 	// if the header already exists, set retryCount to that value
 	if retryCountHeader, ok := rm.Headers[retryCountHeaderName]; ok {
-		var typeOk bool
-		// RabbitMQ stores int values as int32
-		retryCount, typeOk = retryCountHeader.(int32)
-		if !typeOk {
-			util.Logger.Warn("Retry count header is not an int32, resetting to 1")
+		// Use a type switch so the counter is never silently reset to 1.
+		switch v := retryCountHeader.(type) {
+		case int32:
+			retryCount = v
+		case int64:
+			retryCount = int32(v)
+		case int:
+			retryCount = int32(v)
+		default:
+			util.Logger.Warn(fmt.Sprintf("Retry count header has unexpected type %T, resetting to 0", retryCountHeader))
 		}
 	}
 	// increment retry count by 1

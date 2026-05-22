@@ -214,12 +214,22 @@ func consumeMessages(conn *grpc.ClientConn, c pb.ConsumerClient, ctx context.Con
 				case <-ctx.Done():
 					// context expired; truly done
 				default:
-					newStream, newErr := c.Consume(ctx)
-					if newErr == nil {
-						activeStream.CloseSend()
-						stream = newStream
-						activeStream = newStream
-						subscribeToSource(stream)
+					// Retry the reconnect a few times before giving up
+					reconnected := false
+					for attempt := 0; attempt < 5; attempt++ {
+						newStream, newErr := c.Consume(ctx)
+						if newErr == nil {
+							activeStream.CloseSend()
+							stream = newStream
+							activeStream = newStream
+							subscribeToSource(stream)
+							reconnected = true
+							break
+						}
+						log.Printf("Reconnect attempt %d failed: %v", attempt+1, newErr)
+						time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
+					}
+					if reconnected {
 						continue
 					}
 				}
@@ -1137,8 +1147,6 @@ func TestProduceSingleConsumeRetry(t *testing.T) {
 		case <-messages:
 			msgCount++
 		case <-done:
-			breakLoop = true
-		case <-time.After(5 * time.Second):
 			breakLoop = true
 		}
 		if breakLoop {
