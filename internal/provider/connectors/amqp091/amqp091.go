@@ -106,7 +106,7 @@ type BrokerDetails struct {
 	ActiveStreams    int64
 	consumed         int64
 	produced         int64
-	clientDisconnect bool
+	clientDisconnect atomic.Bool
 	lastPubSubEvent  time.Time
 	tlsConfig        *tls.Config
 	tlsEnabled       bool
@@ -463,7 +463,6 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 		produced:         0,
 		consumed:         0,
 		ActiveStreams:    0,
-		clientDisconnect: false,
 		lastPubSubEvent:  time.Now(),
 		shutdownChan:     make(chan bool, 1),
 		pubChannelCtx:    pubChCtx,
@@ -1338,7 +1337,7 @@ func (prov *amqp091provider) disconnectClientByIdentifier(clientIdentifier strin
 	}()
 
 	bd.pubChannelCancel()
-	bd.clientDisconnect = true
+	bd.clientDisconnect.Store(true)
 	util.Logger.Info(i18n.ClientDisconnect, bd.ClientIdentifier)
 	bd.shutdownChan <- true // shut down the connectionWatcher
 	// close the client if it is still connected
@@ -1798,7 +1797,7 @@ func sleepRandomReconnect() {
 // connectionWatcher Called at the end of BrokerDetails.connect(), we monitor the bd.ErrorChannel and try to reconnect
 // if we get an error on the channel. Receiving nil on the channel means we've closed because of the client
 func (bd *BrokerDetails) connectionWatcher() {
-	for !bd.clientDisconnect {
+	for !bd.clientDisconnect.Load() {
 		select {
 		case <-bd.shutdownChan:
 			return
@@ -1816,7 +1815,7 @@ func (bd *BrokerDetails) connectionWatcher() {
 			// watcher waiting for the 30-second fallback timer before trying
 			// again (because ErrorChannel is drained and no relay goroutine
 			// will send another notification until a new connection is made).
-			for !bd.clientDisconnect {
+			for !bd.clientDisconnect.Load() {
 				sleepRandomReconnect()
 				if ok, _ := bd.connect(); ok {
 					break
@@ -1858,7 +1857,7 @@ func (bd *BrokerDetails) waitWhileConnecting() uint32 {
 }
 
 func (bd *BrokerDetails) connect() (bool, error) {
-	if bd.clientDisconnect {
+	if bd.clientDisconnect.Load() {
 		return false, nil
 	}
 
