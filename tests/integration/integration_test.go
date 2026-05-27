@@ -201,33 +201,9 @@ func consumeMessages(conn *grpc.ClientConn, c pb.ConsumerClient, ctx context.Con
 		if recvErr != nil {
 			if recvErr == io.EOF {
 				log.Println("EOF")
-				// On EOF, reconnect to receive retried messages if context is still live.
-				select {
-				case <-ctx.Done():
-					// context expired; truly done
-				default:
-					// Retry the reconnect a few times before giving up
-					reconnected := false
-					for attempt := 0; attempt < 5; attempt++ {
-						newStream, newErr := c.Consume(ctx)
-						if newErr == nil {
-							activeStream.CloseSend()
-							stream = newStream
-							activeStream = newStream
-							subscribeToSource(stream)
-							reconnected = true
-							break
-						}
-						log.Printf("Reconnect attempt %d failed: %v", attempt+1, newErr)
-						time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
-					}
-					if reconnected {
-						continue
-					}
-				}
-			} else {
-				log.Printf("Error receiving from stream: %v", recvErr)
+				break
 			}
+			log.Printf("Error receiving from stream: %v", recvErr)
 			break
 		}
 		if resp == nil {
@@ -270,10 +246,8 @@ func consumeMessages(conn *grpc.ClientConn, c pb.ConsumerClient, ctx context.Con
 					nack = false
 				}
 				ret := &pb.Consume{Msg: &pb.Consume_Ack{Ack: &pb.MessageConsumed{Nack: nack, RequeueDelay: int32(delay), Uuid: message.GetUuid()}}}
-				err = s.Send(ret)
-
-				if err != nil {
-					log.Println(err)
+				if sendErr := s.Send(ret); sendErr != nil {
+					log.Println(sendErr)
 					return
 				}
 
@@ -1139,6 +1113,8 @@ func TestProduceSingleConsumeRetry(t *testing.T) {
 		case <-messages:
 			msgCount++
 		case <-done:
+			breakLoop = true
+		case <-time.After(5 * time.Second):
 			breakLoop = true
 		}
 		if breakLoop {
