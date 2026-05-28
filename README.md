@@ -29,33 +29,32 @@ Your Application
 
 ## Table of Contents
 
-- [](#arke-message-broker-proxy)
-  - [Overview](#overview)
-  - [Table of Contents](#table-of-contents)
-  - [Features](#features)
-  - [Requirements](#requirements)
-  - [Installation](#installation)
-    - [Build from Source](#build-from-source)
-  - [Configuration](#configuration)
-    - [Core](#core)
-  - [Running](#running)
-  - [gRPC API](#grpc-api)
-  - [TLS](#tls)
-    - [Server (Arke listener)](#server-arke-listener)
-    - [Back-end (Broker connection)](#back-end-broker-connection)
-  - [Rate Limiting](#rate-limiting)
-  - [Observability](#observability)
-  - [Development](#development)
-    - [Running Unit Tests](#running-unit-tests)
-    - [Running Integration Tests](#running-integration-tests)
-    - [Regenerating Protocol Buffers](#regenerating-protocol-buffers)
-    - [Linting](#linting)
-    - [Makefile Targets](#makefile-targets)
-  - [Design Documentation](#design-documentation)
-  - [Contributing](#contributing)
-  - [Security Policy](#security-policy)
-  - [License](#license)
-  - [Third-party dependencies](#third-party-dependencies)
+- [Overview](#overview)
+- [Table of Contents](#table-of-contents)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+  - [Build from Source](#build-from-source)
+- [Configuration](#configuration)
+  - [Core](#core)
+- [Running](#running)
+- [gRPC API](#grpc-api)
+- [TLS](#tls)
+  - [Server (Arke listener)](#server-arke-listener)
+  - [Back-end (Broker connection)](#back-end-broker-connection)
+- [Rate Limiting](#rate-limiting)
+- [Observability](#observability)
+- [Development](#development)
+  - [Running Unit Tests](#running-unit-tests)
+  - [Running Integration Tests](#running-integration-tests)
+  - [Regenerating Protocol Buffers](#regenerating-protocol-buffers)
+  - [Linting](#linting)
+  - [Makefile Targets](#makefile-targets)
+- [Design Documentation](#design-documentation)
+- [Contributing](#contributing)
+- [Security Policy](#security-policy)
+- [License](#license)
+- [Third-party dependencies](#third-party-dependencies)
 
 ---
 
@@ -282,12 +281,15 @@ Run `make help` for a complete list of available targets.
 
 ## Design Documentation
 
-Detailed design and operational documents live in [`doc/design/`](doc/design/).
+Detailed design and operational documents live in
+[`doc/design/`](doc/design/), including narrative architecture notes
+and C4 diagram views.
 
 <!-- markdownlint-disable MD013 -->
 | Document | Description |
 | --- | --- |
 | [Architecture Overview](doc/design/architecture-overview.md) | Component map, data-flow diagrams, key design decisions, and repository structure |
+| [Architecture C4 Diagrams](doc/design/architecture-c4.md) | System-context, container, component, and code-level C4 views for the current server and connector architecture |
 | [Client Publish / Consume Guide](doc/design/client-publish-consume.md) | How application clients connect to Arke, publish messages, consume deliveries, and ack or retry processing |
 | [Connection and Message Lifecycle](doc/design/connection-message-lifecycle.md) | Detailed session phases, goroutine topology, ack/nack state machine, and GOAWAY flow |
 | [Provider/Connector Interface Contract](doc/design/provider-connector-interface.md) | Interface specification and guide for adding new broker backends |
@@ -323,7 +325,7 @@ This project's logo features the Go Gopher mascot, [created by Renee French](htt
 
 <!-- markdownlint-disable MD013 -->
 | Dependency | License |
-|---|---|
+| --- | --- |
 | `github.com/KimMachineGun/automemlimit` | [LICENSE](https://github.com/KimMachineGun/automemlimit/blob/main/LICENSE) |
 | `github.com/hashicorp/go-metrics` | [LICENSE](https://github.com/hashicorp/go-metrics/blob/master/LICENSE) |
 | `github.com/google/uuid` | [LICENSE](https://github.com/google/uuid/blob/master/LICENSE) |

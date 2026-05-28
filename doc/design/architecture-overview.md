@@ -15,6 +15,9 @@ Arke sits between application clients and a backend message broker.
 Clients speak a single, broker-agnostic gRPC protocol; Arke translates
 that into broker-native wire protocol on the backend.
 
+For diagram-first views of the current runtime shape, see the
+[Architecture C4 Diagrams](./architecture-c4.md).
+
 ![Arke Overview](../images/arke_overview.png)
 
 ---
@@ -42,12 +45,18 @@ pkg/arke/arke.go  (Arke struct)
          │       └── health.Server    (grpc/health/v1)
          │
          ├── Interceptors (applied in Build())
-         │       ├── OpenTelemetry tracing  (internal/util/tracing)
          │       ├── Prometheus metrics     (internal/server/prometheus)
          │       └── Rate limiter           (internal/server/ratelimiter)
          │
          ├── HPA monitor  (internal/util)
          │       └── broadcasts HealthStatus_Code to HealthzServer streams
+         │
+         ├── Tracing helpers  (internal/util/tracing)
+         │       └── create spans from propagated message headers in handlers/providers
+         │
+         ├── Reflection + Channelz
+         │       ├── reflection.Register()
+         │       └── channelz/service
          │
          └── TracerProvider  (go.opentelemetry.io/otel/sdk/trace)
                  └── exports to OTLP gRPC collector
@@ -203,6 +212,7 @@ Client                    Arke                         Broker
 <!-- markdownlint-disable MD013 -->
 | Document | Description |
 | --- | --- |
+| [Architecture C4 Diagrams](./architecture-c4.md) | System-context, container, component, and code-level C4 views of the current implementation |
 | [Connection and Message Lifecycle](./connection-message-lifecycle.md) | Detailed session phases, goroutine topology, ack/nack decision tree, and GOAWAY propagation |
 | [Provider/Connector Interface Contract](./provider-connector-interface.md) | `Provider` interface contract and guide for adding new broker backends |
 | [Deployment and Operations Runbook](./deployment-operations-runbook.md) | Full environment variable reference, Kubernetes deployment checklist, observability, and troubleshooting |
