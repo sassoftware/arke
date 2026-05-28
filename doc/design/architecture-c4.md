@@ -1,5 +1,7 @@
 # Arke — C4 Architecture Diagrams
 
+<!-- markdownlint-disable MD013 -->
+
 ## Level 1 — System Context
 
 ```mermaid
@@ -470,3 +472,5 @@ classDiagram
 
     note for ProviderRegistry "Connectors register via init():\nblank import server → connectors → amqp091\namqp091.init() calls provider.Register().\nPer-client broker state is held inside connector BrokerDetails, not in the provider registry."
 ```
+
+<!-- markdownlint-enable MD013 -->
