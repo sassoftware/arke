@@ -36,6 +36,35 @@ const testContentTypeJSON = "application/json"
 const testContentEncodingText = "text"
 const testXMatchAny = "any"
 
+// stopWatcher disconnects the client identified by ctx and blocks until its
+// connectionWatcher goroutine has fully exited. Tests that call prov.Connect
+// should defer this so the watcher cannot outlive the test and either race the
+// package-level NewAmqpConn091 swap (read in connect()) or panic calling
+// IsClosed() on a stale mock from its 30s fallback branch. It is a no-op if the
+// connection was already disconnected.
+func stopWatcher(p provider.Provider, ctx context.Context) {
+	prov, ok := p.(*amqp091provider)
+	if !ok {
+		return
+	}
+	id, err := GetClientIdentifier(ctx)
+	if err != nil {
+		return
+	}
+	bdu, ok := prov.connections.Get(id)
+	if !ok {
+		return
+	}
+	bd := bdu.(*BrokerDetails)
+	// Skip the disconnect if the test already triggered one: a second
+	// disconnectClientByIdentifier would block on the buffered shutdownChan.
+	// The watcher still stops on the existing clientDisconnect, so just wait.
+	if !bd.clientDisconnect.Load() {
+		prov.disconnectClientByIdentifier(id)
+	}
+	bd.watcherWG.Wait()
+}
+
 func init() {
 	// Register the MockProvider with the Provider factory.
 
@@ -173,6 +202,7 @@ func TestConnect(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 
 	assert.Nil(t, err)
 
@@ -203,6 +233,7 @@ func TestConnect_Error(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 
 	assert.NotNil(t, err)
 
@@ -225,6 +256,7 @@ func Test_Connect_NoClient(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 
 	assert.NotNil(t, err)
 	assert.Contains(t, err.GetMessage(), "noclient")
@@ -257,6 +289,7 @@ func TestConnect_TLS_SkipVerify(t *testing.T) {
 	cc := &pb.ConnectionConfiguration{}
 	cc.Tls = true
 	err := prov.Connect(ctx, cc, true)
+	defer stopWatcher(prov, ctx)
 
 	assert.Nil(t, err)
 
@@ -291,6 +324,7 @@ func TestConnect_TLS_WithCert(t *testing.T) {
 	cc.Tls = true
 	cc.CaCertificate = []byte("asdf")
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 
 	assert.Nil(t, err)
 
@@ -323,6 +357,7 @@ func TestConnect_Stats(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	stats := prov.Stats()
@@ -358,6 +393,7 @@ func setupProviderWithSimpleConn(t *testing.T) (provider.Provider, context.Conte
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	cleanup := func() {
@@ -440,6 +476,7 @@ func Test_Ack_AckErr(t *testing.T) {
 	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	subjects := make([]string, 0)
@@ -504,6 +541,7 @@ func Test_Retry_NoMsg(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 	msg := pb.Message{}
 	err = prov.Retry(ctx, &pb.Source{}, msg.GetUuid(), 10)
@@ -537,6 +575,7 @@ func Test_DeadLetter_NoMsg(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 	msg := pb.Message{}
 	err = prov.DeadLetter(ctx, &pb.Source{}, msg.GetUuid())
@@ -607,6 +646,7 @@ func Test_Ack(t *testing.T) {
 	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	subjects := make([]string, 0)
@@ -698,6 +738,7 @@ func Test_Nack(t *testing.T) {
 	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	subjects := make([]string, 0)
@@ -787,6 +828,7 @@ func Test_Nack_NackErr(t *testing.T) {
 	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	subjects := make([]string, 0)
@@ -882,6 +924,7 @@ func Test_Retry(t *testing.T) {
 	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	src := &pb.Source{Name: "queue", Address: &pb.Address{Name: "address"}}
@@ -969,6 +1012,7 @@ func Test_RetryFailure(t *testing.T) {
 	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	src := &pb.Source{Name: "queue", Address: &pb.Address{Name: "address"}}
@@ -1072,6 +1116,7 @@ func Test_RetryFailure_DeclareErrorsStillSuccess(t *testing.T) {
 	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	opts := make(map[string]string)
@@ -1251,6 +1296,7 @@ func Test_DLQ(t *testing.T) {
 	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	subjects := make([]string, 0)
@@ -1490,6 +1536,7 @@ func Test_Subscribe_Options(t *testing.T) {
 	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 	var msg *pb.Message
 
@@ -1600,6 +1647,7 @@ func Test_Subscribe_NoSubjectsNoFilters(t *testing.T) {
 	cc.AdminPort = int32(i) //nolint:gosec
 
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 	var msg *pb.Message
 
@@ -1676,6 +1724,7 @@ func Test_Subscribe_UnsupportedOptions(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	src := &pb.Source{Address: &pb.Address{Name: "addressname"}, Options: options}
@@ -1717,6 +1766,7 @@ func Test_Disconnect(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 	prov.Disconnect(ctx)
 
@@ -1764,6 +1814,7 @@ func Test_WaitForConnect(t *testing.T) {
 
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 	errs <- newAmqp091Error("chanerr", 1) // simulate an error
 	time.Sleep(500 * time.Millisecond)
@@ -1822,6 +1873,7 @@ func Test_Publish(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	go func() {
@@ -1883,6 +1935,7 @@ func Test_Publish_Error(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	go func() {
@@ -1950,6 +2003,7 @@ func Test_PublishOne(t *testing.T) {
 
 		suberr := prov.PublishOne(ctx, msg)
 
+		stopWatcher(prov, ctx)
 		NewAmqpConn091 = oldNewAmqpConn091
 
 		assert.Nil(t, suberr)
@@ -2000,6 +2054,7 @@ func Test_PublishOneFailed(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	suberr := prov.PublishOne(ctx, msg)
@@ -2045,6 +2100,7 @@ func Test_PublishOneFailedNewChannel(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	suberr := prov.PublishOne(ctx, msg)
@@ -2086,6 +2142,7 @@ func Test_PublishOneFailedConnClosed(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	suberr := prov.PublishOne(ctx, msg)
@@ -2165,6 +2222,7 @@ func Test_Publish_ErrorDeclareExchange(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	go func() {
@@ -2270,6 +2328,7 @@ func Test_ClientExists(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	exists := prov.ClientExists("1234")
@@ -2302,6 +2361,7 @@ func Test_ClientExists_false(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(prov, ctx)
 	assert.Nil(t, err)
 
 	exists := prov.ClientExists("4321")
@@ -2656,6 +2716,7 @@ func Test_Subscribe_Queue_DeclareOnly(t *testing.T) {
 
 				err := prov.Connect(ctx, cc, false)
 				assert.Nil(t, err)
+				defer stopWatcher(prov, ctx)
 
 				mc := make(chan *pb.Message)
 				defer close(mc)
@@ -2968,6 +3029,7 @@ func Test_Publish_ContextCancellation_ExitsPromptly(t *testing.T) {
 	defer cancel()
 	cc := &pb.ConnectionConfiguration{}
 	assert.Nil(t, prov.Connect(ctx, cc, false))
+	defer stopWatcher(prov, ctx)
 
 	// messageChannel is never closed and never has messages.  The only exit
 	// from the Publish select loop is ctx.Done() (post-fix) or an AMQP error
@@ -3033,6 +3095,7 @@ func Test_Publish_NotifyCloseChannelsAreBuffered(t *testing.T) {
 	defer cancel()
 	cc := &pb.ConnectionConfiguration{}
 	assert.Nil(t, prov.Connect(ctx, cc, false))
+	defer stopWatcher(prov, ctx)
 
 	messageChannel := make(chan *pb.Message)
 	errChan := make(chan *pb.Error, 1)
@@ -3136,6 +3199,7 @@ func Test_QueueSubscribe_NotifyCloseChannelsAreBuffered(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	assert.Nil(t, prov.Connect(ctx, cc, false))
+	defer stopWatcher(prov, ctx)
 
 	src := &pb.Source{
 		Name:    "queue",
