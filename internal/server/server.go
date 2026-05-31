@@ -781,9 +781,37 @@ func MonitorHealthChan(receiver chan pb.HealthStatus_Code) {
 		for _, clientAddr := range healthNotifiers.GetList() {
 			if notifierInt, ok := healthNotifiers.Get(clientAddr); ok {
 				notifier := notifierInt.(chan pb.HealthStatus_Code)
-				notifier <- code
+				sendHealthCode(clientAddr, notifier, code)
 			}
 		}
+	}
+}
+
+// sendHealthCode delivers a single health code to one client's notifier without
+// letting that client stall the broadcast to every other client.
+//
+// The send is non-blocking: a client's reader can be busy (e.g. still in
+// stream.Send to a slow connection) and not yet back at its receive, so a
+// blocking send here would hold up the entire broadcast loop and starve all
+// other clients. If the receiver is not ready we drop the code rather than
+// block.
+//
+// It also recovers from a send on a closed channel: a client's notifier is
+// closed when it disconnects (Check's defer) or re-registers (notifyHealth),
+// and that can race with this send because the registry lock is not held across
+// the lookup and the send. Recovering keeps the monitor goroutine alive instead
+// of panicking the whole broadcast on a routine disconnect.
+func sendHealthCode(clientAddr string, notifier chan pb.HealthStatus_Code, code pb.HealthStatus_Code) {
+	defer func() {
+		if r := recover(); r != nil {
+			util.Logger.Debugf("dropped health notification to %s: receiver closed", clientAddr)
+		}
+	}()
+
+	select {
+	case notifier <- code:
+	default:
+		util.Logger.Debugf("dropped health notification to %s: receiver not ready", clientAddr)
 	}
 }
 
@@ -795,7 +823,11 @@ func (s *HealthzServer) Check(stream pb.Healthz_CheckServer) error {
 		return err
 	}
 
-	notifyHealthChan := make(chan pb.HealthStatus_Code)
+	// Buffer of 1 so a broadcast is not lost while this reader is momentarily
+	// busy (e.g. in stream.Send below). MonitorHealthChan delivers non-blocking
+	// via sendHealthCode, so without a free slot a transient-busy reader would
+	// drop the code — notably a GOAWAY the client needs to see.
+	notifyHealthChan := make(chan pb.HealthStatus_Code, 1)
 	notifyHealth(clientAddr, notifyHealthChan)
 	defer func() {
 		healthNotifiers.Delete(clientAddr)
