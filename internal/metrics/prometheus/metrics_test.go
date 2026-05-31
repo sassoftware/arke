@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sassoftware/arke/internal/metrics"
 	"github.com/sassoftware/arke/internal/provider"
@@ -92,6 +93,28 @@ func Test_Metrics(t *testing.T) {
 func Test_gatherClientStats(t *testing.T) {
 	_, _ = provider.GetProvider("amqp091")
 	gatherClientStats()
+	assert.NotEmpty(t, Stats)
+}
+
+func Test_collectClientStats(t *testing.T) {
+	_, _ = provider.GetProvider("amqp091")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		collectClientStats(ctx, time.Millisecond)
+		close(done)
+	}()
+
+	// Allow a few ticks to fire so the periodic gather runs.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("collectClientStats did not return after context cancel")
+	}
 	assert.NotEmpty(t, Stats)
 }
 

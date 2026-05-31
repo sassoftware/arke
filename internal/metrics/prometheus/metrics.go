@@ -36,6 +36,14 @@ var (
 
 const EnvPprofEnabled = "ARKE_PPROF_ENABLED"
 
+// clientStatsInterval controls how often connected-client stats are refreshed
+// independent of Prometheus scrapes. It is shorter than the sink Expiration
+// (60s) so that gauges for clients that connect and disconnect between two
+// scrapes are still captured at least once, as long as the client is connected
+// when a refresh fires. Clients whose entire lifetime falls between two refresh
+// ticks are still not captured; see gatherClientStats.
+const clientStatsInterval = 15 * time.Second
+
 func init() {
 	Stats = &stats{}
 
@@ -104,9 +112,37 @@ func Serve(ctx context.Context, lis *net.Listener) {
 	metricsServer := setupServer()
 
 	go metricsServer.Serve(*lis) //nolint:errcheck
+	go collectClientStats(ctx, clientStatsInterval)
 
 	<-ctx.Done()
 	metricsServer.Shutdown(ctx) //nolint:errcheck
+}
+
+// collectClientStats periodically gathers per-client stats until ctx is
+// cancelled, independent of /metrics scrapes. Its purpose is to surface a
+// client that connects and disconnects between two scrapes: a client connected
+// when a tick fires has its gauge written to the sink, which (because the sink
+// expires entries only after Expiration, not on disconnect) survives to be
+// emitted on the next scrape even though the client is already gone.
+//
+// This only adds coverage when the scrape interval is longer than the tick
+// interval; if Prometheus scrapes more frequently, the on-scrape gather already
+// captures the same clients at equal-or-finer granularity and this is a no-op.
+// It does not guarantee every client is recorded — a client whose lifetime fits
+// entirely between two ticks is still missed. Disconnected clients age out of
+// the sink via its Expiration.
+func collectClientStats(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			gatherClientStats()
+		}
+	}
 }
 
 func gatherClientStatsHandler(h http.Handler) http.Handler {
@@ -116,15 +152,30 @@ func gatherClientStatsHandler(h http.Handler) http.Handler {
 	})
 }
 
-// FIXME?
-// I don't particularly like only collecting these client level stats when the metrics handler
-// is called because it can and will lead to us never logging stats for some clients.
-// We can even have incorrect statistics if part way through a client producing/consuming the
-// metrics are collected, but they disconnect before the next metrics collection.
-// I also don't like the idea of keeping a separate record of stats from every for an extended
-// period of time even if they have disconnected.
-// Maybe client level stats don't matter much as long as they're regarded as an incomplete look
-// into the current state of only connected clients.
+// gatherClientStats refreshes the per-client gauges for every client that is
+// connected at the moment it runs. It is called from two places: on each
+// /metrics scrape (so a scrape always reflects the latest values) and on a
+// periodic interval via collectClientStats (so clients that connect and
+// disconnect between scrapes are still refreshed, provided they are connected
+// when a tick fires).
+//
+// This is a sampling approach and is inherently incomplete: a client whose
+// entire lifetime falls between two collections is never recorded, because by
+// the next collection it is already gone from the provider's connection set.
+// This is by design. The per-client gauges are a best-effort snapshot of
+// *currently connected* clients, kept deliberately cardinality-bounded: the
+// ClientIdentifier label embeds a per-connection hash (see
+// util.SetClientIdentifier), so series for departed clients must age out of the
+// sink via its Expiration rather than accumulate forever. Promoting these to
+// per-client counters to capture short-lived clients would defeat that bound
+// and grow cardinality without limit.
+//
+// Exact, complete throughput is already available without sampling from the
+// aggregate counters arke_recvmsg_total / arke_sendmsg_total, which are
+// incremented per message in the gRPC interceptors and never miss a client.
+//
+// Stats for disconnected clients are not removed here; they age out of the sink
+// via its Expiration.
 func gatherClientStats() {
 	providers := provider.RegisteredProviders()
 	for _, providerName := range provider.RegisteredProviders().GetList() {
