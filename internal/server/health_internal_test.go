@@ -58,8 +58,12 @@ func TestMonitorHealthChanFansOutToNotifiers(t *testing.T) {
 	clearHealthNotifiers()
 	defer clearHealthNotifiers()
 
-	notifier := make(chan pb.HealthStatus_Code, 1)
-	notifyHealth("client-fanout", notifier)
+	// Register multiple notifiers so the test exercises the actual fan-out loop
+	// over the registry, not just delivery to a single receiver.
+	first := make(chan pb.HealthStatus_Code, 1)
+	second := make(chan pb.HealthStatus_Code, 1)
+	notifyHealth("client-fanout-1", first)
+	notifyHealth("client-fanout-2", second)
 
 	receiver := make(chan pb.HealthStatus_Code)
 	done := make(chan struct{})
@@ -70,11 +74,19 @@ func TestMonitorHealthChanFansOutToNotifiers(t *testing.T) {
 
 	receiver <- pb.HealthStatus_GOAWAY
 
-	select {
-	case code := <-notifier:
-		assert.Equal(t, pb.HealthStatus_GOAWAY, code)
-	case <-time.After(time.Second):
-		t.Fatal("notifier did not receive the broadcast health code")
+	for _, tc := range []struct {
+		name     string
+		notifier chan pb.HealthStatus_Code
+	}{
+		{"first", first},
+		{"second", second},
+	} {
+		select {
+		case code := <-tc.notifier:
+			assert.Equal(t, pb.HealthStatus_GOAWAY, code, "%s notifier should receive the broadcast code", tc.name)
+		case <-time.After(time.Second):
+			t.Fatalf("%s notifier did not receive the broadcast health code", tc.name)
+		}
 	}
 
 	// Closing the source channel must end the monitor loop.
