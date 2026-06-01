@@ -20,26 +20,19 @@ func clearHealthNotifiers() {
 	}
 }
 
-func TestNotifyHealthRegistersReceiver(t *testing.T) {
-	clearHealthNotifiers()
-	defer clearHealthNotifiers()
-
-	addr := "client-register"
-	rec := make(chan pb.HealthStatus_Code, 1)
-	notifyHealth(addr, rec)
-
-	got, ok := healthNotifiers.Get(addr)
-	assert.True(t, ok, "receiver should be registered for the client address")
-	assert.Equal(t, rec, got)
-}
-
-func TestNotifyHealthReplacesAndClosesPriorReceiver(t *testing.T) {
+func TestNotifyHealthRegistersAndReplacesReceiver(t *testing.T) {
 	clearHealthNotifiers()
 	defer clearHealthNotifiers()
 
 	addr := "client-replace"
+
 	first := make(chan pb.HealthStatus_Code, 1)
 	notifyHealth(addr, first)
+
+	// A single notifier is registered for the client address.
+	got, ok := healthNotifiers.Get(addr)
+	assert.True(t, ok, "receiver should be registered for the client address")
+	assert.Equal(t, first, got)
 
 	second := make(chan pb.HealthStatus_Code, 1)
 	notifyHealth(addr, second)
@@ -49,7 +42,7 @@ func TestNotifyHealthReplacesAndClosesPriorReceiver(t *testing.T) {
 	assert.False(t, open, "prior receiver channel should be closed on replacement")
 
 	// ...and leave only the new receiver registered.
-	got, ok := healthNotifiers.Get(addr)
+	got, ok = healthNotifiers.Get(addr)
 	assert.True(t, ok)
 	assert.Equal(t, second, got)
 }
