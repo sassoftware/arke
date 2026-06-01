@@ -260,7 +260,7 @@ func Test_PublishStream(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(prov, ctx)
+	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 
 	go func() {
@@ -333,7 +333,7 @@ func Test_PublishStreamWithConfirm(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(prov, ctx)
+	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 
 	go func() {
@@ -393,7 +393,7 @@ func Test_PublishStreamFailed(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(prov, ctx)
+	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 
 	suberr := prov.PublishOne(ctx, msg)
@@ -446,7 +446,7 @@ func Test_PublishStreamFailedConn(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(prov, ctx)
+	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 
 	suberr := prov.PublishOne(ctx, msg)
@@ -500,7 +500,7 @@ func Test_PublishStreamNotConn(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(prov, ctx)
+	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 
 	suberr := prov.PublishOne(ctx, msg)
@@ -566,7 +566,7 @@ func Test_SubscribeStream(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(prov, ctx)
+	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 	var msg *pb.Message
 
@@ -643,7 +643,7 @@ func Test_SubscribeStreamBadOpt(t *testing.T) {
 	cc := &pb.ConnectionConfiguration{}
 	ctx, cancel := context.WithCancel(context.Background())
 	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(prov, ctx)
+	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 
 	mc := make(chan *pb.Message)
@@ -800,7 +800,7 @@ func Test_SubscribeStreamAutoDeleteOrExclusive(t *testing.T) {
 	cc := &pb.ConnectionConfiguration{}
 	ctx, cancel := context.WithCancel(context.Background())
 	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(prov, ctx)
+	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 
 	mc := make(chan *pb.Message)
@@ -873,7 +873,7 @@ func Test_SubscribeStreamInvalidTTL(t *testing.T) {
 	cc := &pb.ConnectionConfiguration{}
 	ctx, cancel := context.WithCancel(context.Background())
 	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(prov, ctx)
+	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 
 	mc := make(chan *pb.Message)
@@ -936,7 +936,7 @@ func Test_SubscribeStreamFailedConn(t *testing.T) {
 
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(prov, ctx)
+	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 
 	mc := make(chan *pb.Message)
@@ -999,7 +999,7 @@ func Test_SubscribeStreamNotConn(t *testing.T) {
 
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(prov, ctx)
+	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 
 	mc := make(chan *pb.Message)
@@ -1064,7 +1064,7 @@ func Test_SubscribeStreamFailedDeclare(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(prov, ctx)
+	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 
 	mc := make(chan *pb.Message)
@@ -1136,7 +1136,7 @@ func Test_StreamRetry(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cc := &pb.ConnectionConfiguration{}
 	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(prov, ctx)
+	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 	var msg *pb.Message
 
@@ -1221,7 +1221,7 @@ func Test_Subscribe_Stream_DeclareOnly(t *testing.T) {
 				cc := &pb.ConnectionConfiguration{}
 				err := prov.Connect(ctx, cc, false)
 				assert.Nil(t, err)
-				defer stopWatcher(prov, ctx)
+				defer stopWatcher(ctx, prov)
 
 				mc := make(chan *pb.Message)
 				defer close(mc)
