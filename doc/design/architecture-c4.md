@@ -149,6 +149,152 @@ C4Component
 
 ---
 
+## Level 4a — Code (Server — gRPC Services & Provider Registry)
+
+```mermaid
+classDiagram
+    direction TB
+
+    namespace pb {
+        class UnimplementedProducerServer {
+            <<protobuf>>
+            +Connect()
+            +Publish()
+            +PublishOne()
+            +Disconnect()
+        }
+        class UnimplementedConsumerServer {
+            <<protobuf>>
+            +Connect()
+            +Consume()
+            +Disconnect()
+            +SourceStats()
+            +SourceStatsGroup()
+        }
+        class UnimplementedHealthzServer {
+            <<protobuf>>
+            +Check()
+        }
+    }
+
+    class ProducerServer {
+        +TLSSkipVerify bool
+        +Connect(ctx, cfg) ConnectResponse
+        +Publish(stream) error
+        +PublishOne(ctx, msg) MessageResponse
+        +Disconnect(ctx, empty) Empty
+    }
+
+    class ConsumerServer {
+        +TLSSkipVerify bool
+        +Connect(ctx, cfg) ConnectResponse
+        +Consume(stream) error
+        +Disconnect(ctx, empty) Empty
+        +SourceStats(ctx, source) SourceStats
+        +SourceStatsGroup(ctx, sources) SourceStatsCollection
+    }
+
+    class HealthzServer {
+        +Check(stream) error
+    }
+
+    class GRPCHealthService {
+        <<grpc/health>>
+        +Check(service) HealthCheckResponse
+    }
+
+    class streamSender {
+        -stream pb.Consumer_ConsumeServer
+        +Send(ConsumeResponse) error
+    }
+
+    class consumeRecv {
+        +err error
+        +msg pb.Consume
+    }
+
+    class ClientLimitManager {
+        <<ratelimiter>>
+        -clients ConcurrentMap
+        -bucketSize int
+        -fillInterval time.Duration
+        -maxAgeStaleClients time.Duration
+        -enforced bool
+        +Limit(ctx) error
+        +StartClientCull(ctx)
+        -cullStaleClients()
+    }
+
+    class clientLimiter {
+        <<ratelimiter>>
+        -limiter rate.Limiter
+        -lastConnectionTime time.Time
+    }
+
+    class ProviderRegistry {
+        <<provider package>>
+        -registeredProviderTypes ConcurrentMap
+        -registeredProviders ConcurrentMap
+        +Register(name, Factory)
+        +GetProvider(type) Provider
+        +NewProvider(type) Provider
+    }
+
+    class providerOnce {
+        <<provider package>>
+        -m sync.Mutex
+        -done uint32
+        +Do(Factory) Provider
+    }
+
+    class Factory {
+        <<type alias>>
+        func() Provider
+    }
+
+    class Provider {
+        <<interface>>
+        +Connect() / Disconnect()
+        +Publish() / PublishOne()
+        +Subscribe() / Ack() / Nack()
+        +Retry() / DeadLetter()
+        +SupportedSourceOptions() / WaitForConnect()
+        +Stats() / ClientExists() / SourceStats()
+    }
+
+    class ConnectionWatcher {
+        <<goroutine>>
+        Runs every 30s
+        Calls TrimConnectionList()
+        Removes dead clients from connectionMap
+    }
+
+    UnimplementedProducerServer <|-- ProducerServer : embeds
+    UnimplementedConsumerServer <|-- ConsumerServer : embeds
+    UnimplementedHealthzServer <|-- HealthzServer : embeds
+
+    ProducerServer ..> ProviderRegistry : findProvider()
+    ConsumerServer ..> ProviderRegistry : findProvider()
+    ConsumerServer --> streamSender : creates per Consume() call
+    ConsumerServer --> consumeRecv : receives from stream.Recv goroutine
+
+    ProducerServer ..> ClientLimitManager : rate-checked via interceptor
+    ConsumerServer ..> ClientLimitManager : rate-checked via interceptor
+    HealthzServer ..> GRPCHealthService : complements standard health surface
+    ClientLimitManager "1" --> "n" clientLimiter : one per client identifier
+
+    ProviderRegistry --> providerOnce : singleton guard per provider type
+    ProviderRegistry --> Factory : looks up to instantiate
+    ProviderRegistry --> Provider : caches singleton
+    providerOnce ..> Factory : calls once to create Provider
+
+    ConnectionWatcher ..> ProviderRegistry : GetProvider() to check ClientExists()
+
+    note for ProviderRegistry "Connectors register via init():\nblank import server → connectors → amqp091\namqp091.init() calls provider.Register().\nPer-client broker state is held inside connector BrokerDetails, not in the provider registry."
+```
+
+---
+
 ## Level 4b — Code (AMQP 0.9.1 Connector — Key Types)
 
 ```mermaid
@@ -325,152 +471,6 @@ classDiagram
 
     streamConnection ..> streamMessage : publishes
     amqp091Channel ..> streamMessage : delivers
-```
-
----
-
-## Level 4a — Code (Server — gRPC Services & Provider Registry)
-
-```mermaid
-classDiagram
-    direction TB
-
-    namespace pb {
-        class UnimplementedProducerServer {
-            <<protobuf>>
-            +Connect()
-            +Publish()
-            +PublishOne()
-            +Disconnect()
-        }
-        class UnimplementedConsumerServer {
-            <<protobuf>>
-            +Connect()
-            +Consume()
-            +Disconnect()
-            +SourceStats()
-            +SourceStatsGroup()
-        }
-        class UnimplementedHealthzServer {
-            <<protobuf>>
-            +Check()
-        }
-    }
-
-    class ProducerServer {
-        +TLSSkipVerify bool
-        +Connect(ctx, cfg) ConnectResponse
-        +Publish(stream) error
-        +PublishOne(ctx, msg) MessageResponse
-        +Disconnect(ctx, empty) Empty
-    }
-
-    class ConsumerServer {
-        +TLSSkipVerify bool
-        +Connect(ctx, cfg) ConnectResponse
-        +Consume(stream) error
-        +Disconnect(ctx, empty) Empty
-        +SourceStats(ctx, source) SourceStats
-        +SourceStatsGroup(ctx, sources) SourceStatsCollection
-    }
-
-    class HealthzServer {
-        +Check(stream) error
-    }
-
-    class GRPCHealthService {
-        <<grpc/health>>
-        +Check(service) HealthCheckResponse
-    }
-
-    class streamSender {
-        -stream pb.Consumer_ConsumeServer
-        +Send(ConsumeResponse) error
-    }
-
-    class consumeRecv {
-        +err error
-        +msg pb.Consume
-    }
-
-    class ClientLimitManager {
-        <<ratelimiter>>
-        -clients ConcurrentMap
-        -bucketSize int
-        -fillInterval time.Duration
-        -maxAgeStaleClients time.Duration
-        -enforced bool
-        +Limit(ctx) error
-        +StartClientCull(ctx)
-        -cullStaleClients()
-    }
-
-    class clientLimiter {
-        <<ratelimiter>>
-        -limiter rate.Limiter
-        -lastConnectionTime time.Time
-    }
-
-    class ProviderRegistry {
-        <<provider package>>
-        -registeredProviderTypes ConcurrentMap
-        -registeredProviders ConcurrentMap
-        +Register(name, Factory)
-        +GetProvider(type) Provider
-        +NewProvider(type) Provider
-    }
-
-    class providerOnce {
-        <<provider package>>
-        -m sync.Mutex
-        -done uint32
-        +Do(Factory) Provider
-    }
-
-    class Factory {
-        <<type alias>>
-        func() Provider
-    }
-
-    class Provider {
-        <<interface>>
-        +Connect() / Disconnect()
-        +Publish() / PublishOne()
-        +Subscribe() / Ack() / Nack()
-        +Retry() / DeadLetter()
-        +SupportedSourceOptions() / WaitForConnect()
-        +Stats() / ClientExists() / SourceStats()
-    }
-
-    class ConnectionWatcher {
-        <<goroutine>>
-        Runs every 30s
-        Calls TrimConnectionList()
-        Removes dead clients from connectionMap
-    }
-
-    UnimplementedProducerServer <|-- ProducerServer : embeds
-    UnimplementedConsumerServer <|-- ConsumerServer : embeds
-    UnimplementedHealthzServer <|-- HealthzServer : embeds
-
-    ProducerServer ..> ProviderRegistry : findProvider()
-    ConsumerServer ..> ProviderRegistry : findProvider()
-    ConsumerServer --> streamSender : creates per Consume() call
-    ConsumerServer --> consumeRecv : receives from stream.Recv goroutine
-
-    ProducerServer ..> ClientLimitManager : rate-checked via interceptor
-    ConsumerServer ..> ClientLimitManager : rate-checked via interceptor
-    HealthzServer ..> GRPCHealthService : complements standard health surface
-    ClientLimitManager "1" --> "n" clientLimiter : one per client identifier
-
-    ProviderRegistry --> providerOnce : singleton guard per provider type
-    ProviderRegistry --> Factory : looks up to instantiate
-    ProviderRegistry --> Provider : caches singleton
-    providerOnce ..> Factory : calls once to create Provider
-
-    ConnectionWatcher ..> ProviderRegistry : GetProvider() to check ClientExists()
-
-    note for ProviderRegistry "Connectors register via init():\nblank import server → connectors → amqp091\namqp091.init() calls provider.Register().\nPer-client broker state is held inside connector BrokerDetails, not in the provider registry."
 ```
 
 <!-- markdownlint-enable MD013 -->
