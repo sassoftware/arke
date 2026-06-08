@@ -1250,22 +1250,19 @@ func Test_Subscribe_Stream_DeclareOnly(t *testing.T) {
 // binding are declared on the AMQP channel if (and only if) the address type
 // is NOT Address_STREAM.
 func Test_streamSubscribe_ExchangeAndBindingDeclaration(t *testing.T) {
-	tests := []struct {
-		name                  string
+	tests := map[string]struct {
 		addressType           pb.Address_TargetType
 		expectExchangeDeclare bool
 		expectQueueBind       bool
 		needsManagementServer bool // cleanupBindings makes HTTP calls only when bindings are actually declared
 	}{
-		{
-			name:                  "non-stream address type declares exchange and binding",
+		"non-stream address type declares exchange and binding": {
 			addressType:           pb.Address_TOPIC,
 			expectExchangeDeclare: true,
 			expectQueueBind:       true,
 			needsManagementServer: true,
 		},
-		{
-			name:                  "stream address type skips exchange and binding",
+		"stream address type skips exchange and binding": {
 			addressType:           pb.Address_STREAM,
 			expectExchangeDeclare: false,
 			expectQueueBind:       false,
@@ -1273,8 +1270,8 @@ func Test_streamSubscribe_ExchangeAndBindingDeclaration(t *testing.T) {
 		},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
 			prov := NewAMQP091Provider()
 
 			oldGetClientIdentifier := GetClientIdentifier

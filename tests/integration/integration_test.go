@@ -3864,3 +3864,86 @@ outer:
 
 	assert.Equal(t, expectedMsgCount, msgCount, "all messages must be received after a mismatched exchange redeclaration")
 }
+
+// TestProduceOneStreamConsumeOneViaTopicExchange exercises the following
+// functionality:
+// When a stream source is subscribed with a non-STREAM address type
+// (TOPIC in this case), the provider must declare an exchange binding so that
+// messages published to the TOPIC exchange are routed into the stream.
+func TestProduceOneStreamConsumeOneViaTopicExchange(t *testing.T) {
+	producerConnection := connect()
+	defer producerConnection.Close()
+	expectedMessageCount := 10
+	pc := pb.NewProducerClient(producerConnection)
+	pctx := context.Background()
+	defer pc.Disconnect(pctx, &pb.Empty{})
+
+	messages := make(chan *pb.Message)
+	done := make(chan bool)
+	clientConnected := make(chan bool)
+
+	consumerConnection := connect()
+	defer consumerConnection.Close()
+
+	options := make(map[string]string)
+	options["MessageTTL"] = "120"
+
+	// Use a unique stream name so parallel or repeated test runs do not conflict.
+	streamName := fmt.Sprintf("sas.test.stream.ViaTopicExchange.%s", uuid.New().String())
+	subject := "sas.test.proxy.ViaTopicExchange"
+
+	// Key difference from TestProduceOneStreamConsumeOne: the address type is
+	// TOPIC, not STREAM.  The provider must declare a binding from amq.topic
+	// (with the given routing key / subject) to the stream so that messages
+	// published to the exchange reach the stream consumer.
+	consumerAddress := &pb.Address{
+		Name:     "amq.topic",
+		Subjects: []string{subject},
+		Type:     pb.Address_TOPIC,
+	}
+	source := &pb.Source{
+		Name:          streamName,
+		Address:       consumerAddress,
+		PrefetchCount: 1,
+		Type:          pb.Source_STREAM,
+		Options:       options,
+	}
+
+	c := pb.NewConsumerClient(consumerConnection)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	defer c.Disconnect(ctx, &pb.Empty{})
+
+	go consumeMessages(consumerConnection, c, ctx, messages, done, clientConnected, source, defaultHandler, t)
+	<-clientConnected
+
+	// Publish to the TOPIC exchange using the same routing key.  The binding
+	// declared during Subscribe routes these messages into the stream.
+	publishAddress := &pb.Address{
+		Name:     "amq.topic",
+		Subjects: []string{subject},
+		Type:     pb.Address_TOPIC,
+	}
+	message := &pb.Message{Body: []byte("mymessage"), Address: publishAddress}
+
+	err := mf.ProduceMessagesUnary(pctx, pc, expectedMessageCount, message, false, t.Name())
+	assert.Nil(t, err, "publishing to amq.topic should succeed: %v", err)
+
+	msgCount := 0
+	breakLoop := false
+	for start := time.Now(); time.Since(start) < 5*time.Second; {
+		select {
+		case <-messages:
+			msgCount++
+		case <-done:
+			breakLoop = true
+		case <-time.After(5 * time.Second):
+			breakLoop = true
+		}
+		if breakLoop {
+			break
+		}
+	}
+	assert.Equal(t, expectedMessageCount, msgCount,
+		"all messages published to amq.topic must arrive at the stream consumer via the binding")
+}
