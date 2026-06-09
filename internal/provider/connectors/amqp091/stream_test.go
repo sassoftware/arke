@@ -542,7 +542,6 @@ func Test_SubscribeStream(t *testing.T) {
 	}
 
 	cmock := &amqpChannelMock{}
-	cmock.On("Close").Return(nil)
 
 	amock := &amqpConnectionMock{}
 	amock.On("Connect").Return(nil)
@@ -551,7 +550,6 @@ func Test_SubscribeStream(t *testing.T) {
 
 	errs := make(chan amqp091Error)
 	amock.On("NotifyClose").Return(errs)
-	amock.On("NewChannel", false).Return(cmock, nil)
 	oldNewAmqpConn091 := NewAmqpConn091
 	NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
 		return amock
@@ -1036,7 +1034,6 @@ func Test_SubscribeStreamFailedDeclare(t *testing.T) {
 	}
 
 	cmock := &amqpChannelMock{}
-	cmock.On("Close").Return(nil)
 
 	amock := &amqpConnectionMock{}
 	amock.On("Connect").Return(nil)
@@ -1045,7 +1042,6 @@ func Test_SubscribeStreamFailedDeclare(t *testing.T) {
 
 	errs := make(chan amqp091Error)
 	amock.On("NotifyClose").Return(errs)
-	amock.On("NewChannel", false).Return(cmock, nil)
 	oldNewAmqpConn091 := NewAmqpConn091
 	NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
 		return amock
@@ -1117,7 +1113,6 @@ func Test_StreamRetry(t *testing.T) {
 	}
 
 	cmock := &amqpChannelMock{}
-	cmock.On("Close").Return(nil)
 
 	amock := &amqpConnectionMock{}
 	amock.On("Connect").Return(nil)
@@ -1126,7 +1121,6 @@ func Test_StreamRetry(t *testing.T) {
 
 	errs := make(chan amqp091Error)
 	amock.On("NotifyClose").Return(errs)
-	amock.On("NewChannel", false).Return(cmock, nil)
 	oldNewAmqpConn091 := NewAmqpConn091
 	NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
 		return amock
@@ -1215,10 +1209,6 @@ func Test_Subscribe_Stream_DeclareOnly(t *testing.T) {
 				NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
 					return amock
 				}
-
-				cmock := &amqpChannelMock{}
-				cmock.On("Close").Return(nil)
-				amock.On("NewChannel", false).Return(cmock, nil)
 
 				defer func() {
 					NewStreamConn = oldNewStreamConn
@@ -1313,7 +1303,6 @@ func Test_streamSubscribe_ExchangeAndBindingDeclaration(t *testing.T) {
 			// amqp channel mock – ExchangeDeclare and QueueBind are only
 			// expected when the address type is not Address_STREAM
 			cmock := &amqpChannelMock{}
-			cmock.On("Close").Return(nil)
 			if tc.expectExchangeDeclare {
 				cmock.On("ExchangeDeclare", addressName, "topic", false).Return(nil)
 			}
@@ -1326,7 +1315,6 @@ func Test_streamSubscribe_ExchangeAndBindingDeclaration(t *testing.T) {
 			amock.On("Connect").Return(nil)
 			errs := make(chan amqp091Error)
 			amock.On("NotifyClose").Return(errs)
-			amock.On("NewChannel", false).Return(cmock, nil)
 			if tc.expectExchangeDeclare {
 				// declareExchange calls StandbyChannel to obtain the channel used
 				// for ExchangeDeclare; wire it up only when it is expected to be called.

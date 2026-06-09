@@ -1223,12 +1223,6 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 		ttl = val
 	}
 
-	amqpChannel, err := bd.Connection.NewChannel(false)
-	if err != nil {
-		return &pb.Error{Message: err.Error()}
-	}
-	defer amqpChannel.Close()
-
 	if source.GetAddress().GetType() != pb.Address_STREAM {
 		err := prov.declareExchange(source.GetAddress(), bd)
 		if err != nil {
