@@ -8,7 +8,9 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -538,6 +540,7 @@ func Test_SubscribeStream(t *testing.T) {
 	pmock := &streamConsumerMock{}
 	pmock.On("Close").Return(nil)
 	smock.On("NewConsumer", src.GetName(), src.GetName(), src.GetOptions()["Offset"], mock.Anything, mock.AnythingOfType("bool")).Return(pmock, nil)
+	smock.On("StoreOffset", src.GetName(), src.GetName(), mock.Anything).Return(nil)
 	oldNewStreamConn := NewStreamConn
 	NewStreamConn = func(string, string, *tls.Config) streamConnectionShim {
 		return smock
@@ -591,10 +594,13 @@ func Test_SubscribeStream(t *testing.T) {
 	cancel()
 	time.Sleep(1000 * time.Millisecond)
 
+	// address type is STREAM: exchange and binding must NOT be declared
+	cmock.AssertNumberOfCalls(t, "ExchangeDeclare", 0)
+	cmock.AssertNumberOfCalls(t, "QueueBind", 0)
+	cmock.AssertExpectations(t)
 	amock.AssertExpectations(t)
 	pmock.AssertExpectations(t)
 	smock.AssertExpectations(t)
-	cmock.AssertExpectations(t)
 }
 
 func Test_SubscribeStreamBadOpt(t *testing.T) {
@@ -722,6 +728,11 @@ func Test_streamSubscribe(t *testing.T) {
 		NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
 			return amock
 		}
+
+		cmock := &amqpChannelMock{}
+		cmock.On("Close").Return(nil)
+		amock.On("NewChannel", false).Return(cmock, nil)
+		bd.Connection = amock
 
 		pmock := &streamConsumerMock{}
 		pmock.On("Close").Return(nil)
@@ -1235,5 +1246,141 @@ func Test_Subscribe_Stream_DeclareOnly(t *testing.T) {
 				smock.AssertExpectations(t)
 				amock.AssertExpectations(t)
 			})
+	}
+}
+
+// Test_streamSubscribe_ExchangeAndBindingDeclaration verifies that
+// when subscribing to a Source_STREAM source, an exchange and
+// binding are declared on the AMQP channel if (and only if) the address type
+// is NOT Address_STREAM.
+func Test_streamSubscribe_ExchangeAndBindingDeclaration(t *testing.T) {
+	tests := map[string]struct {
+		addressType           pb.Address_TargetType
+		expectExchangeDeclare bool
+		expectQueueBind       bool
+		needsManagementServer bool // cleanupBindings makes HTTP calls only when bindings are actually declared
+	}{
+		"non-stream address type declares exchange and binding": {
+			addressType:           pb.Address_TOPIC,
+			expectExchangeDeclare: true,
+			expectQueueBind:       true,
+			needsManagementServer: true,
+		},
+		"stream address type skips exchange and binding": {
+			addressType:           pb.Address_STREAM,
+			expectExchangeDeclare: false,
+			expectQueueBind:       false,
+			needsManagementServer: false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			prov := NewAMQP091Provider()
+
+			oldGetClientIdentifier := GetClientIdentifier
+			GetClientIdentifier = func(context.Context) (string, error) {
+				return "1234", nil
+			}
+			oldNewAmqpConn091 := NewAmqpConn091
+			oldNewStreamConn := NewStreamConn
+			defer func() {
+				GetClientIdentifier = oldGetClientIdentifier
+				NewAmqpConn091 = oldNewAmqpConn091
+				NewStreamConn = oldNewStreamConn
+			}()
+
+			const addressName = "addressName"
+			const sourceName = "srcName"
+			addr := &pb.Address{
+				Name:     addressName,
+				Subjects: []string{"subject1"},
+				Type:     tc.addressType,
+			}
+			src := &pb.Source{
+				Name:        sourceName,
+				Address:     addr,
+				Type:        pb.Source_STREAM,
+				Options:     map[string]string{"Offset": "0"},
+				DeclareOnly: true, // stop after declare; avoids consumer setup
+			}
+
+			// stream connection mock
+			smock := &streamConnectionMock{}
+			smock.On("Connect").Return(nil)
+			smock.On("IsClosed").Return(false)
+			smock.On("DeclareStream").Return(nil)
+			NewStreamConn = func(string, string, *tls.Config) streamConnectionShim {
+				return smock
+			}
+
+			// amqp channel mock – ExchangeDeclare and QueueBind are only
+			// expected when the address type is not Address_STREAM
+			cmock := &amqpChannelMock{}
+			if tc.expectExchangeDeclare {
+				cmock.On("ExchangeDeclare", addressName, "topic", false).Return(nil)
+			}
+			if tc.expectQueueBind {
+				cmock.On("QueueBind", sourceName, "subject1", addressName, mock.Anything).Return(nil)
+			}
+
+			// amqp connection mock
+			amock := &amqpConnectionMock{}
+			amock.On("Connect").Return(nil)
+			errs := make(chan amqp091Error)
+			amock.On("NotifyClose").Return(errs)
+			if tc.expectExchangeDeclare {
+				// declareExchange calls StandbyChannel to obtain the channel used
+				// for ExchangeDeclare; wire it up only when it is expected to be called.
+				amock.On("StandbyChannel").Return(cmock, nil)
+			}
+			NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
+				return amock
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			cc := &pb.ConnectionConfiguration{}
+
+			// The cleanupBindings call inside declareBinding issues an HTTP
+			// request to the management API; wire that up when needed.
+			if tc.needsManagementServer {
+				msrv := mockManagementRequestServer()
+				defer msrv.Close()
+				u, serr := url.Parse(msrv.URL)
+				assert.Nil(t, serr)
+				cc.Host = u.Hostname()
+				cc.Tenant = testTenant
+				i, _ := strconv.Atoi(u.Port())
+				cc.AdminPort = int32(i) //nolint:gosec
+			}
+
+			connectErr := prov.Connect(ctx, cc, false)
+			assert.Nil(t, connectErr)
+
+			mc := make(chan *pb.Message)
+			defer close(mc)
+
+			subscribeErr := prov.Subscribe(ctx, src, mc)
+			assert.Nil(t, subscribeErr)
+
+			// Core assertions: verify exchange and binding call counts
+			cmock.AssertNumberOfCalls(t, "ExchangeDeclare", func() int {
+				if tc.expectExchangeDeclare {
+					return 1
+				}
+				return 0
+			}())
+			cmock.AssertNumberOfCalls(t, "QueueBind", func() int {
+				if tc.expectQueueBind {
+					return 1
+				}
+				return 0
+			}())
+
+			cmock.AssertExpectations(t)
+			amock.AssertExpectations(t)
+			smock.AssertExpectations(t)
+		})
 	}
 }

@@ -1229,9 +1229,20 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 		ttl = val
 	}
 
+	if source.GetAddress().GetType() != pb.Address_STREAM {
+		_ = prov.declareExchange(source.GetAddress(), bd)
+	}
+
 	dErr := bd.StreamConnection.DeclareStream(source.GetName(), ttl)
 	if dErr != nil {
 		return &pb.Error{IsFatal: true, Message: fmt.Sprintf("failed to declare stream: %s", dErr.Error())}
+	}
+
+	if source.GetAddress().GetType() != pb.Address_STREAM {
+		err := prov.declareBinding(source, bd, true)
+		if err != nil {
+			return &pb.Error{Message: err.Error()}
+		}
 	}
 
 	if source.GetDeclareOnly() {
