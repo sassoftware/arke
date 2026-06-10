@@ -147,22 +147,22 @@ func (s *ConsumerServer) Consume(stream pb.Consumer_ConsumeServer) error { //nol
 	sender := newStreamSender(stream)
 
 	ctx := stream.Context()
-	prov, findErr := findProvider(ctx)
-	if prov == nil {
-		ftlError := errors.New(findErr.Message)
-		cnsmResp := &pb.ConsumeResponse{Resp: &pb.ConsumeResponse_Error{Error: findErr}}
-		_ = sender.Send(cnsmResp)
-		util.Logger.Debug(i18n.SubscribeError, findErr.Message)
-		return ftlError
-	}
-
 	clientIdentifier, err := GetClientIdentifier(ctx)
 	if err != nil {
 		ciErr := &pb.Error{Message: err.Error(), IsFatal: true}
 		cnsmResp := &pb.ConsumeResponse{Resp: &pb.ConsumeResponse_Error{Error: ciErr}}
 		_ = sender.Send(cnsmResp)
-		util.Logger.Debug(i18n.SubscribeError, ciErr.Message)
+		util.Logger.Debug(i18n.SubscribeError, ciErr.Message, clientIdentifier)
 		return err
+	}
+
+	prov, findErr := findProvider(ctx)
+	if prov == nil {
+		ftlError := errors.New(findErr.Message)
+		cnsmResp := &pb.ConsumeResponse{Resp: &pb.ConsumeResponse_Error{Error: findErr}}
+		_ = sender.Send(cnsmResp)
+		util.Logger.Debug(i18n.SubscribeError, findErr.Message, clientIdentifier)
+		return ftlError
 	}
 
 	var returnError error
@@ -248,7 +248,7 @@ consumeLoop:
 				options := source.GetOptions()
 				for option := range options {
 					if _, ok := validOptions[option]; !ok {
-						util.Logger.Info(i18n.UnsupportedSourceOption, option)
+						util.Logger.Info(i18n.UnsupportedSourceOption, option, clientIdentifier)
 						unsupported = append(unsupported, option)
 					}
 				}
@@ -303,7 +303,7 @@ consumeLoop:
 					if connected {
 						err := prov.Subscribe(cont, source, mc)
 						if err != nil {
-							util.Logger.Warn(i18n.SubscribeError, err.Message)
+							util.Logger.Warn(i18n.SubscribeError, err.Message, clientIdentifier)
 							*returnErr = errors.New(err.GetMessage())
 						}
 
@@ -326,7 +326,7 @@ consumeLoop:
 							*stopFor <- true
 						}
 					} else {
-						util.Logger.Warn(i18n.BrokerConnectError, "could not connect to broker")
+						util.Logger.Warn(i18n.BrokerConnectError, "could not connect to broker", clientIdentifier)
 						*returnErr = errors.New("could not connect to broker")
 						if *stopFor != nil {
 							*stopFor <- true
@@ -406,6 +406,14 @@ func (s *ProducerServer) PublishOne(ctx context.Context, msg *pb.Message) (*pb.M
 // Publish sends message to the server
 func (s *ProducerServer) Publish(stream pb.Producer_PublishServer) error { //nolint:gocognit
 	ctx := stream.Context()
+	clientIdentifier, err := GetClientIdentifier(ctx)
+	if err != nil {
+		ciError := &pb.Error{Message: err.Error(), IsFatal: true}
+		msgResp := &pb.MessageResponse{Success: false, Error: ciError}
+		stream.Send(msgResp) //nolint:errcheck
+		return err
+	}
+
 	prov, findErr := findProvider(ctx)
 	if prov == nil {
 		ftlError := errors.New(findErr.Message)
@@ -414,16 +422,7 @@ func (s *ProducerServer) Publish(stream pb.Producer_PublishServer) error { //nol
 		return ftlError
 	}
 
-	var err error
 	var msg *pb.Message
-
-	clientIdentifier, err := GetClientIdentifier(ctx)
-	if err != nil {
-		ciError := &pb.Error{Message: err.Error(), IsFatal: true}
-		msgResp := &pb.MessageResponse{Success: false, Error: ciError}
-		stream.Send(msgResp) //nolint:errcheck
-		return err
-	}
 
 	var returnError error
 	// stopPublish should only be set to true if:
@@ -547,7 +546,7 @@ func (s *ProducerServer) Publish(stream pb.Producer_PublishServer) error { //nol
 				if connected {
 					continue
 				}
-				util.Logger.Warn(i18n.BrokerConnectError, err.Message)
+				util.Logger.Warn(i18n.BrokerConnectError, err.Message, clientIdentifier)
 			} else {
 				util.Logger.Debugf("Client no longer exists. Stopping publish.")
 				stopPublish = true
