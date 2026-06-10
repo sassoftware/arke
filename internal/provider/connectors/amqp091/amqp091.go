@@ -1224,10 +1224,7 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 	}
 
 	if source.GetAddress().GetType() != pb.Address_STREAM {
-		err := prov.declareExchange(source.GetAddress(), bd)
-		if err != nil {
-			util.Logger.Debugf("Failed to declare exchange for source %s: %v", source.GetName(), err)
-		}
+		_ = prov.declareExchange(source.GetAddress(), bd)
 	}
 
 	dErr := bd.StreamConnection.DeclareStream(source.GetName(), ttl)
@@ -1238,7 +1235,7 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 	if source.GetAddress().GetType() != pb.Address_STREAM {
 		err := prov.declareBinding(source, bd, true)
 		if err != nil {
-			util.Logger.Debugf("Failed to declare binding for source %s: %s", source.GetName(), err.Error())
+			return &pb.Error{Message: err.Error()}
 		}
 	}
 
