@@ -111,6 +111,10 @@ type BrokerDetails struct {
 	tlsConfig        *tls.Config
 	tlsEnabled       bool
 	shutdownChan     chan bool
+	// watcherWG tracks the connectionWatcher goroutine so callers (notably
+	// tests) can wait for it to exit after a Disconnect, rather than letting
+	// it outlive the connection.
+	watcherWG sync.WaitGroup
 }
 
 func init() {
@@ -511,7 +515,11 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 		return &pb.Error{Message: bdErr.Error()}
 	}
 	prov.connections.Add(bd.ClientIdentifier, &bd)
-	go bd.connectionWatcher()
+	bd.watcherWG.Add(1)
+	go func() {
+		defer bd.watcherWG.Done()
+		bd.connectionWatcher()
+	}()
 
 	return nil
 }
