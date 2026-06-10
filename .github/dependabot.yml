@@ -15,7 +15,6 @@ updates:
         update-types:
           - minor
           - patch
-    ignore: []
   - package-ecosystem: gomod
     directory: "/api"
     schedule:
