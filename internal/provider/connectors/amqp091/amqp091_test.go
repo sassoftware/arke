@@ -2310,69 +2310,49 @@ func Test_SetDelivery(t *testing.T) {
 }
 
 func Test_ClientExists(t *testing.T) {
-	prov := NewAMQP091Provider()
-
-	oldGetClientIdentifier := GetClientIdentifier
-	GetClientIdentifier = func(context.Context) (string, error) {
-		return "1234", nil
+	tests := []struct {
+		name     string
+		clientID string
+		want     bool
+	}{
+		{"exists", "1234", true},
+		{"not exists", "4321", false},
 	}
 
-	amock := &amqpConnectionMock{}
-	amock.On("Connect").Return(nil)
-	errs := make(chan amqp091Error)
-	amock.On("NotifyClose").Return(errs)
-	oldNewAmqpConn091 := NewAmqpConn091
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prov := NewAMQP091Provider()
 
-	NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
-		return amock
+			oldGetClientIdentifier := GetClientIdentifier
+			GetClientIdentifier = func(context.Context) (string, error) {
+				return "1234", nil
+			}
+
+			amock := &amqpConnectionMock{}
+			amock.On("Connect").Return(nil)
+			errs := make(chan amqp091Error)
+			amock.On("NotifyClose").Return(errs)
+			oldNewAmqpConn091 := NewAmqpConn091
+
+			NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
+				return amock
+			}
+
+			defer func() {
+				GetClientIdentifier = oldGetClientIdentifier
+				NewAmqpConn091 = oldNewAmqpConn091
+			}()
+
+			ctx := context.Background()
+			cc := &pb.ConnectionConfiguration{}
+			err := prov.Connect(ctx, cc, false)
+			defer stopWatcher(ctx, prov)
+			assert.Nil(t, err)
+
+			exists := prov.ClientExists(tt.clientID)
+			assert.Equal(t, tt.want, exists)
+		})
 	}
-
-	defer func() {
-		GetClientIdentifier = oldGetClientIdentifier
-		NewAmqpConn091 = oldNewAmqpConn091
-	}()
-
-	ctx := context.Background()
-	cc := &pb.ConnectionConfiguration{}
-	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(ctx, prov)
-	assert.Nil(t, err)
-
-	exists := prov.ClientExists("1234")
-	assert.True(t, exists)
-}
-
-func Test_ClientExists_false(t *testing.T) {
-	prov := NewAMQP091Provider()
-
-	oldGetClientIdentifier := GetClientIdentifier
-	GetClientIdentifier = func(context.Context) (string, error) {
-		return "1234", nil
-	}
-
-	amock := &amqpConnectionMock{}
-	amock.On("Connect").Return(nil)
-	errs := make(chan amqp091Error)
-	amock.On("NotifyClose").Return(errs)
-	oldNewAmqpConn091 := NewAmqpConn091
-
-	NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
-		return amock
-	}
-
-	defer func() {
-		GetClientIdentifier = oldGetClientIdentifier
-		NewAmqpConn091 = oldNewAmqpConn091
-	}()
-
-	ctx := context.Background()
-	cc := &pb.ConnectionConfiguration{}
-	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(ctx, prov)
-	assert.Nil(t, err)
-
-	exists := prov.ClientExists("4321")
-	assert.False(t, exists)
 }
 
 func Test_getBrokerDetails_err(t *testing.T) {
