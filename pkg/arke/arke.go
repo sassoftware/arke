@@ -87,7 +87,7 @@ func (a *Arke) WithRateLimit(rlp *RateLimitParameters) *Arke {
 		util.Logger.Warn(i18n.CouldNotCreateRateLimiter, err.Error())
 		return a
 	}
-	util.Logger.Info(i18n.RateLimiterInitialized2, rlp.BucketSize, rlp.RefillInterval, rlp.MaxAgeStaleClient)
+	util.Logger.Info(i18n.RateLimiterInitialized, rlp.BucketSize, rlp.RefillInterval, rlp.MaxAgeStaleClient)
 	a.ratelimiter = rl
 
 	a.interceptors.chainUnary = append(

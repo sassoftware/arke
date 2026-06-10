@@ -163,7 +163,7 @@ func (clm *ClientLimitManager) Limit(ctx context.Context) error {
 		// Is this needed? Or should I just immediately end the span?
 		span.AddEvent("rate limit exceeded")
 
-		util.Logger.Warn(i18n.RateLimitExceeded2, clientIdentifier, c.limiter.Limit(), c.limiter.Burst(), c.limiter.Tokens(), clm.enforced)
+		util.Logger.Warn(i18n.RateLimitExceeded, clientIdentifier, c.limiter.Limit(), c.limiter.Burst(), c.limiter.Tokens(), clm.enforced)
 		if clm.enforced {
 			return ErrTooManyRequests
 		}

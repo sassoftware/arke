@@ -84,7 +84,6 @@ const (
 	RateLimiterNoClientIdentifier = BundleID + ".warn.rateLimiterNoClientIdentifer.log"
 	// Deprecated: (2025.12) - will be removed in 2026.05
 	RateLimitExceeded                = BundleID + ".warn.rateLimitExceeded.log"
-	RateLimitExceeded2               = BundleID + ".warn.rateLimitExceeded2.log"
 	CouldNotCreateRateLimiter        = BundleID + ".warn.couldNotCreateRateLimiter.log"
 	CouldNotCreateRateLimiterFromEnv = BundleID + ".warn.couldNotCreateRateLimiterFromEnv.log"
 	InvalidRateParameters            = BundleID + ".warn.invalidRateParameters.log"
