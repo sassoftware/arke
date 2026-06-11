@@ -152,7 +152,7 @@ func (s *ConsumerServer) Consume(stream pb.Consumer_ConsumeServer) error { //nol
 		ciErr := &pb.Error{Message: err.Error(), IsFatal: true}
 		cnsmResp := &pb.ConsumeResponse{Resp: &pb.ConsumeResponse_Error{Error: ciErr}}
 		_ = sender.Send(cnsmResp)
-		util.Logger.Debug(i18n.SubscribeError, ciErr.Message, clientIdentifier)
+		util.Logger.Debug(i18n.ClientSubscribeError, ciErr.Message, clientIdentifier)
 		return err
 	}
 
@@ -161,7 +161,7 @@ func (s *ConsumerServer) Consume(stream pb.Consumer_ConsumeServer) error { //nol
 		ftlError := errors.New(findErr.Message)
 		cnsmResp := &pb.ConsumeResponse{Resp: &pb.ConsumeResponse_Error{Error: findErr}}
 		_ = sender.Send(cnsmResp)
-		util.Logger.Debug(i18n.SubscribeError, findErr.Message, clientIdentifier)
+		util.Logger.Debug(i18n.ClientSubscribeError, findErr.Message, clientIdentifier)
 		return ftlError
 	}
 
@@ -248,7 +248,7 @@ consumeLoop:
 				options := source.GetOptions()
 				for option := range options {
 					if _, ok := validOptions[option]; !ok {
-						util.Logger.Info(i18n.UnsupportedSourceOption, option, clientIdentifier)
+						util.Logger.Info(i18n.ClientUnsupportedSourceOption, option, clientIdentifier)
 						unsupported = append(unsupported, option)
 					}
 				}
@@ -303,7 +303,7 @@ consumeLoop:
 					if connected {
 						err := prov.Subscribe(cont, source, mc)
 						if err != nil {
-							util.Logger.Warn(i18n.SubscribeError, err.Message, clientIdentifier)
+							util.Logger.Warn(i18n.ClientSubscribeError, err.Message, clientIdentifier)
 							*returnErr = errors.New(err.GetMessage())
 						}
 
@@ -326,7 +326,7 @@ consumeLoop:
 							*stopFor <- true
 						}
 					} else {
-						util.Logger.Warn(i18n.BrokerConnectError, "could not connect to broker", clientIdentifier)
+						util.Logger.Warn(i18n.ClientBrokerConnectError, "could not connect to broker", clientIdentifier)
 						*returnErr = errors.New("could not connect to broker")
 						if *stopFor != nil {
 							*stopFor <- true
@@ -546,7 +546,7 @@ func (s *ProducerServer) Publish(stream pb.Producer_PublishServer) error { //nol
 				if connected {
 					continue
 				}
-				util.Logger.Warn(i18n.BrokerConnectError, err.Message, clientIdentifier)
+				util.Logger.Warn(i18n.ClientBrokerConnectError, err.Message, clientIdentifier)
 			} else {
 				util.Logger.Debugf("Client no longer exists. Stopping publish.")
 				stopPublish = true

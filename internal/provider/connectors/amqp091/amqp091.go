@@ -222,7 +222,7 @@ func (prov *amqp091provider) Ack(ctx context.Context, msgid string) *pb.Error {
 	}
 
 	if err != nil {
-		util.Logger.Warn(i18n.AckError, err.Error(), bd.ClientIdentifier)
+		util.Logger.Warn(i18n.ClientAckError, err.Error(), bd.ClientIdentifier)
 
 		bd.activeMessages.Delete(msgid)
 		errMsg := &pb.Error{
@@ -273,7 +273,7 @@ func (prov *amqp091provider) Nack(ctx context.Context, msgid string) *pb.Error {
 	}
 
 	if err != nil {
-		util.Logger.Warn(i18n.NackError, err.Error(), bd.ClientIdentifier)
+		util.Logger.Warn(i18n.ClientNackError, err.Error(), bd.ClientIdentifier)
 
 		bd.activeMessages.Delete(msgid)
 		errMsg := &pb.Error{
@@ -511,7 +511,7 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 
 	_, bdErr := bd.connect()
 	if bdErr != nil {
-		util.Logger.Warn(i18n.BrokerConnectError, bdErr.Error(), clientIdentifier)
+		util.Logger.Warn(i18n.ClientBrokerConnectError, bdErr.Error(), clientIdentifier)
 		return &pb.Error{Message: bdErr.Error()}
 	}
 	prov.connections.Add(bd.ClientIdentifier, &bd)
@@ -653,7 +653,7 @@ func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDeta
 
 		err = amqpChannel.ExchangeDeclare(address.GetName(), exchangeType, address.GetAutoDelete())
 		if err != nil {
-			util.Logger.Warn(i18n.ExchangeDeclareError, err.Error(), bd.ClientIdentifier)
+			util.Logger.Warn(i18n.ClientExchangeDeclareError, err.Error(), bd.ClientIdentifier)
 			return err
 		}
 
@@ -665,7 +665,7 @@ func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDeta
 		if !known {
 			err := prov.declareExchange(parent, bd)
 			if err != nil {
-				util.Logger.Warn(i18n.ExchangeDeclareError, err.Error(), bd.ClientIdentifier)
+				util.Logger.Warn(i18n.ClientExchangeDeclareError, err.Error(), bd.ClientIdentifier)
 			}
 			bd.knownExchanges.Add(parent.GetName(), true)
 		}
@@ -755,7 +755,7 @@ func (prov *amqp091provider) declareQueue(source *pb.Source, bd *BrokerDetails, 
 	// header like we do above.
 	qErr := amqpChannel.QueueDeclare(source.GetName(), false, false, args)
 	if qErr != nil {
-		util.Logger.Warn(i18n.QueueDeclareError, qErr.Error(), bd.ClientIdentifier)
+		util.Logger.Warn(i18n.ClientQueueDeclareError, qErr.Error(), bd.ClientIdentifier)
 	}
 	bd.knownQueues.Add(source.GetName(), true)
 	return nil
@@ -955,13 +955,13 @@ func (prov *amqp091provider) declareBinding(source *pb.Source, bd *BrokerDetails
 			for _, matchHeaders := range matchHeadersList {
 				bErr := amqpChannel.QueueBind(source.GetName(), subject, source.GetAddress().GetName(), matchHeaders)
 				if bErr != nil {
-					util.Logger.Warn(i18n.QueueBindError, bErr.Error(), bd.ClientIdentifier)
+					util.Logger.Warn(i18n.ClientQueueBindError, bErr.Error(), bd.ClientIdentifier)
 				}
 			}
 		} else {
 			bErr := amqpChannel.QueueBind(source.GetName(), subject, source.GetAddress().GetName(), nil)
 			if bErr != nil {
-				util.Logger.Warn(i18n.QueueBindError, bErr.Error(), bd.ClientIdentifier)
+				util.Logger.Warn(i18n.ClientQueueBindError, bErr.Error(), bd.ClientIdentifier)
 			}
 		}
 	}
@@ -1061,7 +1061,7 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 	)
 
 	if err != nil {
-		util.Logger.Warn(i18n.ClientSubscribeError, bd.ClientIdentifier, source.GetName(), err.Error())
+		util.Logger.Warn(i18n.ClientQueueSubscribeError, bd.ClientIdentifier, source.GetName(), err.Error())
 		return &pb.Error{Message: err.Error()}
 	}
 
@@ -1191,7 +1191,7 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 	options := source.GetOptions()
 	for option := range options {
 		if _, ok := validOptions[option]; !ok {
-			util.Logger.Info(i18n.UnsupportedSourceOption, option, bd.ClientIdentifier)
+			util.Logger.Info(i18n.ClientUnsupportedSourceOption, option, bd.ClientIdentifier)
 			unsupported = append(unsupported, option)
 		}
 	}
@@ -1594,7 +1594,7 @@ func (prov *amqp091provider) prepareAndSend(ctx context.Context, msg *pb.Message
 	span.AddEvent("message published to broker")
 
 	if err != nil {
-		util.Logger.Warn(i18n.PublishError, err.Error(), bd.ClientIdentifier)
+		util.Logger.Warn(i18n.ClientPublishError, err.Error(), bd.ClientIdentifier)
 		span.RecordError(err)
 		errMsg := &pb.Error{
 			Message: err.Error(),
@@ -1624,7 +1624,7 @@ func (prov *amqp091provider) streamPrepareAndSend(ctx context.Context, msg *pb.M
 	span.AddEvent("message published to stream")
 
 	if err != nil {
-		util.Logger.Warn(i18n.PublishError, err.Error(), bd.ClientIdentifier)
+		util.Logger.Warn(i18n.ClientPublishError, err.Error(), bd.ClientIdentifier)
 		span.RecordError(err)
 		errMsg := &pb.Error{
 			Message: err.Error(),
@@ -1943,7 +1943,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	err = conn.Connect()
 
 	if err != nil {
-		util.Logger.Warn(i18n.BrokerConnectError, err.Error(), bd.ClientIdentifier)
+		util.Logger.Warn(i18n.ClientBrokerConnectError, err.Error(), bd.ClientIdentifier)
 		bd.state.Store(provider.CLOSED)
 		return false, err
 	}
