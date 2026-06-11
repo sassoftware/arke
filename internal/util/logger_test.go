@@ -29,7 +29,7 @@ func TestArkeLogger_InfoT(t *testing.T) {
 		},
 		{
 			name:        "params given but not needed",
-			messageID:   i18n.RateLimiterInitialized,
+			messageID:   i18n.RateLimiterInitialized2,
 			args:        []interface{}{"arg1", "arg2"},
 			expectedMsg: "Rate limiter has been initialized",
 		},
