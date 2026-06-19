@@ -55,12 +55,6 @@ logs a warning.
 | `ARKE_RATE_LIMIT_MAX_AGE_STALE_CLIENTS` | *(disabled)* | Seconds of inactivity before a client's rate-limit state is evicted |
 | `ARKE_RATE_LIMIT_ENFORCED` | `false` | `true` = reject over-limit requests with `RESOURCE_EXHAUSTED`; `false` = log only |
 
-### Backend TLS (Broker Connection)
-
-| Variable | Description |
-| --- | --- |
-| `ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE` | PEM file with additional CA certificates trusted when connecting to the broker |
-
 ### Observability
 
 | Variable | Default | Description |
@@ -301,8 +295,7 @@ not rejected — check logs for rate-limit warnings.
 1. Verify the backend broker is reachable from the Arke pod:
   `kubectl exec <pod> -- nc -zv <broker-host> <broker-port>`.
 2. Check TLS configuration: if the broker requires TLS, ensure
-`ConnectionConfiguration.Tls = true` and that
-`SAS_ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE` points to the correct CA bundle.
+`ConnectionConfiguration.Tls = true`.
 3. Check broker credentials in `ConnectionConfiguration.Credentials`.
 
 ### Connections not cleaned up (connectionMap growing)

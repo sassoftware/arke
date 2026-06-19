@@ -178,12 +178,9 @@ integration_test_tls: ## Runs integration tests with TLS enabled
 	echo -e "\033[0;31mProvider TLS enabled\033[0m"
 	cd tests/integration ; ARKE_PROVIDER_TLS=true ARKE_BROKER_PORT=5671 go test -timeout 5m -count=1 -v -cover -coverprofile=int_coverage.out -tags=integration ./
 
-integration_test_tls_send_ca: ## Runs integraiton tests with TLS enabled by sending TLS certs
-	echo "\033[0;31mProvider TLS enabled (sending CA cert)\033[0m"
-	cd tests/integration ; ARKE_PROVIDER_TLS=sendCA ARKE_BROKER_PORT=5671 go test -count=1 -v -cover -coverprofile=int_coverage.out -tags=integration ./
 integration: compose integration_test ## Runs compose and integration_test
 
-integration_all: integration integration_test_tls integration_test_tls_send_ca ## Runs all integration_test* targets.
+integration_all: integration integration_test_tls  ## Runs all integration_test* targets.
 
 failover_test: ## Runs connection-resilience and failover integration tests (requires a running arke + RabbitMQ with management API)
 	cd tests/integration ; go test -count=1 -v -timeout 3m -tags=failover ./

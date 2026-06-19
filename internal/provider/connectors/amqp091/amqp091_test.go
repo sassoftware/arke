@@ -322,7 +322,6 @@ func TestConnect_TLS_WithCert(t *testing.T) {
 	ctx := context.Background()
 	cc := &pb.ConnectionConfiguration{}
 	cc.Tls = true
-	cc.CaCertificate = []byte("asdf")
 	err := prov.Connect(ctx, cc, false)
 	defer stopWatcher(ctx, prov)
 

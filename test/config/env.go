@@ -41,21 +41,18 @@ func ConnectionConfigurationFromEnv() pb.ConnectionConfiguration {
 	brokerType := getenv("ARKE_BROKER_TYPE", "amqp091")
 	tenant := getenv("ARKE_BROKER_TENANT", "/")
 
-	caCertificate := []byte(getenv("ARKE_BROKER_CA_CERTIFICATE", ""))
-
 	creds := &pb.Credentials{
 		Username: username,
 		Password: password,
 	}
 
 	connConf := pb.ConnectionConfiguration{
-		Host:          hostname,
-		Port:          int32(port),
-		Credentials:   creds,
-		Provider:      brokerType,
-		Tenant:        tenant,
-		CaCertificate: caCertificate,
-		AdminPort:     int32(adminPort),
+		Host:        hostname,
+		Port:        int32(port),
+		Credentials: creds,
+		Provider:    brokerType,
+		Tenant:      tenant,
+		AdminPort:   int32(adminPort),
 	}
 	return connConf //nolint
 }

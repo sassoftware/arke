@@ -6,7 +6,6 @@ package amqp091
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,7 +31,6 @@ import (
 )
 
 const providerName string = "amqp091"
-const trustedCerts = "ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE"
 const streamOffsetHeaderName = "x-current-offset"
 const retryCountHeaderName = "x-retry-count"
 const rabbitReceivedTimeHeaderName = "x-opt-rabbitmq-received-time"
@@ -138,18 +135,7 @@ func init() {
 func NewAMQP091Provider() provider.Provider {
 	connections := util.NewConcurrentMap()
 	prov := &amqp091provider{connections: connections}
-
-	caBundlePath := os.Getenv(trustedCerts)
 	prov.tlsConfig = &tls.Config{}
-
-	if caBundlePath != "" {
-		caBundle, err := os.ReadFile(filepath.FromSlash(filepath.Clean("/" + strings.Trim(caBundlePath, "/"))))
-		if err == nil {
-			prov.tlsConfig.RootCAs = x509.NewCertPool()
-			prov.tlsConfig.RootCAs.AppendCertsFromPEM(caBundle)
-		}
-	}
-
 	return prov
 }
 
@@ -1920,8 +1906,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 
 	// Use TLS in these scenarios:
 	// * ConnectionConfiguration.TLS = true
-	// * ConnectionConfiguration.CaCertificate is not empty
-	if cf.GetTls() || len(cf.GetCaCertificate()) > 0 {
+	if cf.GetTls() {
 		bd.tlsEnabled = true
 		scheme = "amqps"
 	}

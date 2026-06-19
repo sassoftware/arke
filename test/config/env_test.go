@@ -86,7 +86,6 @@ func TestConnectionConfigurationFromEnv_Defaults(t *testing.T) {
 		"ARKE_BROKER_PASSWORD",
 		"ARKE_BROKER_TYPE",
 		"ARKE_BROKER_TENANT",
-		"ARKE_BROKER_CA_CERTIFICATE",
 	}
 
 	for _, v := range envVars {
@@ -107,7 +106,6 @@ func TestConnectionConfigurationFromEnv_Defaults(t *testing.T) {
 	assert.Equal(t, "guest", config.Credentials.Password)
 	assert.Equal(t, "amqp091", config.Provider)
 	assert.Equal(t, "/", config.Tenant)
-	assert.Empty(t, config.CaCertificate)
 }
 
 func TestConnectionConfigurationFromEnv_CustomValues(t *testing.T) {
@@ -119,7 +117,6 @@ func TestConnectionConfigurationFromEnv_CustomValues(t *testing.T) {
 	os.Setenv("ARKE_BROKER_PASSWORD", "secret123")
 	os.Setenv("ARKE_BROKER_TYPE", "amqp10")
 	os.Setenv("ARKE_BROKER_TENANT", "/custom-tenant")
-	os.Setenv("ARKE_BROKER_CA_CERTIFICATE", "-----BEGIN CERTIFICATE-----")
 
 	defer func() {
 		os.Unsetenv("ARKE_BROKER_HOSTNAME")
@@ -129,7 +126,6 @@ func TestConnectionConfigurationFromEnv_CustomValues(t *testing.T) {
 		os.Unsetenv("ARKE_BROKER_PASSWORD")
 		os.Unsetenv("ARKE_BROKER_TYPE")
 		os.Unsetenv("ARKE_BROKER_TENANT")
-		os.Unsetenv("ARKE_BROKER_CA_CERTIFICATE")
 	}()
 
 	config := ConnectionConfigurationFromEnv()
@@ -141,7 +137,6 @@ func TestConnectionConfigurationFromEnv_CustomValues(t *testing.T) {
 	assert.Equal(t, "secret123", config.Credentials.Password)
 	assert.Equal(t, "amqp10", config.Provider)
 	assert.Equal(t, "/custom-tenant", config.Tenant)
-	assert.Equal(t, []byte("-----BEGIN CERTIFICATE-----"), config.CaCertificate)
 }
 
 func TestConnectionConfigurationFromEnv_PartialCustomValues(t *testing.T) {
@@ -164,8 +159,7 @@ func TestConnectionConfigurationFromEnv_PartialCustomValues(t *testing.T) {
 	assert.Equal(t, "myuser", config.Credentials.Username)
 	assert.Equal(t, "guest", config.Credentials.Password) // default
 	assert.Equal(t, "rabbitmq", config.Provider)
-	assert.Equal(t, "/", config.Tenant)   // default
-	assert.Empty(t, config.CaCertificate) // default
+	assert.Equal(t, "/", config.Tenant) // default
 }
 
 func TestConnectionConfigurationFromEnv_PortParsing(t *testing.T) {
@@ -315,45 +309,6 @@ func TestConnectionConfigurationFromEnv_TenantValues(t *testing.T) {
 			config := ConnectionConfigurationFromEnv()
 
 			assert.Equal(t, tt.expectedTenant, config.Tenant)
-		})
-	}
-}
-
-func TestConnectionConfigurationFromEnv_CACertificate(t *testing.T) {
-	tests := []struct {
-		name        string
-		certificate string
-		expected    []byte
-	}{
-		{
-			name:        "no certificate",
-			certificate: "",
-			expected:    []byte(""),
-		},
-		{
-			name:        "simple certificate string",
-			certificate: "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----",
-			expected:    []byte("-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----"),
-		},
-		{
-			name:        "single line certificate",
-			certificate: "cert-data",
-			expected:    []byte("cert-data"),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.certificate != "" {
-				os.Setenv("ARKE_BROKER_CA_CERTIFICATE", tt.certificate)
-				defer os.Unsetenv("ARKE_BROKER_CA_CERTIFICATE")
-			} else {
-				os.Unsetenv("ARKE_BROKER_CA_CERTIFICATE")
-			}
-
-			config := ConnectionConfigurationFromEnv()
-
-			assert.Equal(t, tt.expected, config.CaCertificate)
 		})
 	}
 }

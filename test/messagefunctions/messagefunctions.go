@@ -26,15 +26,7 @@ func connectConfig(clientName string) *pb.ConnectionConfiguration {
 
 	providerTLS := strings.ToLower(os.Getenv("ARKE_PROVIDER_TLS"))
 
-	switch providerTLS {
-	case "sendca":
-		cacert, err := os.ReadFile("certs/testca/ca_certificate.pem")
-		if err != nil {
-			log.Fatalf("Error reading provider CA cert: %v", err)
-		}
-		connConfig.Tls = true
-		connConfig.CaCertificate = cacert
-	case "true":
+	if providerTLS == "true" {
 		connConfig.Tls = true
 	}
 

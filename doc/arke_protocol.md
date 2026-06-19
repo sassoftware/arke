@@ -103,7 +103,6 @@ RabbitMQ and Kafka.
 | provider | [string](#string) |  | Provider type, currently only amqp091. |
 | tenant | [string](#string) |  | Tenant name for this connection. Tenant is not required |
 | credentials | [Credentials](#arke-Credentials) |  | Authentication credentials. |
-| ca_certificate | [bytes](#bytes) |  | TLS Certificate authority for broker. Implies tls. |
 | tls | [bool](#bool) |  | Should this provider connection use TLS. If used in conjunction with CaCertificate, the certificate will be used for verification. If no CaCertificate is provided then the providers certificate must be trusted by the system certificates. |
 | client_name | [string](#string) |  | The name of the client connecting. |
 | admin_port | [int32](#int32) |  | The administrative port for the provider (eg. RabbitMQ management port) for any actions needing to be performed by the provider (eg. modifying bindings for RabbitMQ) |

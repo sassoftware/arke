@@ -29,32 +29,33 @@ Your Application
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Table of Contents](#table-of-contents)
-- [Features](#features)
-- [Requirements](#requirements)
-- [Installation](#installation)
-  - [Build from Source](#build-from-source)
-- [Configuration](#configuration)
-  - [Core](#core)
-- [Running](#running)
-- [gRPC API](#grpc-api)
-- [TLS](#tls)
-  - [Server (Arke listener)](#server-arke-listener)
-  - [Back-end (Broker connection)](#back-end-broker-connection)
-- [Rate Limiting](#rate-limiting)
-- [Observability](#observability)
-- [Development](#development)
-  - [Running Unit Tests](#running-unit-tests)
-  - [Running Integration Tests](#running-integration-tests)
-  - [Regenerating Protocol Buffers](#regenerating-protocol-buffers)
-  - [Linting](#linting)
-  - [Makefile Targets](#makefile-targets)
-- [Design Documentation](#design-documentation)
-- [Contributing](#contributing)
-- [Security Policy](#security-policy)
-- [License](#license)
-- [Third-party dependencies](#third-party-dependencies)
+- [](#arke-message-broker-proxy)
+  - [Overview](#overview)
+  - [Table of Contents](#table-of-contents)
+  - [Features](#features)
+  - [Requirements](#requirements)
+  - [Installation](#installation)
+    - [Build from Source](#build-from-source)
+  - [Configuration](#configuration)
+    - [Core](#core)
+  - [Running](#running)
+  - [gRPC API](#grpc-api)
+  - [TLS](#tls)
+    - [Server (Arke listener)](#server-arke-listener)
+    - [Back-end (Broker connection)](#back-end-broker-connection)
+  - [Rate Limiting](#rate-limiting)
+  - [Observability](#observability)
+  - [Development](#development)
+    - [Running Unit Tests](#running-unit-tests)
+    - [Running Integration Tests](#running-integration-tests)
+    - [Regenerating Protocol Buffers](#regenerating-protocol-buffers)
+    - [Linting](#linting)
+    - [Makefile Targets](#makefile-targets)
+  - [Design Documentation](#design-documentation)
+  - [Contributing](#contributing)
+  - [Security Policy](#security-policy)
+  - [License](#license)
+  - [Third-party dependencies](#third-party-dependencies)
 
 ---
 
@@ -186,8 +187,6 @@ Pass `tls: true` (and optionally `ca_certificate` bytes) in
 `ConnectionConfiguration` when calling `Connect`. Arke will use the
 provided CA certificate for verification, or fall back to the system
 trust store if none is provided.
-Set `ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE` to supply additional
-trusted CA certificates globally at the process level.
 
 Use `--tls-skip-verify` to disable certificate verification entirely
 (not recommended for production).
