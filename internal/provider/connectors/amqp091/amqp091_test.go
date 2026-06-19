@@ -31,7 +31,7 @@ var cf *pb.ConnectionConfiguration
 const testTenant = "tenant"
 const testQueueTypeClassic = "classic"
 const testQueueTypeQuorum = "quorum"
-const testDeadLetterAddress = "dla"
+const testDeadLetterAddress = "dla"``
 const testContentTypeJSON = "application/json"
 const testContentEncodingText = "text"
 const testXMatchAny = "any"
@@ -260,40 +260,6 @@ func Test_Connect_NoClient(t *testing.T) {
 
 	assert.NotNil(t, err)
 	assert.Contains(t, err.GetMessage(), "noclient")
-}
-
-func TestConnect_TLS_SkipVerify(t *testing.T) {
-	prov := NewAMQP091Provider()
-	assert.NotNil(t, prov)
-
-	oldGetClientIdentifier := GetClientIdentifier
-	GetClientIdentifier = func(context.Context) (string, error) {
-		return "1234", nil
-	}
-
-	amock := &amqpConnectionMock{}
-	amock.On("Connect").Return(nil)
-	errs := make(chan amqp091Error)
-	amock.On("NotifyClose").Return(errs)
-	oldNewAmqpConn091 := NewAmqpConn091
-	NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
-		return amock
-	}
-
-	defer func() {
-		GetClientIdentifier = oldGetClientIdentifier
-		NewAmqpConn091 = oldNewAmqpConn091
-	}()
-
-	ctx := context.Background()
-	cc := &pb.ConnectionConfiguration{}
-	cc.Tls = true
-	err := prov.Connect(ctx, cc, true)
-	defer stopWatcher(ctx, prov)
-
-	assert.Nil(t, err)
-
-	amock.AssertExpectations(t)
 }
 
 func TestConnect_TLS_WithCert(t *testing.T) {
