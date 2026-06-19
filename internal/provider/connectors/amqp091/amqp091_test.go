@@ -31,7 +31,7 @@ var cf *pb.ConnectionConfiguration
 const testTenant = "tenant"
 const testQueueTypeClassic = "classic"
 const testQueueTypeQuorum = "quorum"
-const testDeadLetterAddress = "dla"``
+const testDeadLetterAddress = "dla"
 const testContentTypeJSON = "application/json"
 const testContentEncodingText = "text"
 const testXMatchAny = "any"
