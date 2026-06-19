@@ -34,6 +34,7 @@ default_ca = testca
 
 [ testca ]
 dir = .
+certificate = \$dir/ca_certificate.pem
 database = \$dir/index.txt
 new_certs_dir = \$dir/certs
 private_key = \$dir/private/ca_private_key.pem
@@ -104,6 +105,9 @@ function generateCert() {
 		-passout pass:
 }
 
+openssl req -x509 -config openssl.cnf -newkey rsa:2048 -days 365 \
+	-out ca_certificate.pem -outform PEM -subj /CN=MyTestCA/ -nodes
+openssl x509 -in ca_certificate.pem -out ca_certificate.cer -outform DER
 
 cd ..
 mkdir server
@@ -111,6 +115,8 @@ cd server
 
 generateCert "rabbitmq"
 generateCert "arke"
+
+cat rabbitmq.pem rabbitmq.key >rabbitmq_combined.pem
 
 cd ../
 
