@@ -235,7 +235,7 @@ type ConnectionConfiguration struct {
 	Provider      string                 `protobuf:"bytes,3,opt,name=provider,proto3" json:"provider,omitempty"`                       // Provider type, currently only amqp091.
 	Tenant        string                 `protobuf:"bytes,4,opt,name=tenant,proto3" json:"tenant,omitempty"`                           // Tenant name for this connection. Tenant is not required
 	Credentials   *Credentials           `protobuf:"bytes,5,opt,name=credentials,proto3" json:"credentials,omitempty"`                 // Authentication credentials.
-	Tls           bool                   `protobuf:"varint,8,opt,name=tls,proto3" json:"tls,omitempty"`                                // Should this provider connection use TLS. If used in conjunction with CaCertificate, the certificate will be used for verification. If no CaCertificate is provided then the providers certificate must be trusted by the system certificates.
+	Tls           bool                   `protobuf:"varint,8,opt,name=tls,proto3" json:"tls,omitempty"`                                // Should this provider connection use TLS.
 	ClientName    string                 `protobuf:"bytes,9,opt,name=client_name,json=clientName,proto3" json:"client_name,omitempty"` // The name of the client connecting.
 	AdminPort     int32                  `protobuf:"varint,10,opt,name=admin_port,json=adminPort,proto3" json:"admin_port,omitempty"`  // The administrative port for the provider (eg. RabbitMQ management port) for any actions needing to be performed by the provider (eg. modifying bindings for RabbitMQ)
 	unknownFields protoimpl.UnknownFields

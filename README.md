@@ -183,10 +183,7 @@ port.
 
 ### Back-end (Broker connection)
 
-Pass `tls: true` (and optionally `ca_certificate` bytes) in
-`ConnectionConfiguration` when calling `Connect`. Arke will use the
-provided CA certificate for verification, or fall back to the system
-trust store if none is provided.
+Pass `tls: true` in `ConnectionConfiguration` when calling `Connect`.
 Set `ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE` to supply additional
 trusted CA certificates globally at the process level.
 

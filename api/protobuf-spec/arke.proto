@@ -25,7 +25,7 @@ message ConnectionConfiguration {
     string provider = 3; // Provider type, currently only amqp091.
     string tenant = 4; // Tenant name for this connection. Tenant is not required
     Credentials credentials = 5; // Authentication credentials.
-    bool tls = 8; // Should this provider connection use TLS. If used in conjunction with CaCertificate, the certificate will be used for verification. If no CaCertificate is provided then the providers certificate must be trusted by the system certificates.
+    bool tls = 8; // Should this provider connection use TLS.
     string client_name = 9; // The name of the client connecting.
     int32 admin_port = 10; // The administrative port for the provider (eg. RabbitMQ management port) for any actions needing to be performed by the provider (eg. modifying bindings for RabbitMQ)
 

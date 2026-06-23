@@ -149,6 +149,7 @@ func NewAMQP091Provider() provider.Provider {
 			prov.tlsConfig.RootCAs.AppendCertsFromPEM(caBundle)
 		}
 	}
+
 	return prov
 }
 

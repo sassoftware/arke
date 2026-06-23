@@ -57,8 +57,8 @@ logs a warning.
 
 ### Backend TLS (Broker Connection)
 
-| Variable                                | Description                                                                    |
-| --------------------------------------- | ------------------------------------------------------------------------------ |
+| Variable | Description |
+| --- | --- |
 | `ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE` | PEM file with additional CA certificates trusted when connecting to the broker |
 
 ### Observability

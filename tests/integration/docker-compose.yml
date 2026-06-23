@@ -21,7 +21,7 @@ services:
       - ARKE_RATE_LIMIT_DEBUG_METHODS=true
       - GOCOVERDIR=/coverage/integration
     volumes:
-      # - ./certs:/certs
+      - ./certs:/certs
       - ./coverage:/coverage
   rabbitmq:
     build:
