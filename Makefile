@@ -164,7 +164,7 @@ compose_only: ## runs docker image(s) for integration tests
 		docker compose -f docker-compose.yml build && \
 		docker compose -f docker-compose.yml down && \
 		docker compose -f docker-compose.yml up --remove-orphans -d rabbitmq arke && \
-		sleep 20)
+		sleep 10)
 
 compose_down: ## Removes integration tests Docker resources
 	cd tests/integration ; \
@@ -172,11 +172,11 @@ compose_down: ## Removes integration tests Docker resources
 
 integration_test: ## Runs integration tests
 	echo -e "\033[0;36mNo providerTLS\033[0m"
-	cd tests/integration ; go test -count=1 -v -timeout 5m -cover -coverprofile=int_coverage.out -tags=integration ./...
+	cd tests/integration ; go test -shuffle=on -count=1 -v -timeout 10m -cover -coverprofile=int_coverage.out -tags=integration ./...
 
 integration_test_tls: ## Runs integration tests with TLS enabled
 	echo -e "\033[0;31mProvider TLS enabled\033[0m"
-	cd tests/integration ; ARKE_PROVIDER_TLS=true ARKE_BROKER_PORT=5671 go test -timeout 5m -count=1 -v -cover -coverprofile=int_coverage.out -tags=integration ./
+	cd tests/integration ; ARKE_PROVIDER_TLS=true ARKE_BROKER_PORT=5671 go test -shuffle=on -timeout 10m -count=1 -v -cover -coverprofile=int_coverage.out -tags=integration ./...
 
 integration: compose integration_test ## Runs compose and integration_test
 

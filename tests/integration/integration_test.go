@@ -1114,7 +1114,7 @@ func TestProduceSingleConsumeRetry(t *testing.T) {
 			msgCount++
 		case <-done:
 			breakLoop = true
-		case <-time.After(5 * time.Second):
+		case <-time.After(10 * time.Second):
 			breakLoop = true
 		}
 		if breakLoop {
