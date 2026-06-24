@@ -14,6 +14,7 @@ services:
       - ARKE_LOG_LEVEL=debug
       - ARKE_CERT_FILE=/certs/server/arke.pem
       - ARKE_CERT_KEY=/certs/server/arke.key
+      - ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE=/certs/testca/ca_certificate.pem
       - ARKE_RATE_LIMIT_ENFORCED=true
       - ARKE_RATE_LIMIT_BUCKET_SIZE=20
       - ARKE_RATE_LIMIT_REFILL_SECONDS=10
@@ -30,6 +31,7 @@ services:
     image: tests_rabbitmq:latest
     ports:
       - "5552:5552"
+      - "5551:5551"
       - "5672:5672"
       - "5671:5671"
       - "15672:15672"

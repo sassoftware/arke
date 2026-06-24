@@ -8,6 +8,7 @@ package integration
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log"
 	"os"
@@ -75,7 +76,15 @@ func connect() *grpc.ClientConn {
 
 	// If the health check failed, try with TLS
 	if err != nil && (resp == nil || resp.GetStatus() != healthpb.HealthCheckResponse_SERVING) {
-		tlsConfig := &tls.Config{}
+		b, rErr := os.ReadFile("certs/testca/ca_certificate.pem")
+		if rErr != nil {
+			log.Fatal(err)
+		}
+		cp := x509.NewCertPool()
+		if !cp.AppendCertsFromPEM(b) {
+			log.Fatalf("client did not connect: %v", "credentials: failed to append certificates")
+		}
+		tlsConfig := &tls.Config{RootCAs: cp}
 
 		conn, _ = grpc.NewClient(arkeAddress(), grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig))) // , grpc.WithInsecure()
 
