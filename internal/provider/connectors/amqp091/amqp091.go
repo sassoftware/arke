@@ -336,7 +336,7 @@ func (prov *amqp091provider) Retry(ctx context.Context, origSource *pb.Source, m
 
 			if bd.RetryChannel == nil {
 				bd.Lock()
-				retryChannel, err := bd.Connection.NewChannel(false)
+				retryChannel, err := bd.Connection.NewChannel(true)
 				if err != nil {
 					bd.Unlock()
 					return &pb.Error{Message: err.Error()}

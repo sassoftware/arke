@@ -894,6 +894,7 @@ func Test_Retry(t *testing.T) {
 	errs := make(chan amqp091Error)
 	amock.On("NotifyClose").Return(errs)
 	amock.On("NewChannel", false).Return(cmock, nil)
+	amock.On("NewChannel", true).Return(cmock, nil)
 
 	sbmock.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 	sbmock.On("QueueDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
@@ -983,6 +984,7 @@ func Test_RetryFailure(t *testing.T) {
 	errs := make(chan amqp091Error)
 	amock.On("NotifyClose").Return(errs)
 	amock.On("NewChannel", false).Return(cmock, nil)
+	amock.On("NewChannel", true).Return(cmock, nil)
 
 	sbmock.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 	sbmock.On("QueueDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
@@ -1086,6 +1088,7 @@ func Test_RetryFailure_DeclareErrorsStillSuccess(t *testing.T) {
 	errs := make(chan amqp091Error)
 	amock.On("NotifyClose").Return(errs)
 	amock.On("NewChannel", false).Return(cmock, nil)
+	amock.On("NewChannel", true).Return(cmock, nil)
 
 	sbmock.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
 	sbmock.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(errors.New("err")).Once()
