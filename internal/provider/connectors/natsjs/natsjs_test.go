@@ -1,0 +1,418 @@
+// Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+package natsjs
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"testing"
+	"time"
+
+	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go/jetstream"
+	pb "github.com/sassoftware/arke/api"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// The connector resolves the per-client broker state from the client identifier
+// in the context. For tests we override it with a fixed identifier (the real
+// implementation reads it from gRPC metadata).
+func init() {
+	GetClientIdentifier = func(context.Context) (string, error) {
+		return "test-client", nil
+	}
+}
+
+// runJetStreamServer starts an in-process NATS server with JetStream enabled,
+// backed by a temp store dir that is cleaned up with the test.
+func runJetStreamServer(t *testing.T) *natsserver.Server {
+	t.Helper()
+	opts := &natsserver.Options{
+		Host:      "127.0.0.1",
+		Port:      -1, // choose a free port
+		JetStream: true,
+		StoreDir:  t.TempDir(),
+		NoLog:     true,
+		NoSigs:    true,
+	}
+	s, err := natsserver.NewServer(opts)
+	require.NoError(t, err)
+	go s.Start()
+	if !s.ReadyForConnections(10 * time.Second) {
+		t.Fatal("embedded nats server did not become ready")
+	}
+	t.Cleanup(s.Shutdown)
+	return s
+}
+
+// connectClient builds a provider and connects a single client to the server.
+func connectClient(t *testing.T, s *natsserver.Server) (*natsjsProvider, context.Context) {
+	t.Helper()
+	addr := s.Addr().(*net.TCPAddr)
+	p := NewNATSJetStreamProvider().(*natsjsProvider)
+	cfg := &pb.ConnectionConfiguration{
+		Host:       "127.0.0.1",
+		Port:       int32(addr.Port), //nolint:gosec // local server port fits int32
+		ClientName: "test",
+	}
+	ctx := context.Background()
+	if perr := p.Connect(ctx, cfg, false); perr != nil {
+		t.Fatalf("connect: %s", perr.GetMessage())
+	}
+	if !p.WaitForConnect(ctx) {
+		t.Fatal("WaitForConnect returned false against a live server")
+	}
+	return p, ctx
+}
+
+func queueSource(name, addr string, subjects ...string) *pb.Source {
+	return &pb.Source{
+		Name:    name,
+		Type:    pb.Source_QUEUE,
+		Address: &pb.Address{Name: addr, Subjects: subjects},
+		// Offset:first => deliver from the start so tests can publish before
+		// subscribing without racing the consumer setup.
+		Options: map[string]string{"Offset": "first"},
+	}
+}
+
+// recv waits for one message on out or fails after a generous timeout.
+func recv(t *testing.T, out <-chan *pb.Message) *pb.Message {
+	t.Helper()
+	select {
+	case m := <-out:
+		return m
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for a message")
+		return nil
+	}
+}
+
+func TestConnectDisconnect(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	assert.True(t, p.ClientExists("test-client"))
+
+	p.Disconnect(ctx)
+	assert.False(t, p.ClientExists("test-client"))
+}
+
+func TestSupportedSourceOptions(t *testing.T) {
+	p := NewNATSJetStreamProvider().(*natsjsProvider)
+	opts := p.SupportedSourceOptions()
+	for _, k := range []string{"MessageTTL", "DeadLetterAddress", "DeadLetterSubject", "Expires", "Offset", "ConsumerGroup"} {
+		assert.True(t, opts[k], "expected %s to be supported", k)
+	}
+	assert.False(t, opts["NotARealOption"])
+}
+
+func TestPublishOneAndSubscribe(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.orders", Subjects: []string{"created"}}
+	const n = 5
+	for i := 0; i < n; i++ {
+		msg := &pb.Message{Address: addr, Body: []byte(fmt.Sprintf("m%d", i))}
+		if perr := p.PublishOne(ctx, msg); perr != nil {
+			t.Fatalf("publish %d: %s", i, perr.GetMessage())
+		}
+	}
+
+	out := make(chan *pb.Message, n)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, queueSource("events.orders.consumer", "events.orders", "created"), out)
+
+	for i := 0; i < n; i++ {
+		m := recv(t, out)
+		assert.NoError(t, errOf(p.Ack(ctx, m.GetUuid())))
+	}
+
+	stats := p.Stats()
+	require.Len(t, stats.Clients, 1)
+	assert.Equal(t, n, stats.Clients[0].Produced)
+	assert.Equal(t, n, stats.Clients[0].Consumed)
+}
+
+func TestPublishChannel(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	in := make(chan *pb.Message)
+	errChan := make(chan *pb.Error)
+	go func() { _ = p.Publish(ctx, in, errChan) }()
+
+	addr := &pb.Address{Name: "events.audit", Subjects: []string{"login"}}
+	// The server protocol sends a message then blocks reading exactly one error.
+	in <- &pb.Message{Address: addr, Body: []byte("hello")}
+	assert.Nil(t, <-errChan, "publish should report nil on success")
+	close(in)
+}
+
+func TestRetrySynthesizesRetryCount(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.retry", Subjects: []string{"job"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("work")}))
+
+	out := make(chan *pb.Message, 2)
+	src := queueSource("events.retry.consumer", "events.retry", "job")
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	first := recv(t, out)
+	assert.Empty(t, first.GetHeaders()[retryCountHeaderName], "first delivery has no retry count")
+	require.Nil(t, p.Retry(ctx, src, first.GetUuid(), 1))
+
+	second := recv(t, out)
+	assert.Equal(t, "1", second.GetHeaders()[retryCountHeaderName], "redelivery carries x-retry-count")
+	require.Nil(t, p.Ack(ctx, second.GetUuid()))
+}
+
+func TestNackRedelivers(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.nack", Subjects: []string{"job"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("work")}))
+
+	out := make(chan *pb.Message, 2)
+	src := queueSource("events.nack.consumer", "events.nack", "job")
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	first := recv(t, out)
+	require.Nil(t, p.Nack(ctx, first.GetUuid()))
+
+	second := recv(t, out)
+	require.Nil(t, p.Ack(ctx, second.GetUuid()))
+}
+
+func TestDeadLetter(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.dl", Subjects: []string{"job"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("poison")}))
+
+	out := make(chan *pb.Message, 1)
+	src := queueSource("events.dl.consumer", "events.dl", "job")
+	src.Options["DeadLetterAddress"] = "events.dlq"
+	src.Options["DeadLetterSubject"] = "failed"
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	m := recv(t, out)
+	require.Nil(t, p.DeadLetter(ctx, src, m.GetUuid()))
+
+	// The dead-lettered copy lands on the DLQ stream.
+	dlqStats := p.SourceStats(ctx, &pb.Source{
+		Name:    "events.dlq.consumer",
+		Address: &pb.Address{Name: "events.dlq"},
+	})
+	assert.Nil(t, dlqStats.GetError())
+	assert.Equal(t, int64(1), dlqStats.GetMessageCount())
+}
+
+func TestDeduplication(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.dedup", Subjects: []string{"e"}}
+	dup := func() *pb.Message {
+		return &pb.Message{Address: addr, Body: []byte("x"), PublisherName: "pub", PublishId: 42}
+	}
+	require.Nil(t, p.PublishOne(ctx, dup()))
+	require.Nil(t, p.PublishOne(ctx, dup()))
+
+	stats := p.SourceStats(ctx, &pb.Source{
+		Name:    "events.dedup.consumer",
+		Address: &pb.Address{Name: "events.dedup"},
+	})
+	assert.Nil(t, stats.GetError())
+	assert.Equal(t, int64(1), stats.GetMessageCount(), "duplicate publish_id within the window is collapsed")
+}
+
+func TestHeaderFilterDropsNonMatching(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.filter", Subjects: []string{"e"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("keep"), Headers: map[string]string{"region": "us"}}))
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("drop"), Headers: map[string]string{"region": "eu"}}))
+
+	out := make(chan *pb.Message, 2)
+	src := queueSource("events.filter.consumer", "events.filter", "e")
+	src.Filters = []*pb.Filter{{
+		Type:    pb.Filter_ALL,
+		Matches: []*pb.Match{{Name: "region", Value: "us"}},
+	}}
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	m := recv(t, out)
+	assert.Equal(t, "keep", string(m.GetBody()))
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+
+	// The non-matching message is acked and dropped proxy-side, so nothing else
+	// should arrive.
+	select {
+	case extra := <-out:
+		t.Fatalf("unexpected second delivery: %q", string(extra.GetBody()))
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+func TestDurableConsumerResumesBacklog(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.durable", Subjects: []string{"e"}}
+	src := queueSource("events.durable.consumer", "events.durable", "e")
+
+	// Establish the durable consumer, then stop consuming (client "outage").
+	declCtx, declCancel := context.WithCancel(ctx)
+	go p.Subscribe(declCtx, src, make(chan *pb.Message, 1))
+	time.Sleep(200 * time.Millisecond)
+	declCancel()
+	time.Sleep(100 * time.Millisecond)
+
+	// Publish a backlog while no consumer is attached.
+	const n = 3
+	for i := 0; i < n; i++ {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte(fmt.Sprintf("b%d", i))}))
+	}
+
+	// Reattach the same durable; the backlog is redelivered.
+	out := make(chan *pb.Message, n)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	for i := 0; i < n; i++ {
+		m := recv(t, out)
+		require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	}
+}
+
+func TestDeclareOnly(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	src := queueSource("events.declare.consumer", "events.declare", "e")
+	src.DeclareOnly = true
+
+	// DeclareOnly establishes topology and returns without blocking.
+	done := make(chan *pb.Error, 1)
+	go func() { done <- p.Subscribe(ctx, src, make(chan *pb.Message)) }()
+	select {
+	case perr := <-done:
+		assert.Nil(t, perr)
+	case <-time.After(10 * time.Second):
+		t.Fatal("DeclareOnly Subscribe did not return")
+	}
+
+	// The stream exists afterwards.
+	stats := p.SourceStats(ctx, &pb.Source{Name: "x", Address: &pb.Address{Name: "events.declare"}})
+	assert.Nil(t, stats.GetError())
+}
+
+func TestAckUnknownUUID(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	perr := p.Ack(ctx, "does-not-exist")
+	require.NotNil(t, perr)
+	assert.Contains(t, perr.GetMessage(), "no message with uuid")
+}
+
+func TestStreamConfigFromEnv(t *testing.T) {
+	t.Setenv("NATSJS_STREAM_REPLICAS", "5")
+	assert.Equal(t, 5, streamReplicas())
+	t.Setenv("NATSJS_STREAM_REPLICAS", "bad")
+	assert.Equal(t, 1, streamReplicas())
+
+	t.Setenv("NATSJS_STREAM_MAX_AGE", "24h")
+	assert.Equal(t, 24*time.Hour, streamMaxAge())
+	t.Setenv("NATSJS_STREAM_MAX_AGE", "0")
+	assert.Equal(t, time.Duration(0), streamMaxAge())
+
+	t.Setenv("NATSJS_STREAM_MAX_BYTES", "1048576")
+	assert.Equal(t, int64(1048576), streamMaxBytes())
+	t.Setenv("NATSJS_STREAM_MAX_BYTES", "0")
+	assert.Equal(t, int64(0), streamMaxBytes())
+}
+
+func TestDeliverPolicyFor(t *testing.T) {
+	mk := func(off string) *pb.Source { return &pb.Source{Options: map[string]string{"Offset": off}} }
+	assert.Equal(t, jetstream.DeliverAllPolicy, deliverPolicyFor(mk("first")))
+	assert.Equal(t, jetstream.DeliverNewPolicy, deliverPolicyFor(mk("next")))
+	assert.Equal(t, jetstream.DeliverNewPolicy, deliverPolicyFor(mk("")))
+	assert.Equal(t, jetstream.DeliverNewPolicy, deliverPolicyFor(mk("garbage")))
+	assert.Equal(t, jetstream.DeliverNewPolicy, deliverPolicyFor(&pb.Source{}))
+}
+
+func TestFirstSubject(t *testing.T) {
+	assert.Equal(t, "created", firstSubject(&pb.Address{Subjects: []string{"created", "ignored"}}))
+	assert.Equal(t, "", firstSubject(&pb.Address{}))
+}
+
+func TestWaitForConnectNoClient(t *testing.T) {
+	p := NewNATSJetStreamProvider().(*natsjsProvider)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	assert.False(t, p.WaitForConnect(ctx))
+}
+
+func TestSourceStatsMissingStream(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+	stats := p.SourceStats(ctx, &pb.Source{Name: "x", Address: &pb.Address{Name: "never.created"}})
+	assert.NotNil(t, stats.GetError())
+}
+
+// TestClientIdentifierFailurePropagates drives the error branch every method
+// shares: when the client identifier cannot be resolved, each returns an error
+// rather than touching the (nil) connection.
+func TestClientIdentifierFailurePropagates(t *testing.T) {
+	saved := GetClientIdentifier
+	defer func() { GetClientIdentifier = saved }()
+	GetClientIdentifier = func(context.Context) (string, error) {
+		return "", fmt.Errorf("no client identifier")
+	}
+
+	p := NewNATSJetStreamProvider().(*natsjsProvider)
+	ctx := context.Background()
+	src := queueSource("c", "events.x", "e")
+	msg := &pb.Message{Address: &pb.Address{Name: "events.x"}}
+
+	assert.NotNil(t, p.Connect(ctx, &pb.ConnectionConfiguration{Host: "127.0.0.1", Port: 1}, false))
+	assert.NotNil(t, p.PublishOne(ctx, msg))
+	assert.NotNil(t, p.Publish(ctx, make(chan *pb.Message), make(chan *pb.Error)))
+	assert.NotNil(t, p.Subscribe(ctx, src, make(chan *pb.Message)))
+	assert.NotNil(t, p.Ack(ctx, "x"))
+	assert.NotNil(t, p.Nack(ctx, "x"))
+	assert.NotNil(t, p.Retry(ctx, src, "x", 1))
+	assert.NotNil(t, p.DeadLetter(ctx, src, "x"))
+	assert.False(t, p.WaitForConnect(ctx))
+	assert.NotNil(t, p.SourceStats(ctx, src).GetError())
+	p.Disconnect(ctx) // exercises the early-return path; must not panic
+}
+
+// errOf adapts a *pb.Error into a Go error for assert.NoError-style checks.
+func errOf(e *pb.Error) error {
+	if e == nil {
+		return nil
+	}
+	return fmt.Errorf("%s", e.GetMessage())
+}

@@ -5,4 +5,5 @@ package connectors
 
 import (
 	_ "github.com/sassoftware/arke/internal/provider/connectors/amqp091" // Import the AMQP091 plugin
+	_ "github.com/sassoftware/arke/internal/provider/connectors/natsjs"  // Import the NATS JetStream plugin
 )
