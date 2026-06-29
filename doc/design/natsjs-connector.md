@@ -1,0 +1,211 @@
+# NATS JetStream Connector
+
+## Purpose
+
+This document describes the `natsjs` connector, a backend provider that lets
+Arke run against [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream)
+in place of (or alongside) RabbitMQ / AMQP 0.9.1. It is a worked example of
+the contract in
+[provider-connector-interface.md](provider-connector-interface.md): a second
+`provider.Provider` registered under the name `natsjs` and selected per
+connection via `ConnectionConfiguration.provider`.
+
+The connector covers the publish / subscribe / ack / delayed-retry /
+dead-letter / dedup / header-filter paths an AMQP client drives through Arke.
+It maps each onto a native JetStream primitive where one exists and onto a
+small amount of stateless proxy-side translation where it does not.
+
+The guiding rule that keeps the translation honest:
+
+> Arke may do stateless translation and orchestration of broker primitives. It
+> must not become the system of record. Persistence, routing, and HA stay in
+> the broker; dead-letter orchestration, delayed-retry, retry-count
+> bookkeeping, and header filtering may move into the proxy.
+
+## Subject and topology mapping
+
+AMQP routes via an exchange plus routing-key bindings. NATS routes via subjects
+with token wildcards. The connector maps the two as follows
+(`helpers.go:subjectFor`):
+
+| AMQP concept | NATS mapping |
+| --- | --- |
+| exchange / address name | subject root (dots kept; it is just a prefix) |
+| routing key | appended subject tokens |
+| `#` (zero-or-more words) | `>` (NATS allows `>` only as the final token) |
+| `*` (exactly one word) | `*` |
+
+A JetStream stream named `arke_<address>` captures `<address>.>`, and each
+consumer filters on the mapped source subjects. This is a faithful mapping for
+the dotted, topic-style routing keys AMQP topic exchanges use.
+
+NATS subjects are stricter than AMQP routing keys, so `translateWildcards`
+also sanitizes each token: a non-terminal `#` becomes `*` (NATS `>` is
+tail-only), illegal characters (space, tab, `*`, `>`) inside a literal token
+become `_`, and empty tokens (from `a..b` or a trailing dot) are dropped so the
+result is always a valid subject.
+
+AMQP headers-exchange routing has no NATS subject equivalent. It is reproduced
+proxy-side in `evaluateFilters`: multiple `Filter`s are OR'd (each is a
+separate binding), and within a single filter the matches combine per
+`Filter.Type` (`ALL` = and, `ANY` = or).
+
+## Consumers: durable vs ephemeral
+
+The connector chooses the consumer kind from the source
+(`helpers.go:durableName`):
+
+- Durable (work-queue) consumers use a stable name and persist across client
+  reconnects, so a backlog published while the consumer is disconnected is
+  redelivered on reconnect, matching RabbitMQ durable-queue semantics. Used
+  for non-transient `QUEUE` sources, `STREAM` sources with a `ConsumerGroup`,
+  and any `SingleActiveConsumer`.
+- Ephemeral consumers auto-expire after an inactivity threshold. Used for
+  auto-delete / exclusive / `TEMPORARY` sources, which clients commonly use
+  for per-instance, transient subscriptions.
+
+The `DeliverPolicy` is taken from the `Offset` option (`first` -> deliver all,
+otherwise deliver new) and only applies on first creation; a reconnecting
+durable resumes from its stored ack position.
+
+## Ack, retry, and dead-letter mapping
+
+The server translates a client's ack / nack / requeue into provider calls; the
+connector maps those onto JetStream primitives:
+
+| Client action | Provider call | NATS JetStream primitive |
+| --- | --- | --- |
+| ack | `Ack` | `msg.Ack()` |
+| nack, `requeue_delay > 0` | `Retry(delay)` | `msg.NakWithDelay(delay)` |
+| nack, `requeue_delay == 0`, DLA set | `DeadLetter` | publish to DLQ + `Term()` |
+| nack, `requeue_delay == 0`, no DLA | `Nack` | `msg.Nak()` |
+
+`NakWithDelay` is the native replacement for RabbitMQ's per-message-TTL +
+dead-letter retry-queue idiom; JetStream increments the delivery count, which
+the connector surfaces back to the client as the `x-retry-count` header (see
+below). JetStream has no native dead-letter exchange, so `DeadLetter`
+republishes the message to the configured dead-letter subject and then
+`Term()`s it to stop redelivery.
+
+## Retry-count header
+
+Clients that count retries via an `x-retry-count` header (rather than
+RabbitMQ's `x-death`) work unchanged: `handleDelivery` synthesizes
+`x-retry-count` from JetStream's `NumDelivered` metadata. This is the key piece
+that lets an existing AMQP retry policy run against NATS with no `x-death`
+equivalent.
+
+## Deduplication
+
+Publish-side dedup maps onto JetStream's `Nats-Msg-Id` plus the stream
+`Duplicates` window. When a message carries a publisher name and/or publish id,
+the connector sets `Nats-Msg-Id` so re-publishes within the window are
+collapsed.
+
+## Retention: work-queue vs append-log
+
+This is the most important behavioral difference between the two brokers. A
+RabbitMQ queue is a work queue: a message is deleted the instant a consumer
+acks it. A JetStream stream is an append log: with the default `LimitsPolicy`
+an acked message stays in the log and is only evicted when a configured limit
+(`MaxAge`, `MaxBytes`, `MaxMsgs`) is reached.
+
+To stop a stream growing without bound, `ensureStream` sets:
+
+- `MaxAge` (default 72h, override with `NATSJS_STREAM_MAX_AGE`) — the time
+  guard. It is the natural map for AMQP `MessageTTL` / `Expires` (both
+  durations). It is mutable, so it also reins in streams created before a limit
+  existed.
+- `MaxBytes` (default unlimited, override with `NATSJS_STREAM_MAX_BYTES`) — an
+  optional hard storage cap. With `discard=old` it only evicts near the cap, so
+  recent backlog is preserved as long as possible.
+
+There is a tension to respect: `MaxAge` evicts purely by clock, even with free
+disk. If it is shorter than the longest tolerable consumer-outage window it
+would silently delete a down consumer's backlog and regress the durable-queue
+behavior. The default therefore exceeds any realistic outage, and `MaxBytes`
+is intended as the primary disk guard.
+
+## Configuration
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `NATSJS_STREAM_REPLICAS` | `1` | Stream replication factor. Set to `3` against a clustered server for the HA equivalent of quorum queues. |
+| `NATSJS_STREAM_MAX_AGE` | `72h` | Max age before messages are evicted (Go duration; `0` = keep forever). |
+| `NATSJS_STREAM_MAX_BYTES` | `0` (unlimited) | Hard per-stream storage cap in bytes. |
+
+TLS and credentials come from the standard `ConnectionConfiguration` (`Tls`,
+`Credentials`) and the server's `tlsSkipVerify` flag, exactly as for the AMQP
+connector; the broker certificate is verified against the system trust store.
+
+## Feature-parity matrix
+
+Legend: **Native** = NATS does it; **Proxy** = rebuilt in the connector;
+**Drop** = not carried forward.
+
+| RabbitMQ / Arke feature | Disposition | Notes |
+| --- | --- | --- |
+| Topic routing + wildcard bindings | Native | NATS subjects + `*`/`>`; `#`->`>`, `*`->`*`. |
+| Per-subscriber ephemeral queue | Native | Ephemeral consumer with inactivity threshold. |
+| Durable work queue (reconnect resumes backlog) | Native | Durable consumer for non-transient / consumer-group / single-active sources. |
+| Publish confirms | Native | `js.PublishMsg` returns a `PubAck`. |
+| Message dedup (`publish_id` + `publisher_name`) | Native | `Nats-Msg-Id` + stream `Duplicates` window. |
+| Streams: offsets, start position | Native | JetStream is a log; `DeliverPolicy` maps `Offset`. |
+| Single active consumer | Native | Consumer config (needs a durable name). |
+| Prefetch / QoS | Native | `MaxAckPending`. |
+| HA / quorum queues | Native | JetStream R3 (Raft) via `NATSJS_STREAM_REPLICAS`. |
+| Delayed retry (per-msg TTL + DLX idiom) | Proxy -> Native | Replaced with `NakWithDelay`. |
+| Retry-count header (`x-retry-count`) | Proxy | Synthesized from JetStream `NumDelivered`. |
+| Dead-letter (DLX) | Proxy | No native DLX; republish to DLQ subject then `Term()`. |
+| Header-filter exchange (`Filter` / `Match`) | Proxy | NATS routes on subject; evaluated in `evaluateFilters`. |
+| `MessageTTL` / `Expires` | Partial | Mapped onto stream-level `MaxAge` (see limitations). |
+| Source stats (depth / consumers) | Native | JetStream stream / consumer `Info`. |
+| Publish / deliver rates in stats | Drop | Not exposed by JetStream info; would need sampling. |
+| RabbitMQ management HTTP API | Drop | Replaced by the JetStream API over NATS itself. |
+
+## Source options
+
+Per the connector-interface contract, `SupportedSourceOptions()` advertises
+every `Source.Options` key the connector reads:
+
+| Key | Type | Description |
+| --- | --- | --- |
+| `MessageTTL` | string (ms) | Per-source message TTL (mapped to stream `MaxAge`). |
+| `Expires` | string (ms) | Source expiry when unused (mapped to stream `MaxAge`). |
+| `DeadLetterAddress` | string | Address whose stream receives dead-lettered messages. |
+| `DeadLetterSubject` | string | Routing key for dead-lettered messages. |
+| `Offset` | string | Stream starting offset (`first` / `next`). |
+| `ConsumerGroup` | string | Durable consumer group name (Streams only). |
+
+## Known limitations
+
+- **Per-source TTL fidelity.** The connector uses one stream per address
+  root, so `MessageTTL` / `Expires` can only be honored as a stream-wide
+  `MaxAge`, not a faithful per-source TTL. True per-source TTL (or switching
+  queue sources to a delete-on-ack policy such as `WorkQueuePolicy` /
+  `InterestPolicy`) needs a per-source stream topology, and `Retention` is
+  immutable, so that is a stream-recreate migration rather than an in-place
+  change.
+- **Publish / deliver rates** are not exposed by JetStream stream info, so
+  `SourceStats` leaves those rate fields at zero.
+- **Dead-letter is fire-and-forget.** Messages are republished to the
+  dead-letter subject; there is no advisory-driven re-consumption.
+- **Connection authentication.** The connector supports user/password and TLS
+  today; NKEYs / JWT auth are a natural follow-up for production deployments.
+
+## Testing
+
+Unit tests for the pure mapping logic (subject / wildcard translation,
+durable-name selection, header-filter evaluation) live in `helpers_test.go`.
+Behavioral tests that exercise publish / subscribe / ack / retry / dead-letter
+against a real broker should follow the integration-test guidance in
+[provider-connector-interface.md](provider-connector-interface.md) by adding a
+NATS service to the integration compose setup.
+
+## Migration approach
+
+Run `natsjs` as a second provider alongside `amqp091` — the `provider` field
+in `ConnectionConfiguration` already supports per-connection selection. Migrate
+one low-risk message class, measure cost and latency, then expand. Because the
+proxy absorbs the broker-specific translation, the migration is incremental and
+reversible, and there is no need to remove the AMQP connector to begin.
