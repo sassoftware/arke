@@ -31,19 +31,15 @@ func amqpConfig(connName string, tlsCfg *tls.Config) amqp.Config {
 }
 
 func toAmqpTable(at amqp091Table) amqp.Table {
-	table := make(amqp.Table)
-	for key, val := range at {
-		table[key] = val
-	}
-	return table
+	// amqp091Table and amqp.Table share the same underlying type
+	// (map[string]interface{}), so a direct conversion is zero-cost and avoids
+	// allocating and copying a new map on every Publish call.
+	return amqp.Table(at)
 }
 
 func fromAmqpTable(tab amqp.Table) amqp091Table {
-	table := make(amqp091Table)
-	for key, val := range tab {
-		table[key] = val
-	}
-	return table
+	// Same zero-cost conversion on the receive path.
+	return amqp091Table(tab)
 }
 
 func fromTableToMap(tab amqp091Table) map[string]string {

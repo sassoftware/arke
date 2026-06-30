@@ -115,6 +115,11 @@ type BrokerDetails struct {
 	// tests) can wait for it to exit after a Disconnect, rather than letting
 	// it outlive the connection.
 	watcherWG sync.WaitGroup
+
+	// mgmtClientOnce guards one-time initialization of the cached HTTP client
+	// used for RabbitMQ management API requests.
+	mgmtClientOnce sync.Once
+	mgmtClient     *http.Client
 }
 
 func init() {
@@ -457,7 +462,11 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 	activeMessages := util.NewConcurrentMap()
 	pubChCtx := context.WithValue(context.Background(), CtxKey{name: "clientIdentifier"}, clientIdentifier)
 	pubChCtx, pubChCancel := context.WithCancel(pubChCtx) //nolint:gosec
-	bd := BrokerDetails{
+	// Allocate BrokerDetails as a pointer so closures and the connections map
+	// all share the same intentional heap object.  Previously, declaring bd as
+	// a value caused the compiler to detect 5 separate escape flows and emit 5
+	// escape-to-heap events, making the intent opaque.
+	bd := &BrokerDetails{
 		connectionConfig: cf,
 		ClientIdentifier: clientIdentifier,
 		ErrorChannel:     make(chan amqp091Error, 1),
@@ -514,7 +523,7 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 		util.Logger.Warn(i18n.ClientBrokerConnectError, bdErr.Error(), clientIdentifier)
 		return &pb.Error{Message: bdErr.Error()}
 	}
-	prov.connections.Add(bd.ClientIdentifier, &bd)
+	prov.connections.Add(bd.ClientIdentifier, bd)
 	bd.watcherWG.Add(1)
 	go func() {
 		defer bd.watcherWG.Done()
@@ -762,11 +771,18 @@ func (prov *amqp091provider) declareQueue(source *pb.Source, bd *BrokerDetails, 
 }
 
 func (bd *BrokerDetails) getManagementClient() *http.Client {
-	if bd.tlsEnabled {
-		tr := &http.Transport{TLSClientConfig: bd.tlsConfig}
-		return &http.Client{Transport: tr, Timeout: 5 * time.Second}
-	}
-	return &http.Client{Timeout: 5 * time.Second}
+	// Initialize the HTTP client once and reuse it for all management API
+	// requests.  Allocating a fresh *http.Client (and *http.Transport for TLS)
+	// on every call was the second-highest heap escape in the AMQP provider.
+	bd.mgmtClientOnce.Do(func() {
+		if bd.tlsEnabled {
+			tr := &http.Transport{TLSClientConfig: bd.tlsConfig}
+			bd.mgmtClient = &http.Client{Transport: tr, Timeout: 5 * time.Second}
+		} else {
+			bd.mgmtClient = &http.Client{Timeout: 5 * time.Second}
+		}
+	})
+	return bd.mgmtClient
 }
 
 func (bd *BrokerDetails) doManagementRequest(method, urn string) ([]map[string]interface{}, error) {
