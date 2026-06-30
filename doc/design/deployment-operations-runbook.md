@@ -303,6 +303,8 @@ not rejected — check logs for rate-limit warnings.
 2. Check TLS configuration: if the broker requires TLS, ensure
 `ConnectionConfiguration.Tls = true`.
 3. Check broker credentials in `ConnectionConfiguration.Credentials`.
+4. Check that `ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE` points to the correct CA
+    bundle.
 
 ### Connections not cleaned up (connectionMap growing)
 
