@@ -172,18 +172,15 @@ compose_down: ## Removes integration tests Docker resources
 
 integration_test: ## Runs integration tests
 	echo -e "\033[0;36mNo providerTLS\033[0m"
-	cd tests/integration ; go test -count=1 -v -timeout 5m -cover -coverprofile=int_coverage.out -tags=integration ./
+	cd tests/integration ; go test -shuffle=on -count=1 -v -timeout 10m -cover -coverprofile=int_coverage.out -tags=integration ./...
 
 integration_test_tls: ## Runs integration tests with TLS enabled
 	echo -e "\033[0;31mProvider TLS enabled\033[0m"
-	cd tests/integration ; ARKE_PROVIDER_TLS=true ARKE_BROKER_PORT=5671 go test -timeout 5m -count=1 -v -cover -coverprofile=int_coverage.out -tags=integration ./
+	cd tests/integration ; ARKE_PROVIDER_TLS=true ARKE_BROKER_PORT=5671 go test -shuffle=on -timeout 10m -count=1 -v -cover -coverprofile=int_coverage.out -tags=integration ./...
 
-integration_test_tls_send_ca: ## Runs integraiton tests with TLS enabled by sending TLS certs
-	echo "\033[0;31mProvider TLS enabled (sending CA cert)\033[0m"
-	cd tests/integration ; ARKE_PROVIDER_TLS=sendCA ARKE_BROKER_PORT=5671 go test -count=1 -v -cover -coverprofile=int_coverage.out -tags=integration ./
-integration: compose integration_test ## Runs compose and integration_test
+integration_tls_off: compose integration_test ## Runs compose and integration_test
 
-integration_all: integration integration_test_tls integration_test_tls_send_ca ## Runs all integration_test* targets.
+integration_tls_on: compose integration_test_tls ## Runs compose and integration_test_tls
 
 failover_test: ## Runs connection-resilience and failover integration tests (requires a running arke + RabbitMQ with management API)
 	cd tests/integration ; go test -count=1 -v -timeout 3m -tags=failover ./

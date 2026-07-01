@@ -296,42 +296,44 @@ func TestConnect_TLS_SkipVerify(t *testing.T) {
 	amock.AssertExpectations(t)
 }
 
-func TestConnect_TLS_WithCert(t *testing.T) {
-	prov := NewAMQP091Provider()
-	assert.NotNil(t, prov)
+func TestConnect_TLS(t *testing.T) {
+	for _, verify := range []bool{true, false} {
+		t.Run(fmt.Sprintf("verify=%v", verify), func(t *testing.T) {
+			prov := NewAMQP091Provider()
+			assert.NotNil(t, prov)
 
-	oldGetClientIdentifier := GetClientIdentifier
-	GetClientIdentifier = func(context.Context) (string, error) {
-		return "1234", nil
+			oldGetClientIdentifier := GetClientIdentifier
+			GetClientIdentifier = func(context.Context) (string, error) {
+				return "1234", nil
+			}
+
+			amock := &amqpConnectionMock{}
+			amock.On("Connect").Return(nil)
+			errs := make(chan amqp091Error)
+			amock.On("NotifyClose").Return(errs)
+			oldNewAmqpConn091 := NewAmqpConn091
+			NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
+				return amock
+			}
+
+			defer func() {
+				GetClientIdentifier = oldGetClientIdentifier
+				NewAmqpConn091 = oldNewAmqpConn091
+			}()
+
+			ctx := context.Background()
+			cc := &pb.ConnectionConfiguration{}
+			cc.Tls = true
+			err := prov.Connect(ctx, cc, verify)
+			defer stopWatcher(ctx, prov)
+
+			assert.Nil(t, err)
+
+			amock.AssertExpectations(t)
+			// TODO: Figure out a good way to get tlsConfig and see if the cert is set
+		})
 	}
-
-	amock := &amqpConnectionMock{}
-	amock.On("Connect").Return(nil)
-	errs := make(chan amqp091Error)
-	amock.On("NotifyClose").Return(errs)
-	oldNewAmqpConn091 := NewAmqpConn091
-	NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
-		return amock
-	}
-
-	defer func() {
-		GetClientIdentifier = oldGetClientIdentifier
-		NewAmqpConn091 = oldNewAmqpConn091
-	}()
-
-	ctx := context.Background()
-	cc := &pb.ConnectionConfiguration{}
-	cc.Tls = true
-	cc.CaCertificate = []byte("asdf")
-	err := prov.Connect(ctx, cc, false)
-	defer stopWatcher(ctx, prov)
-
-	assert.Nil(t, err)
-
-	amock.AssertExpectations(t)
-	// TODO: Figure out a good way to get tlsConfig and see if the cert is set
 }
-
 func TestConnect_Stats(t *testing.T) {
 	prov := NewAMQP091Provider()
 

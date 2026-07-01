@@ -1920,8 +1920,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 
 	// Use TLS in these scenarios:
 	// * ConnectionConfiguration.TLS = true
-	// * ConnectionConfiguration.CaCertificate is not empty
-	if cf.GetTls() || len(cf.GetCaCertificate()) > 0 {
+	if cf.GetTls() {
 		bd.tlsEnabled = true
 		scheme = "amqps"
 	}
