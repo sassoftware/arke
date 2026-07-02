@@ -579,3 +579,42 @@ func TestEmptyRoutingKeyDelivers(t *testing.T) {
 	assert.Equal(t, "no-key", string(m.GetBody()))
 	require.Nil(t, p.Ack(ctx, m.GetUuid()))
 }
+
+// TestSourceStatsReportsConsumerBacklog: for a durable source the message
+// count is the consumer's backlog, not the stream depth — the stream retains
+// acked messages under its retention limits, so its count never shrinks as
+// consumers catch up.
+func TestSourceStatsReportsConsumerBacklog(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.backlog", Subjects: []string{"e"}}
+	for i := 0; i < 3; i++ {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("x")}))
+	}
+
+	// Declare the durable consumer without consuming: its backlog is 3.
+	src := queueSource("events.backlog.consumer", "events.backlog", "e")
+	src.DeclareOnly = true
+	require.Nil(t, p.Subscribe(ctx, src, nil))
+
+	stats := p.SourceStats(ctx, src)
+	require.Nil(t, stats.GetError())
+	assert.Equal(t, int64(3), stats.GetMessageCount(), "durable backlog")
+
+	// Drain and ack everything; backlog returns to 0 even though the stream
+	// still retains the acked messages.
+	src.DeclareOnly = false
+	out := make(chan *pb.Message, 3)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+	for i := 0; i < 3; i++ {
+		m := recv(t, out)
+		require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	}
+	require.Eventually(t, func() bool {
+		st := p.SourceStats(ctx, src)
+		return st.GetError() == nil && st.GetMessageCount() == 0
+	}, 10*time.Second, 200*time.Millisecond, "backlog drains to 0 after acks")
+}

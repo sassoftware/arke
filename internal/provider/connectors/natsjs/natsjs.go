@@ -711,6 +711,21 @@ func (p *natsjsProvider) SourceStats(ctx context.Context, source *pb.Source) *pb
 	stats.MessageCount = int64(info.State.Msgs)       //nolint:gosec
 	stats.ConsumerCount = int32(info.State.Consumers) //nolint:gosec
 	stats.LastOffset = int64(info.State.LastSeq)      //nolint:gosec
+	// For a source with a durable consumer, report that consumer's actual
+	// backlog (undelivered + delivered-but-unacked) instead of the stream
+	// depth: the stream retains acked messages under its retention limits, so
+	// its message count keeps growing after consumers are caught up. This
+	// matches the amqp091 connector, which reports the queue's ready+unacked
+	// count — the number consumer-scaling logic wants. Without a durable
+	// consumer (or before it exists), fall back to the stream view.
+	if durable := durableName(source); durable != "" {
+		if cons, cerr := stream.Consumer(ctx, durable); cerr == nil {
+			if ci, ierr := cons.Info(ctx); ierr == nil {
+				stats.MessageCount = int64(ci.NumPending) + int64(ci.NumAckPending) //nolint:gosec
+				stats.CurrentOffset = int64(ci.AckFloor.Stream)                     //nolint:gosec
+			}
+		}
+	}
 	// Note: publish_rate / deliver_rate are not exposed directly by
 	// JetStream stream info; they would need to be derived from sampling. Left
 	// at zero for now.

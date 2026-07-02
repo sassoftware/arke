@@ -242,7 +242,13 @@ every `Source.Options` key the connector reads:
   immutable, so that is a stream-recreate migration rather than an in-place
   change.
 - **Publish / deliver rates** are not exposed by JetStream stream info, so
-  `SourceStats` leaves those rate fields at zero.
+  `SourceStats` leaves those rate fields at zero. The message count for a
+  durable source is the consumer's backlog (undelivered plus unacked, with
+  `current_offset` from its ack floor) rather than the stream depth — the
+  stream retains acked messages under its retention limits, so its depth
+  keeps growing after consumers catch up, which would mislead anything using
+  message count as queue length (e.g. consumer autoscaling). Sources without
+  a durable consumer fall back to the stream view.
 - **Dead-letter is fire-and-forget.** Messages are republished to the
   dead-letter subject; there is no advisory-driven re-consumption.
 - **Connection authentication.** The connector supports user/password and TLS
