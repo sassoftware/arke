@@ -126,6 +126,30 @@ would silently delete a down consumer's backlog and regress the durable-queue
 behavior. The default therefore exceeds any realistic outage, and `MaxBytes`
 is intended as the primary disk guard.
 
+## Operational resilience
+
+Three mechanisms harden the connector against a cold or busy broker. All are
+sized for a clustered (replicated) server, where creating topology also means
+forming a raft group per stream and per durable consumer:
+
+- **Bounded topology calls.** Stream and consumer creation carry an explicit
+  deadline (`NATSJS_API_TIMEOUT`, default 30s) instead of the JetStream
+  client's built-in 5s default. First-touch creation of a replicated stream
+  has to finish raft formation and storage allocation before the API call
+  returns, which can exceed 5s on cold or network-attached storage.
+- **Collapsed concurrent creation.** `ensureStream` calls for the same stream
+  are collapsed provider-wide: when many clients (re)connect at once — a
+  proxy restart, a mass reconnect after a broker outage — exactly one
+  `CreateOrUpdateStream` per stream is in flight at a time, and concurrent
+  callers share its result. Failures are not cached, and success is still
+  memoized per connection, so a fresh connection re-asserts its topology.
+- **Consumer liveness.** Consumers run with a 5s idle heartbeat and a consume
+  error handler. If the server stops serving a consumer's pulls (a broker
+  restart, or a just-created consumer whose raft group is not yet serving),
+  the missed heartbeat is logged at warn level and the client re-issues its
+  pull request after roughly twice the heartbeat. With library defaults the
+  same stall would go unlogged and take ~30s per detection cycle.
+
 ## Configuration
 
 | Environment variable | Default | Meaning |
@@ -133,6 +157,7 @@ is intended as the primary disk guard.
 | `NATSJS_STREAM_REPLICAS` | `1` | Stream replication factor. Set to `3` against a clustered server for the HA equivalent of quorum queues. |
 | `NATSJS_STREAM_MAX_AGE` | `72h` | Max age before messages are evicted (Go duration; `0` = keep forever). |
 | `NATSJS_STREAM_MAX_BYTES` | `0` (unlimited) | Hard per-stream storage cap in bytes. |
+| `NATSJS_API_TIMEOUT` | `30s` | Deadline for JetStream management API calls (stream / consumer creation). Go duration. |
 
 TLS and credentials come from the standard `ConnectionConfiguration` (`Tls`,
 `Credentials`) and the server's `tlsSkipVerify` flag, exactly as for the AMQP
@@ -197,10 +222,9 @@ every `Source.Options` key the connector reads:
 
 Unit tests for the pure mapping logic (subject / wildcard translation,
 durable-name selection, header-filter evaluation) live in `helpers_test.go`.
-Behavioral tests that exercise publish / subscribe / ack / retry / dead-letter
-against a real broker should follow the integration-test guidance in
-[provider-connector-interface.md](provider-connector-interface.md) by adding a
-NATS service to the integration compose setup.
+Behavioral tests in `natsjs_test.go` drive the publish / subscribe / ack /
+retry / dead-letter / dedup paths against an in-process JetStream-enabled
+`nats-server`, so they run without an external broker.
 
 ## Migration approach
 

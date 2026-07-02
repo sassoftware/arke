@@ -43,6 +43,17 @@ const (
 	defaultInactiveThreshold = 5 * time.Minute
 	defaultDedupWindow       = 2 * time.Minute
 	connectPollInterval      = 50 * time.Millisecond
+	// defaultJSAPITimeout bounds JetStream management API calls (stream and
+	// consumer creation). Without an explicit deadline the JetStream client
+	// applies a 5s default, which can expire while a replicated stream is
+	// still forming its raft group on cold or network-attached storage.
+	// Override via NATSJS_API_TIMEOUT.
+	defaultJSAPITimeout = 30 * time.Second
+	// defaultConsumeHeartbeat is the pull-consumer idle heartbeat. If the
+	// delivery path stalls, the missed heartbeat is surfaced through the
+	// consume error handler and the client re-issues its pull request after
+	// roughly twice this interval, instead of ~30s with the library defaults.
+	defaultConsumeHeartbeat = 5 * time.Second
 	// defaultStreamMaxAge bounds how long a stream retains messages so the
 	// JetStream log does not grow without bound (RabbitMQ deletes on ack;
 	// JetStream LimitsPolicy does not). 72h is generous enough not to truncate a
@@ -84,6 +95,58 @@ type natsBrokerDetails struct {
 
 type natsjsProvider struct {
 	connections *util.ConcurrentMap
+	// streams collapses concurrent stream-creation calls across connections.
+	streams *streamRegistry
+}
+
+// streamRegistry collapses concurrent ensureStream calls for the same stream
+// into a single JetStream API call. When many clients (re)connect at once —
+// e.g. after a broker or proxy restart — every connection would otherwise
+// issue its own CreateOrUpdateStream for the same shared streams, piling
+// redundant load on the JetStream metadata leader exactly when it is busiest.
+// Entries are keyed by broker endpoint + stream name so distinct brokers never
+// share results. Only in-flight calls are tracked here; success is memoized
+// per connection (knownStreams), preserving the property that a fresh
+// connection re-asserts its topology.
+type streamRegistry struct {
+	mu       sync.Mutex
+	inflight map[string]*inflightEnsure
+}
+
+type inflightEnsure struct {
+	done chan struct{}
+	err  error
+}
+
+func newStreamRegistry() *streamRegistry {
+	return &streamRegistry{inflight: make(map[string]*inflightEnsure)}
+}
+
+// ensure runs create once per key at a time; callers that arrive while a call
+// for the same key is in flight wait for it and share its result. Failures
+// are not cached — the next caller retries.
+func (r *streamRegistry) ensure(ctx context.Context, key string, create func() error) error {
+	r.mu.Lock()
+	if e, ok := r.inflight[key]; ok {
+		r.mu.Unlock()
+		select {
+		case <-e.done:
+			return e.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	e := &inflightEnsure{done: make(chan struct{})}
+	r.inflight[key] = e
+	r.mu.Unlock()
+
+	e.err = create()
+
+	r.mu.Lock()
+	delete(r.inflight, key)
+	r.mu.Unlock()
+	close(e.done)
+	return e.err
 }
 
 func init() {
@@ -96,7 +159,10 @@ func init() {
 
 // NewNATSJetStreamProvider returns a new natsjs provider singleton.
 func NewNATSJetStreamProvider() provider.Provider {
-	return &natsjsProvider{connections: util.NewConcurrentMap()}
+	return &natsjsProvider{
+		connections: util.NewConcurrentMap(),
+		streams:     newStreamRegistry(),
+	}
 }
 
 // streamReplicas controls the JetStream replication factor (1 = single node,
@@ -143,6 +209,22 @@ func streamMaxBytes() int64 {
 		}
 	}
 	return 0
+}
+
+// jsAPITimeout bounds JetStream management API calls (CreateOrUpdateStream /
+// CreateOrUpdateConsumer). First-touch creation of a replicated stream has to
+// finish raft-group formation and storage allocation before the call returns,
+// so it can legitimately take longer than the JetStream client's built-in 5s
+// default, particularly on network-attached storage. Configured via
+// NATSJS_API_TIMEOUT as a Go duration ("30s", "1m"); defaults to
+// defaultJSAPITimeout.
+func jsAPITimeout() time.Duration {
+	if v := os.Getenv("NATSJS_API_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultJSAPITimeout
 }
 
 func (p *natsjsProvider) getBrokerDetails(ctx context.Context) (*natsBrokerDetails, error) {
@@ -279,28 +361,39 @@ func (p *natsjsProvider) Disconnect(ctx context.Context) {
 }
 
 // ensureStream lazily creates (or updates) a JetStream stream that captures all
-// subjects under the given address root.
+// subjects under the given address root. Concurrent calls for the same stream
+// — across all client connections to the same broker — are collapsed into one
+// API call (see streamRegistry). That call gets an explicit deadline
+// (jsAPITimeout) and is detached from the triggering caller's cancellation:
+// the stream is shared topology and other callers may be waiting on the same
+// result.
 func (p *natsjsProvider) ensureStream(ctx context.Context, bd *natsBrokerDetails, addressName string) (string, error) {
 	streamName := streamNameFor(addressName)
 	if _, ok := bd.knownStreams.Get(streamName); ok {
 		return streamName, nil
 	}
-	_, err := bd.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:       streamName,
-		Subjects:   streamSubjectsFor(addressName),
-		Storage:    jetstream.FileStorage,
-		Retention:  jetstream.LimitsPolicy,
-		Duplicates: defaultDedupWindow,
-		// Replicas via NATSJS_STREAM_REPLICAS (default 1). Set to 3 against a
-		// clustered nats-server for the HA-equivalent of RabbitMQ quorum queues.
-		Replicas: streamReplicas(),
-		// MaxAge/MaxBytes bound the log so it does not grow without limit the way
-		// the default LimitsPolicy otherwise would (RabbitMQ deletes on ack;
-		// JetStream retains acked messages). MaxAge is the time guard, MaxBytes an
-		// optional hard storage cap. Both are mutable, so this also reins in
-		// streams created before the limits existed. See natsjs-connector.md.
-		MaxAge:   streamMaxAge(),
-		MaxBytes: streamMaxBytes(),
+	key := fmt.Sprintf("%s:%d/%s", bd.connectionConfig.GetHost(), bd.connectionConfig.GetPort(), streamName)
+	err := p.streams.ensure(ctx, key, func() error {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jsAPITimeout())
+		defer cancel()
+		_, err := bd.js.CreateOrUpdateStream(cctx, jetstream.StreamConfig{
+			Name:       streamName,
+			Subjects:   streamSubjectsFor(addressName),
+			Storage:    jetstream.FileStorage,
+			Retention:  jetstream.LimitsPolicy,
+			Duplicates: defaultDedupWindow,
+			// Replicas via NATSJS_STREAM_REPLICAS (default 1). Set to 3 against a
+			// clustered nats-server for the HA-equivalent of RabbitMQ quorum queues.
+			Replicas: streamReplicas(),
+			// MaxAge/MaxBytes bound the log so it does not grow without limit the way
+			// the default LimitsPolicy otherwise would (RabbitMQ deletes on ack;
+			// JetStream retains acked messages). MaxAge is the time guard, MaxBytes an
+			// optional hard storage cap. Both are mutable, so this also reins in
+			// streams created before the limits existed. See natsjs-connector.md.
+			MaxAge:   streamMaxAge(),
+			MaxBytes: streamMaxBytes(),
+		})
+		return err
 	})
 	if err != nil {
 		return "", err
@@ -381,7 +474,13 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	if serr != nil {
 		return &pb.Error{Message: fmt.Sprintf("ensure stream: %s", serr.Error()), IsFatal: true}
 	}
-	stream, serr := bd.js.Stream(ctx, streamName)
+	// The management API calls below get the same explicit deadline as stream
+	// creation (see jsAPITimeout): creating a replicated consumer forms its own
+	// raft group, which can outlast the client library's 5s default while the
+	// server is cold or busy.
+	tctx, tcancel := context.WithTimeout(ctx, jsAPITimeout())
+	defer tcancel()
+	stream, serr := bd.js.Stream(tctx, streamName)
 	if serr != nil {
 		return &pb.Error{Message: fmt.Sprintf("open stream: %s", serr.Error()), IsFatal: true}
 	}
@@ -409,7 +508,7 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		consCfg.InactiveThreshold = defaultInactiveThreshold
 	}
 
-	cons, cerr := stream.CreateOrUpdateConsumer(ctx, consCfg)
+	cons, cerr := stream.CreateOrUpdateConsumer(tctx, consCfg)
 	if cerr != nil {
 		// Include the mapped filter subjects: a NATS "invalid subject" (10052)
 		// otherwise gives no hint which source/subject produced it.
@@ -426,7 +525,18 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 
 	cc, cerr := cons.Consume(func(m jetstream.Msg) {
 		p.handleDelivery(ctx, bd, source, m, out)
-	})
+	},
+		// A short idle heartbeat plus an error handler keep a stalled delivery
+		// path from failing silently: if the server stops serving this
+		// consumer's pulls (broker restart, consumer raft leader not yet
+		// serving after creation), the missed heartbeat is logged at warn and
+		// the library re-issues its pull request after ~2x the heartbeat,
+		// instead of ~30s — and invisibly — with the defaults.
+		jetstream.PullHeartbeat(defaultConsumeHeartbeat),
+		jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
+			util.Logger.Warn("natsjs: consume error on source {0}: {1}", source.GetName(), err.Error())
+		}),
+	)
 	if cerr != nil {
 		return &pb.Error{Message: fmt.Sprintf("consume: %s", cerr.Error()), IsFatal: true}
 	}

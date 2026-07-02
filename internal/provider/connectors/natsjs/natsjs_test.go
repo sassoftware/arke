@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -351,6 +352,88 @@ func TestStreamConfigFromEnv(t *testing.T) {
 	assert.Equal(t, int64(1048576), streamMaxBytes())
 	t.Setenv("NATSJS_STREAM_MAX_BYTES", "0")
 	assert.Equal(t, int64(0), streamMaxBytes())
+}
+
+func TestJSAPITimeoutFromEnv(t *testing.T) {
+	t.Setenv("NATSJS_API_TIMEOUT", "45s")
+	assert.Equal(t, 45*time.Second, jsAPITimeout())
+	t.Setenv("NATSJS_API_TIMEOUT", "bad")
+	assert.Equal(t, defaultJSAPITimeout, jsAPITimeout())
+	t.Setenv("NATSJS_API_TIMEOUT", "-1s")
+	assert.Equal(t, defaultJSAPITimeout, jsAPITimeout())
+}
+
+func TestStreamRegistryCollapsesConcurrentCalls(t *testing.T) {
+	r := newStreamRegistry()
+	release := make(chan struct{})
+	leaderStarted := make(chan struct{})
+	const key = "broker:4222/arke_events"
+
+	// One call gets in flight and blocks...
+	leaderErr := make(chan error, 1)
+	go func() {
+		leaderErr <- r.ensure(context.Background(), key, func() error {
+			close(leaderStarted)
+			<-release
+			return nil
+		})
+	}()
+	<-leaderStarted
+
+	// ...then every caller that arrives while it is in flight must piggyback
+	// on it instead of running its own create.
+	var extraCalls int32
+	const n = 8
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			errs <- r.ensure(context.Background(), key, func() error {
+				atomic.AddInt32(&extraCalls, 1)
+				return nil
+			})
+		}()
+	}
+	time.Sleep(250 * time.Millisecond) // let the followers reach ensure
+	close(release)
+
+	assert.NoError(t, <-leaderErr)
+	for i := 0; i < n; i++ {
+		assert.NoError(t, <-errs)
+	}
+	assert.Equal(t, int32(0), atomic.LoadInt32(&extraCalls), "followers share the in-flight result")
+}
+
+func TestStreamRegistryDoesNotCacheFailures(t *testing.T) {
+	r := newStreamRegistry()
+	boom := fmt.Errorf("create failed")
+	assert.ErrorIs(t, r.ensure(context.Background(), "k", func() error { return boom }), boom)
+
+	calls := 0
+	assert.NoError(t, r.ensure(context.Background(), "k", func() error { calls++; return nil }))
+	assert.Equal(t, 1, calls, "a failed create is retried by the next caller")
+}
+
+func TestStreamRegistryFollowerHonorsContext(t *testing.T) {
+	r := newStreamRegistry()
+	release := make(chan struct{})
+	started := make(chan struct{})
+	go func() {
+		_ = r.ensure(context.Background(), "k", func() error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	<-started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := r.ensure(ctx, "k", func() error {
+		t.Error("follower must not run create")
+		return nil
+	})
+	assert.ErrorIs(t, err, context.Canceled)
+	close(release)
 }
 
 func TestDeliverPolicyFor(t *testing.T) {
