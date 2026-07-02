@@ -445,7 +445,7 @@ func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, 
 		return &pb.Error{Message: fmt.Sprintf("ensure stream: %s", err.Error())}
 	}
 	nmsg := &nats.Msg{
-		Subject: subjectFor(addr.GetName(), firstSubject(addr)),
+		Subject: publishSubjectFor(addr.GetName(), firstSubject(addr)),
 		Data:    msg.GetBody(),
 		Header:  pbToNatsHeader(msg.GetHeaders()),
 	}
@@ -653,7 +653,7 @@ func (p *natsjsProvider) DeadLetter(ctx context.Context, source *pb.Source, uuid
 	if dla := opts["DeadLetterAddress"]; dla != "" {
 		if _, err := p.ensureStream(ctx, bd, dla); err == nil {
 			dlqMsg := &nats.Msg{
-				Subject: subjectFor(dla, opts["DeadLetterSubject"]),
+				Subject: publishSubjectFor(dla, opts["DeadLetterSubject"]),
 				Data:    m.Data(),
 				Header:  m.Headers(),
 			}

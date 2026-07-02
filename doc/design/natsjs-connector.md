@@ -26,24 +26,54 @@ The guiding rule that keeps the translation honest:
 
 AMQP routes via an exchange plus routing-key bindings. NATS routes via subjects
 with token wildcards. The connector maps the two as follows
-(`helpers.go:subjectFor`):
+(`helpers.go:publishSubjectFor` / `filterSubjectsFor`):
 
 | AMQP concept | NATS mapping |
 | --- | --- |
-| exchange / address name | subject root (dots kept; it is just a prefix) |
+| exchange / address name | subject root (dots kept; it is a prefix) |
+| — | `~` delimiter token, always inserted after the root |
 | routing key | appended subject tokens |
 | `#` (zero-or-more words) | `>` (NATS allows `>` only as the final token) |
 | `*` (exactly one word) | `*` |
 
-A JetStream stream named `arke_<address>` captures `<address>.>`, and each
-consumer filters on the mapped source subjects. This is a faithful mapping for
-the dotted, topic-style routing keys AMQP topic exchanges use.
+A message published to address `events.orders` with routing key
+`region.us.created` travels on subject `events.orders.~.region.us.created`;
+an empty routing key maps to the bare prefix `events.orders.~`. A JetStream
+stream named `arke_<address>` captures `<address>.~` and `<address>.~.>`, and
+each consumer filters on the mapped source subjects.
 
-NATS subjects are stricter than AMQP routing keys, so `translateWildcards`
-also sanitizes each token: a non-terminal `#` becomes `*` (NATS `>` is
-tail-only), illegal characters (space, tab, `*`, `>`) inside a literal token
-become `_`, and empty tokens (from `a..b` or a trailing dot) are dropped so the
-result is always a valid subject.
+The `~` delimiter is what keeps distinct addresses' streams disjoint, which
+JetStream requires: two subjects may belong to at most one stream. Address
+names are themselves dotted, so two addresses can sit in a prefix
+relationship (`events.orders` and `events.orders.filtered`); without the
+delimiter their capture wildcards overlap, whichever stream is created first
+wins, and the other address fails every publish and subscribe with `subjects
+overlap with an existing stream` (err 10065). With it, the token after the
+shared prefix differs (`~` vs `filtered`) and sanitization guarantees no
+address token ever equals `~`, so any two distinct roots are disjoint. The
+delimiter also prevents cross-address message leakage — without it,
+publishing routing key `filtered.x` to `events.orders` is indistinguishable
+from publishing `x` to `events.orders.filtered`.
+
+NATS subjects are stricter than AMQP routing keys, so each token is also
+sanitized. In binding patterns (`translateWildcards`): a non-terminal `#`
+becomes `*` (NATS `>` is tail-only), illegal characters (space, tab, `*`,
+`>`) inside a literal token become `_`, and empty tokens (from `a..b` or a
+trailing dot) are dropped. A pattern whose trailing `#` became `>` also gets
+the zero-word variant as a second filter subject (AMQP `#` matches zero or
+more words, NATS `>` one or more, so binding `a.#` must match routing key
+`a`). On the publish side routing keys are literal — AMQP gives `*`/`#`
+meaning only in bindings, and NATS forbids wildcard tokens in published
+subjects — so wildcard characters are sanitized to `_` like any other illegal
+character. In address names, empty tokens and tokens equal to `~` are
+replaced with `_` rather than dropped, so distinct names keep distinct roots.
+
+Changing the subject scheme is a breaking change for data already stored
+under an older scheme: `CreateOrUpdateStream` moves the stream's captured
+subjects forward, after which messages persisted under old-style subjects no
+longer match any consumer filter and age out via the retention limits. Drain
+consumers (or recreate streams) when upgrading a deployment that has retained
+backlog.
 
 AMQP headers-exchange routing has no NATS subject equivalent. It is reproduced
 proxy-side in `evaluateFilters`: multiple `Filter`s are OR'd (each is a

@@ -499,3 +499,83 @@ func errOf(e *pb.Error) error {
 	}
 	return fmt.Errorf("%s", e.GetMessage())
 }
+
+// TestPrefixAddressesCoexist is the end-to-end regression test for addresses
+// in a dotted-prefix relationship (e.g. "events.jobs" and
+// "events.jobs.filter"). Before the "~" delimiter both addresses mapped to
+// overlapping stream subjects, so whichever stream was created first won and
+// every ensure of the other failed with "subjects overlap with an existing
+// stream" (err 10065). Both creation orders are exercised, and traffic on one
+// address must not leak into the other even when a routing key spells out the
+// other address's name.
+func TestPrefixAddressesCoexist(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	// parent first, then child
+	parent := &pb.Address{Name: "events.jobs", Subjects: []string{"created"}}
+	child := &pb.Address{Name: "events.jobs.filter", Subjects: []string{"created"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: parent, Body: []byte("to-parent")}))
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: child, Body: []byte("to-child")}),
+		"creating the child stream after the parent must not collide")
+
+	// child first, then parent
+	child2 := &pb.Address{Name: "events.audit.trail", Subjects: []string{"e"}}
+	parent2 := &pb.Address{Name: "events.audit", Subjects: []string{"e"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: child2, Body: []byte("x")}))
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: parent2, Body: []byte("x")}),
+		"creating the parent stream after the child must not collide")
+
+	// a routing key on the parent that spells the child's name stays on the
+	// parent's stream
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: &pb.Address{Name: "events.jobs", Subjects: []string{"filter.created"}},
+		Body:    []byte("still-to-parent"),
+	}))
+
+	out := make(chan *pb.Message, 4)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, queueSource("events.jobs.filter.consumer", "events.jobs.filter", "created"), out)
+
+	m := recv(t, out)
+	assert.Equal(t, "to-child", string(m.GetBody()),
+		"the child consumer sees only the child's message")
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	select {
+	case extra := <-out:
+		t.Fatalf("unexpected cross-address delivery: %q", extra.GetBody())
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// the parent consumer sees both parent messages
+	pout := make(chan *pb.Message, 4)
+	go p.Subscribe(subCtx, queueSource("events.jobs.consumer", "events.jobs", "#"), pout)
+	got := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		m := recv(t, pout)
+		got[string(m.GetBody())] = true
+		require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	}
+	assert.True(t, got["to-parent"] && got["still-to-parent"], "got %v", got)
+}
+
+// TestEmptyRoutingKeyDelivers covers fanout-style publishes that carry no
+// routing key: they map to the bare "<root>.~" subject, which both the stream
+// and a pattern-less consumer capture.
+func TestEmptyRoutingKeyDelivers(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.fanout"}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("no-key")}))
+
+	out := make(chan *pb.Message, 1)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, queueSource("events.fanout.consumer", "events.fanout"), out)
+
+	m := recv(t, out)
+	assert.Equal(t, "no-key", string(m.GetBody()))
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+}

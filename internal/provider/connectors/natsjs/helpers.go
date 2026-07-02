@@ -15,48 +15,100 @@ import (
 // AMQP (RabbitMQ) routes via exchange + routing-key bindings. NATS routes via
 // subjects with token wildcards. We map:
 //
-//	exchange/address name  -> subject root (dots kept; it is just a multi-token prefix)
+//	exchange/address name  -> subject root (dots kept; it is a multi-token prefix)
+//	"~"                    -> reserved delimiter token, always inserted after the root
 //	routing key            -> appended subject tokens
 //	AMQP '#' (zero+ words) -> NATS '>'   (NATS only allows '>' as the final token)
 //	AMQP '*' (one word)    -> NATS '*'
 //
-// A JetStream stream captures "<root>.>" and consumers filter on the mapped
-// source subjects. This is a faithful mapping for the dotted, topic-style keys
-// AMQP topic exchanges use (e.g. orders.region.us.created.*). It does NOT
-// reproduce AMQP headers-exchange routing — that is handled proxy-side in
-// evaluateFilters (see Subscribe).
+// A message published to address "events.orders" with routing key
+// "region.us.created" travels on subject "events.orders.~.region.us.created".
+// A JetStream stream captures "<root>.~" and "<root>.~.>" and consumers filter
+// on the mapped source subjects.
+//
+// The "~" delimiter exists because each address gets its own stream, and
+// JetStream requires every stream's subject space to be disjoint. Address
+// names themselves are dotted, so two addresses can sit in a prefix
+// relationship — "events.orders" and "events.orders.filtered" — and without a
+// delimiter their capture wildcards ("events.orders.>" vs
+// "events.orders.filtered.>") overlap: whichever stream is created first wins
+// and the other fails forever with "subjects overlap with an existing stream"
+// (err 10065). The delimiter makes any two distinct roots disjoint: the token
+// after "events.orders" is "~" for its own traffic but "filtered" for the
+// other address, and "~" is stripped from address tokens by sanitization, so
+// no address token can ever equal the delimiter. It also keeps the two
+// addresses' messages apart (without it, publishing "filtered.x" to
+// "events.orders" would be indistinguishable from publishing "x" to
+// "events.orders.filtered"), and gives the empty routing key a concrete
+// subject ("<root>.~").
+//
+// This is a faithful mapping for the dotted, topic-style keys AMQP topic
+// exchanges use (e.g. orders.region.us.created.*). It does NOT reproduce AMQP
+// headers-exchange routing — that is handled proxy-side in evaluateFilters
+// (see Subscribe).
+
+// addressDelim is the reserved token inserted between the address root and the
+// routing-key tokens. Sanitization guarantees no address token equals it.
+const addressDelim = "~"
+
+// addressRoot sanitizes an address name into a valid dotted subject prefix.
+// Empty tokens and tokens equal to the reserved delimiter are replaced rather
+// than dropped so distinct address names keep distinct roots where possible.
+func addressRoot(addressName string) string {
+	if addressName == "" {
+		return ""
+	}
+	tokens := strings.Split(addressName, ".")
+	for i, t := range tokens {
+		t = tokenSanitizer.Replace(t)
+		if t == "" || t == addressDelim {
+			t = "_"
+		}
+		tokens[i] = t
+	}
+	return strings.Join(tokens, ".")
+}
+
+// subjectPrefix returns the subject an empty routing key maps to, which is also
+// the prefix of every subject under the address.
+func subjectPrefix(addressName string) string {
+	if root := addressRoot(addressName); root != "" {
+		return root + "." + addressDelim
+	}
+	return addressDelim
+}
 
 // streamNameFor derives a JetStream-legal stream name from an address name.
-// Stream names may not contain '.', ' ', '*' or '>'.
+// Stream names may not contain '.', ' ', '*' or '>'. Derived from the
+// sanitized root so every address that shares a root shares a stream.
 func streamNameFor(addressName string) string {
-	r := strings.NewReplacer(".", "_", " ", "_", "*", "_", ">", "_")
-	return "arke_" + r.Replace(addressName)
+	return "arke_" + strings.ReplaceAll(addressRoot(addressName), ".", "_")
 }
 
-// subjectFor joins an address root with a routing key / pattern, translating
-// AMQP wildcards to NATS wildcards.
-func subjectFor(addressName, routingKey string) string {
-	root := addressName
-	if routingKey == "" {
-		if root == "" {
-			return ">"
+// publishSubjectFor maps an address + routing key onto the concrete subject a
+// message is published to. Routing keys are literal on the publish side —
+// AMQP only gives '*' / '#' wildcard meaning in bindings — and NATS forbids
+// wildcard tokens in published subjects, so they are sanitized like any other
+// illegal character.
+func publishSubjectFor(addressName, routingKey string) string {
+	prefix := subjectPrefix(addressName)
+	tokens := strings.Split(routingKey, ".")
+	out := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		if t == "" {
+			continue
 		}
-		return root + ".>"
+		out = append(out, publishSanitizer.Replace(t))
 	}
-	rk := translateWildcards(routingKey)
-	if rk == "" {
-		// The routing key was made up entirely of empty tokens (e.g. ".",
-		// trailing/leading dots): treat it as capture-all under the root.
-		if root == "" {
-			return ">"
-		}
-		return root + ".>"
+	if len(out) == 0 {
+		return prefix
 	}
-	if root == "" {
-		return rk
-	}
-	return root + "." + rk
+	return prefix + "." + strings.Join(out, ".")
 }
+
+// publishSanitizer is tokenSanitizer plus '#': on the publish side wildcard
+// characters carry no meaning and must not appear in the subject.
+var publishSanitizer = strings.NewReplacer(" ", "_", "\t", "_", "*", "_", ">", "_", "#", "_")
 
 // tokenSanitizer replaces characters that are illegal inside a NATS subject
 // token (space/tab, and the wildcard chars '*'/'>') so a literal AMQP token that
@@ -77,7 +129,7 @@ var tokenSanitizer = strings.NewReplacer(" ", "_", "\t", "_", "*", "_", ">", "_"
 //	other             -> illegal chars (space/tab/'*'/'>') replaced with '_'
 //
 // The result is always a valid NATS subject fragment (possibly empty if every
-// token was empty; subjectFor handles that).
+// token was empty; filterSubjectsFor handles that).
 func translateWildcards(key string) string {
 	tokens := strings.Split(key, ".")
 	out := make([]string, 0, len(tokens))
@@ -100,25 +152,51 @@ func translateWildcards(key string) string {
 	return strings.Join(out, ".")
 }
 
-// streamSubjectsFor returns the wildcard subject set a stream should capture for
-// the given address.
+// streamSubjectsFor returns the subject set a stream captures for the given
+// address: the bare prefix (empty routing key) and everything under it. The
+// two are disjoint from each other ('>' needs at least one more token) and,
+// thanks to the delimiter, from every other address's set.
 func streamSubjectsFor(addressName string) []string {
-	if addressName == "" {
-		return []string{">"}
-	}
-	return []string{addressName + ".>"}
+	prefix := subjectPrefix(addressName)
+	return []string{prefix, prefix + ".>"}
 }
 
-// filterSubjectsFor maps a source's subjects to NATS consumer filter subjects.
+// filterSubjectsFor maps a source's routing-key patterns to NATS consumer
+// filter subjects. An empty pattern set means everything under the address.
+// A pattern whose AMQP '#' tail became '>' also gets the zero-word variant:
+// AMQP '#' matches zero or more words while NATS '>' matches one or more, so
+// binding "a.#" must match routing key "a" too.
 func filterSubjectsFor(source *pb.Source) []string {
-	addr := source.GetAddress().GetName()
-	subs := source.GetAddress().GetSubjects()
-	if len(subs) == 0 {
-		return []string{subjectFor(addr, "")}
+	prefix := subjectPrefix(source.GetAddress().GetName())
+	pats := source.GetAddress().GetSubjects()
+	if len(pats) == 0 {
+		pats = []string{""}
 	}
-	out := make([]string, 0, len(subs))
-	for _, s := range subs {
-		out = append(out, subjectFor(addr, s))
+	out := make([]string, 0, len(pats)+1)
+	seen := make(map[string]bool, len(pats)+1)
+	add := func(s string) {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, p := range pats {
+		pat := translateWildcards(p)
+		switch {
+		case pat == "":
+			add(prefix)
+			add(prefix + ".>")
+		case strings.HasSuffix(pat, ">"):
+			base := strings.TrimSuffix(strings.TrimSuffix(pat, ">"), ".")
+			if base == "" {
+				add(prefix)
+			} else {
+				add(prefix + "." + base)
+			}
+			add(prefix + "." + pat)
+		default:
+			add(prefix + "." + pat)
+		}
 	}
 	return out
 }

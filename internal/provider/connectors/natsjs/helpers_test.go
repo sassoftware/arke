@@ -4,6 +4,7 @@
 package natsjs
 
 import (
+	"strings"
 	"testing"
 
 	pb "github.com/sassoftware/arke/api"
@@ -15,41 +16,119 @@ func TestStreamNameFor(t *testing.T) {
 	assert.Equal(t, "arke_events_audit", streamNameFor("events.audit"))
 	// illegal subject chars are sanitized
 	assert.Equal(t, "arke_a_b_c", streamNameFor("a.b*c"))
+	assert.Equal(t, "arke_", streamNameFor(""))
 }
 
-func TestSubjectFor(t *testing.T) {
-	// dotted topic key under an exchange root
+func TestAddressRoot(t *testing.T) {
+	assert.Equal(t, "events.orders", addressRoot("events.orders"))
+	assert.Equal(t, "", addressRoot(""))
+	// empty tokens are kept as placeholders, not dropped, so "a..b" and "a.b"
+	// stay distinct roots
+	assert.Equal(t, "a._.b", addressRoot("a..b"))
+	// the reserved delimiter token is sanitized out of address names
+	assert.Equal(t, "a._.b", addressRoot("a.~.b"))
+	// illegal subject chars inside tokens are replaced
+	assert.Equal(t, "a.b_c", addressRoot("a.b*c"))
+}
+
+func TestPublishSubjectFor(t *testing.T) {
+	// dotted topic key under an exchange root, behind the delimiter
 	assert.Equal(t,
-		"events.orders.region.us.order.created.success",
-		subjectFor("events.orders", "region.us.order.created.success"))
-	// AMQP '#' -> NATS '>'
-	assert.Equal(t, "events.orders.region.>", subjectFor("events.orders", "region.#"))
-	// AMQP '*' stays '*'
-	assert.Equal(t, "events.orders.region.*.success", subjectFor("events.orders", "region.*.success"))
-	// empty routing key -> capture-all under root
-	assert.Equal(t, "events.orders.>", subjectFor("events.orders", ""))
-}
-
-// TestSubjectForSanitizes covers routing keys that are legal in AMQP but would
-// otherwise yield an invalid NATS subject.
-func TestSubjectForSanitizes(t *testing.T) {
-	// non-terminal '#' has no exact NATS equivalent ('>' is tail-only) -> '*'
-	assert.Equal(t, "events.orders.a.*.b", subjectFor("events.orders", "a.#.b"))
-	// terminal '#' still maps to '>'
-	assert.Equal(t, "events.orders.a.b.>", subjectFor("events.orders", "a.b.#"))
+		"events.orders.~.region.us.order.created.success",
+		publishSubjectFor("events.orders", "region.us.order.created.success"))
+	// empty routing key -> the bare prefix (a concrete, publishable subject)
+	assert.Equal(t, "events.orders.~", publishSubjectFor("events.orders", ""))
+	// empty address -> subjects live directly under the delimiter
+	assert.Equal(t, "~.a.b", publishSubjectFor("", "a.b"))
+	assert.Equal(t, "~", publishSubjectFor("", ""))
+	// wildcard chars are literal in a published routing key and NATS forbids
+	// them in publish subjects -> sanitized
+	assert.Equal(t, "events.orders.~.a._.b", publishSubjectFor("events.orders", "a.#.b"))
+	assert.Equal(t, "events.orders.~.a._", publishSubjectFor("events.orders", "a.*"))
 	// empty tokens (double dot / trailing dot) are collapsed, not left invalid
-	assert.Equal(t, "events.orders.a.b", subjectFor("events.orders", "a..b"))
-	assert.Equal(t, "events.orders.a.b", subjectFor("events.orders", "a.b."))
-	// a routing key of only empty tokens -> capture-all under root
-	assert.Equal(t, "events.orders.>", subjectFor("events.orders", "."))
+	assert.Equal(t, "events.orders.~.a.b", publishSubjectFor("events.orders", "a..b"))
+	assert.Equal(t, "events.orders.~.a.b", publishSubjectFor("events.orders", "a.b."))
+	assert.Equal(t, "events.orders.~", publishSubjectFor("events.orders", "."))
 	// illegal chars embedded in a literal token are replaced with '_'
-	assert.Equal(t, "events.orders.a_b.c_d", subjectFor("events.orders", "a*b.c>d"))
-	assert.Equal(t, "events.orders.a_b", subjectFor("events.orders", "a b"))
+	assert.Equal(t, "events.orders.~.a_b.c_d", publishSubjectFor("events.orders", "a*b.c>d"))
+	assert.Equal(t, "events.orders.~.a_b", publishSubjectFor("events.orders", "a b"))
 }
 
 func TestStreamSubjectsFor(t *testing.T) {
-	assert.Equal(t, []string{"events.orders.>"}, streamSubjectsFor("events.orders"))
-	assert.Equal(t, []string{">"}, streamSubjectsFor(""))
+	assert.Equal(t,
+		[]string{"events.orders.~", "events.orders.~.>"},
+		streamSubjectsFor("events.orders"))
+	assert.Equal(t, []string{"~", "~.>"}, streamSubjectsFor(""))
+}
+
+// TestStreamSubjectsDisjointForPrefixAddresses is the regression test for the
+// address-prefix collision: without the delimiter, "events.orders" and
+// "events.orders.filtered" produce overlapping stream subjects and the
+// second stream can never be created (JetStream err 10065).
+func TestStreamSubjectsDisjointForPrefixAddresses(t *testing.T) {
+	parent := streamSubjectsFor("events.orders")
+	child := streamSubjectsFor("events.orders.filtered")
+	for _, p := range parent {
+		for _, c := range child {
+			assert.False(t, subjectsOverlap(p, c), "%q overlaps %q", p, c)
+		}
+	}
+	// an address token spelled "~" cannot fake its way into the parent's space
+	evil := streamSubjectsFor("events.orders.~")
+	for _, p := range parent {
+		for _, c := range evil {
+			assert.False(t, subjectsOverlap(p, c), "%q overlaps %q", p, c)
+		}
+	}
+}
+
+// subjectsOverlap reports whether two subject patterns can match a common
+// subject (token-wise; '>' matches one or more trailing tokens, '*' exactly
+// one).
+func subjectsOverlap(a, b string) bool {
+	at, bt := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; ; i++ {
+		switch {
+		case i == len(at) && i == len(bt):
+			return true
+		case i == len(at) || i == len(bt):
+			return false
+		case at[i] == ">" || bt[i] == ">":
+			return true
+		case at[i] == "*" || bt[i] == "*":
+			continue
+		case at[i] != bt[i]:
+			return false
+		}
+	}
+}
+
+func TestFilterSubjectsFor(t *testing.T) {
+	src := func(subjects ...string) *pb.Source {
+		return &pb.Source{Address: &pb.Address{Name: "events.orders", Subjects: subjects}}
+	}
+
+	// no patterns -> everything under the address, including the empty key
+	assert.Equal(t,
+		[]string{"events.orders.~", "events.orders.~.>"},
+		filterSubjectsFor(src()))
+	// plain patterns map one to one
+	assert.Equal(t,
+		[]string{"events.orders.~.created", "events.orders.~.region.*.updated"},
+		filterSubjectsFor(src("created", "region.*.updated")))
+	// AMQP '#' matches zero or more words -> both the '>' form and the
+	// zero-word base are included
+	assert.Equal(t,
+		[]string{"events.orders.~.region", "events.orders.~.region.>"},
+		filterSubjectsFor(src("region.#")))
+	// a bare '#' pattern behaves like the empty pattern
+	assert.Equal(t,
+		[]string{"events.orders.~", "events.orders.~.>"},
+		filterSubjectsFor(src("#")))
+	// duplicates collapse
+	assert.Equal(t,
+		[]string{"events.orders.~", "events.orders.~.>"},
+		filterSubjectsFor(src("#", "")))
 }
 
 func TestDurableName(t *testing.T) {
