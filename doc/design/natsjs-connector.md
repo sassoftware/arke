@@ -68,12 +68,14 @@ subjects — so wildcard characters are sanitized to `_` like any other illegal
 character. In address names, empty tokens and tokens equal to `~` are
 replaced with `_` rather than dropped, so distinct names keep distinct roots.
 
-Changing the subject scheme is a breaking change for data already stored
-under an older scheme: `CreateOrUpdateStream` moves the stream's captured
-subjects forward, after which messages persisted under old-style subjects no
-longer match any consumer filter and age out via the retention limits. Drain
-consumers (or recreate streams) when upgrading a deployment that has retained
-backlog.
+This subject scheme is part of the connector's persistence contract:
+retained messages are stored under these subjects for the life of the
+stream's retention limits, so any future change to the encoding is a
+breaking change for deployed data (`CreateOrUpdateStream` moves the stream's
+captured subjects forward, after which messages stored under the previous
+encoding no longer match any consumer filter and age out). Treat this layout
+as canonical: external tooling that reads or writes JetStream subjects
+directly must use the same mapping, including the `~` delimiter.
 
 AMQP headers-exchange routing has no NATS subject equivalent. It is reproduced
 proxy-side in `evaluateFilters`: multiple `Filter`s are OR'd (each is a
