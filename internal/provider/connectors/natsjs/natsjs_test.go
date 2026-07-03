@@ -438,11 +438,25 @@ func TestStreamRegistryFollowerHonorsContext(t *testing.T) {
 
 func TestDeliverPolicyFor(t *testing.T) {
 	mk := func(off string) *pb.Source { return &pb.Source{Options: map[string]string{"Offset": off}} }
-	assert.Equal(t, jetstream.DeliverAllPolicy, deliverPolicyFor(mk("first")))
-	assert.Equal(t, jetstream.DeliverNewPolicy, deliverPolicyFor(mk("next")))
-	assert.Equal(t, jetstream.DeliverNewPolicy, deliverPolicyFor(mk("")))
-	assert.Equal(t, jetstream.DeliverNewPolicy, deliverPolicyFor(mk("garbage")))
-	assert.Equal(t, jetstream.DeliverNewPolicy, deliverPolicyFor(&pb.Source{}))
+	check := func(off string, wantPol jetstream.DeliverPolicy, wantSeq uint64) {
+		t.Helper()
+		pol, seq := deliverPolicyFor(mk(off))
+		assert.Equal(t, wantPol, pol, "policy for Offset=%q", off)
+		assert.Equal(t, wantSeq, seq, "start seq for Offset=%q", off)
+	}
+	check("first", jetstream.DeliverAllPolicy, 0)
+	check("First", jetstream.DeliverAllPolicy, 0) // case-insensitive, like amqp091
+	check("continue", jetstream.DeliverAllPolicy, 0)
+	check("last", jetstream.DeliverLastPolicy, 0)
+	check("next", jetstream.DeliverNewPolicy, 0)
+	check("", jetstream.DeliverNewPolicy, 0)
+	check("100", jetstream.DeliverByStartSequencePolicy, 100)
+	check("0", jetstream.DeliverAllPolicy, 0) // offset 0 == from the beginning
+	check("garbage", jetstream.DeliverNewPolicy, 0)
+
+	pol, seq := deliverPolicyFor(&pb.Source{})
+	assert.Equal(t, jetstream.DeliverNewPolicy, pol)
+	assert.Equal(t, uint64(0), seq)
 }
 
 func TestFirstSubject(t *testing.T) {
@@ -558,6 +572,139 @@ func TestPrefixAddressesCoexist(t *testing.T) {
 		require.Nil(t, p.Ack(ctx, m.GetUuid()))
 	}
 	assert.True(t, got["to-parent"] && got["still-to-parent"], "got %v", got)
+}
+
+// streamSource builds a stream-style source positioned at the given RabbitMQ
+// Streams offset ("first"/"next"/...). It is the offset-parameterized sibling
+// of queueSource.
+func streamSource(name, addr, offset string, subjects ...string) *pb.Source {
+	return &pb.Source{
+		Name:    name,
+		Type:    pb.Source_QUEUE,
+		Address: &pb.Address{Name: addr, Subjects: subjects},
+		Options: map[string]string{"Offset": offset},
+	}
+}
+
+// TestStreamOffsetReplay is the RabbitMQ-Streams parity test. A natsjs address
+// is a retained JetStream log (LimitsPolicy, acked messages are NOT deleted),
+// so it behaves like a RabbitMQ Stream rather than a classic/quorum work
+// queue: independent consumers each read from their own offset, and a fully
+// acked backlog is still replayable by a fresh consumer.
+func TestStreamOffsetReplay(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.stream", Subjects: []string{"e"}}
+	const n = 4
+	for i := 0; i < n; i++ {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte(fmt.Sprintf("m%d", i))}))
+	}
+
+	drain := func(t *testing.T, name string) int {
+		t.Helper()
+		out := make(chan *pb.Message, n)
+		subCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go p.Subscribe(subCtx, streamSource(name, "events.stream", "first", "e"), out)
+		for i := 0; i < n; i++ {
+			m := recv(t, out)
+			require.Nil(t, p.Ack(ctx, m.GetUuid()))
+		}
+		return n
+	}
+
+	// Consumer A reads and acks the whole backlog from offset "first".
+	t.Run("first_reads_full_backlog", func(t *testing.T) {
+		assert.Equal(t, n, drain(t, "events.stream.a"))
+	})
+
+	// The defining Streams property: a second, independent consumer with its
+	// own durable/offset still replays all n messages even though consumer A
+	// already acked them. A RabbitMQ classic/quorum queue would have nothing
+	// left to deliver here — a Stream does.
+	t.Run("independent_consumer_replays_after_acks", func(t *testing.T) {
+		assert.Equal(t, n, drain(t, "events.stream.b"),
+			"an independent stream consumer replays the retained log")
+	})
+}
+
+// TestStreamOffsetNextSkipsBacklog: offset "next" (and the default) positions a
+// new consumer at the tail — it sees only messages published after it was
+// created, matching RabbitMQ Streams "next".
+func TestStreamOffsetNextSkipsBacklog(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.tail", Subjects: []string{"e"}}
+	// Backlog published before the consumer exists.
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("old")}))
+
+	out := make(chan *pb.Message, 2)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, streamSource("events.tail.consumer", "events.tail", "next", "e"), out)
+	// Let the durable form at the tail before publishing "new", so DeliverNew's
+	// start point is unambiguously after "old".
+	time.Sleep(500 * time.Millisecond)
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("new")}))
+
+	m := recv(t, out)
+	assert.Equal(t, "new", string(m.GetBody()), "next offset skips the pre-existing backlog")
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	select {
+	case extra := <-out:
+		t.Fatalf("unexpected extra delivery (backlog leaked past 'next'): %q", extra.GetBody())
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+// TestStreamOffsetLastAndNumeric is the behavioral counterpart to
+// TestDeliverPolicyFor: it drives the two offset positions that amqp091's
+// toStreamOffset supports and that natsjs now honors — "last" (final message
+// only) and an absolute numeric stream sequence.
+func TestStreamOffsetLastAndNumeric(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.offset", Subjects: []string{"e"}}
+	const n = 4 // seq: m0=1, m1=2, m2=3, m3=4
+	for i := 0; i < n; i++ {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte(fmt.Sprintf("m%d", i))}))
+	}
+
+	t.Run("last_delivers_only_final", func(t *testing.T) {
+		out := make(chan *pb.Message, n)
+		subCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go p.Subscribe(subCtx, streamSource("events.offset.last", "events.offset", "last", "e"), out)
+
+		m := recv(t, out)
+		assert.Equal(t, "m3", string(m.GetBody()), "last offset starts at the final message")
+		require.Nil(t, p.Ack(ctx, m.GetUuid()))
+		select {
+		case extra := <-out:
+			t.Fatalf("last should deliver only the final message, got extra %q", extra.GetBody())
+		case <-time.After(500 * time.Millisecond):
+		}
+	})
+
+	t.Run("numeric_offset_starts_at_sequence", func(t *testing.T) {
+		out := make(chan *pb.Message, n)
+		subCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		// JetStream sequence 3 == m2 (1-based); expect m2 then m3.
+		go p.Subscribe(subCtx, streamSource("events.offset.num", "events.offset", "3", "e"), out)
+
+		got := []string{}
+		for i := 0; i < 2; i++ {
+			m := recv(t, out)
+			got = append(got, string(m.GetBody()))
+			require.Nil(t, p.Ack(ctx, m.GetUuid()))
+		}
+		assert.Equal(t, []string{"m2", "m3"}, got, "numeric offset starts at the given stream sequence")
+	})
 }
 
 // TestEmptyRoutingKeyDelivers covers fanout-style publishes that carry no

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -489,10 +490,12 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	if prefetch <= 0 {
 		prefetch = 1
 	}
+	deliverPolicy, startSeq := deliverPolicyFor(source)
 	consCfg := jetstream.ConsumerConfig{
 		FilterSubjects: filterSubjectsFor(source),
 		AckPolicy:      jetstream.AckExplicitPolicy,
-		DeliverPolicy:  deliverPolicyFor(source),
+		DeliverPolicy:  deliverPolicy,
+		OptStartSeq:    startSeq, // 0 (ignored) unless DeliverByStartSequence
 		AckWait:        defaultAckWait,
 		MaxAckPending:  prefetch,
 	}
@@ -550,16 +553,38 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	return nil
 }
 
-func deliverPolicyFor(source *pb.Source) jetstream.DeliverPolicy {
-	// Maps the Offset option. Transient consumers typically want "new" (only
-	// messages after subscribe); stream replay consumers want "all".
-	switch source.GetOptions()["Offset"] {
-	case "first":
-		return jetstream.DeliverAllPolicy
+// deliverPolicyFor maps the RabbitMQ-Streams `Offset` option onto a JetStream
+// DeliverPolicy, mirroring the amqp091 connector's toStreamOffset so both
+// connectors accept the same offset vocabulary. The second return value is the
+// start sequence, meaningful only when the policy is DeliverByStartSequence.
+//
+// Mapping: `first`/`continue` -> deliver all (a durable "continue"s from its
+// stored ack floor on reconnect regardless, so all-from-start is the correct
+// first-creation fallback); `last` -> the final message; `next`/"" -> only
+// messages published after the consumer is created; an absolute number ->
+// start at that stream sequence.
+//
+// NOTE: numeric offsets are JetStream stream sequence numbers (as reported by
+// SourceStats), which are 1-based and not portable across brokers. Sequence 0
+// therefore means "from the beginning" and maps to DeliverAll rather than an
+// invalid start sequence. An unparseable offset falls back to "new".
+func deliverPolicyFor(source *pb.Source) (jetstream.DeliverPolicy, uint64) {
+	off := source.GetOptions()["Offset"]
+	switch strings.ToLower(off) {
+	case "first", "continue":
+		return jetstream.DeliverAllPolicy, 0
+	case "last":
+		return jetstream.DeliverLastPolicy, 0
 	case "next", "":
-		return jetstream.DeliverNewPolicy
+		return jetstream.DeliverNewPolicy, 0
 	default:
-		return jetstream.DeliverNewPolicy
+		if seq, err := strconv.ParseUint(strings.TrimSpace(off), 10, 64); err == nil {
+			if seq == 0 {
+				return jetstream.DeliverAllPolicy, 0
+			}
+			return jetstream.DeliverByStartSequencePolicy, seq
+		}
+		return jetstream.DeliverNewPolicy, 0
 	}
 }
 

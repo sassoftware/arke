@@ -96,9 +96,13 @@ The connector chooses the consumer kind from the source
   auto-delete / exclusive / `TEMPORARY` sources, which clients commonly use
   for per-instance, transient subscriptions.
 
-The `DeliverPolicy` is taken from the `Offset` option (`first` -> deliver all,
-otherwise deliver new) and only applies on first creation; a reconnecting
-durable resumes from its stored ack position.
+The `DeliverPolicy` is taken from the `Offset` option, mirroring the amqp091
+connector's offset vocabulary so both accept the same values: `first`/`continue`
+-> deliver all, `last` -> the final message, `next` (or unset) -> deliver new,
+and an absolute number -> start at that stream sequence. It only applies on
+first creation; a reconnecting durable resumes from its stored ack position.
+Numeric offsets are JetStream stream sequence numbers (as surfaced by
+`SourceStats`) and are not portable across brokers.
 
 ## Ack, retry, and dead-letter mapping
 
@@ -231,7 +235,7 @@ every `Source.Options` key the connector reads:
 | `Expires` | string (ms) | Source expiry when unused (mapped to stream `MaxAge`). |
 | `DeadLetterAddress` | string | Address whose stream receives dead-lettered messages. |
 | `DeadLetterSubject` | string | Routing key for dead-lettered messages. |
-| `Offset` | string | Stream starting offset (`first` / `next`). |
+| `Offset` | string | Stream starting offset (`first`, `continue`, `last`, `next`, or a numeric sequence). |
 | `ConsumerGroup` | string | Durable consumer group name (Streams only). |
 
 ## Known limitations
