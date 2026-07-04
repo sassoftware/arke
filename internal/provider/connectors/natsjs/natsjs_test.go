@@ -440,7 +440,8 @@ func TestDeliverPolicyFor(t *testing.T) {
 	mk := func(off string) *pb.Source { return &pb.Source{Options: map[string]string{"Offset": off}} }
 	check := func(off string, wantPol jetstream.DeliverPolicy, wantSeq uint64) {
 		t.Helper()
-		pol, seq := deliverPolicyFor(mk(off))
+		pol, seq, err := deliverPolicyFor(mk(off))
+		assert.Nil(t, err, "error for Offset=%q", off)
 		assert.Equal(t, wantPol, pol, "policy for Offset=%q", off)
 		assert.Equal(t, wantSeq, seq, "start seq for Offset=%q", off)
 	}
@@ -452,11 +453,18 @@ func TestDeliverPolicyFor(t *testing.T) {
 	check("", jetstream.DeliverNewPolicy, 0)
 	check("100", jetstream.DeliverByStartSequencePolicy, 100)
 	check("0", jetstream.DeliverAllPolicy, 0) // offset 0 == from the beginning
-	check("garbage", jetstream.DeliverNewPolicy, 0)
 
-	pol, seq := deliverPolicyFor(&pb.Source{})
+	pol, seq, err := deliverPolicyFor(&pb.Source{})
+	assert.Nil(t, err)
 	assert.Equal(t, jetstream.DeliverNewPolicy, pol)
 	assert.Equal(t, uint64(0), seq)
+
+	// An unrecognized offset is rejected, like amqp091's toStreamOffset —
+	// starting at a silently different position would lose or replay data.
+	for _, bad := range []string{"garbage", "-1", "1.5"} {
+		_, _, err := deliverPolicyFor(mk(bad))
+		assert.ErrorContains(t, err, "invalid offset", "Offset=%q", bad)
+	}
 }
 
 func TestFirstSubject(t *testing.T) {
@@ -705,6 +713,66 @@ func TestStreamOffsetLastAndNumeric(t *testing.T) {
 		}
 		assert.Equal(t, []string{"m2", "m3"}, got, "numeric offset starts at the given stream sequence")
 	})
+}
+
+// TestSubscribeInvalidOffsetRejected: an offset outside the shared vocabulary
+// fails the subscribe (mirroring amqp091's toStreamOffset) instead of silently
+// starting the consumer at "next".
+func TestSubscribeInvalidOffsetRejected(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	out := make(chan *pb.Message, 1)
+	perr := p.Subscribe(ctx, streamSource("events.bad.consumer", "events.bad", "latest", "e"), out)
+	require.NotNil(t, perr)
+	assert.Contains(t, perr.GetMessage(), "invalid offset")
+	assert.True(t, perr.GetIsFatal())
+}
+
+// TestDurableOffsetPinnedAtCreation: a durable's start position is fixed when
+// the consumer is first created — JetStream rejects DeliverPolicy/OptStartSeq
+// updates (err 10012) — so a re-subscribe that asks for a different Offset must
+// not fail; it attaches to the existing durable and resumes from its stored ack
+// position, per the documented contract.
+func TestDurableOffsetPinnedAtCreation(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.pinned", Subjects: []string{"e"}}
+	const n = 4
+	for i := 0; i < n; i++ {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte(fmt.Sprintf("m%d", i))}))
+	}
+
+	src := func(offset string) *pb.Source {
+		return streamSource("events.pinned.consumer", "events.pinned", offset, "e")
+	}
+
+	// Create the durable at "first" and ack only m0, leaving m1..m3 pending.
+	out := make(chan *pb.Message, n)
+	subCtx, cancel := context.WithCancel(ctx)
+	errCh := make(chan *pb.Error, 1)
+	go func() { errCh <- p.Subscribe(subCtx, src("first"), out) }()
+	m := recv(t, out)
+	assert.Equal(t, "m0", string(m.GetBody()))
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	cancel()
+	require.Nil(t, <-errCh)
+
+	// Re-subscribe the same durable asking for sequence 4 (m3). The request
+	// conflicts with the pinned start position; the consumer resumes from its
+	// stored ack floor instead, so the next delivery is m1, not m3.
+	out2 := make(chan *pb.Message, n)
+	subCtx2, cancel2 := context.WithCancel(ctx)
+	defer cancel2()
+	errCh2 := make(chan *pb.Error, 1)
+	go func() { errCh2 <- p.Subscribe(subCtx2, src("4"), out2) }()
+	m2 := recv(t, out2)
+	assert.Equal(t, "m1", string(m2.GetBody()),
+		"existing durable resumes from its stored position; the conflicting offset is ignored")
+	require.Nil(t, p.Ack(ctx, m2.GetUuid()))
+	cancel2()
+	require.Nil(t, <-errCh2, "conflicting offset on an existing durable must not fail the subscribe")
 }
 
 // TestEmptyRoutingKeyDelivers covers fanout-style publishes that carry no

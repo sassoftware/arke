@@ -99,10 +99,15 @@ The connector chooses the consumer kind from the source
 The `DeliverPolicy` is taken from the `Offset` option, mirroring the amqp091
 connector's offset vocabulary so both accept the same values: `first`/`continue`
 -> deliver all, `last` -> the final message, `next` (or unset) -> deliver new,
-and an absolute number -> start at that stream sequence. It only applies on
-first creation; a reconnecting durable resumes from its stored ack position.
-Numeric offsets are JetStream stream sequence numbers (as surfaced by
-`SourceStats`) and are not portable across brokers.
+and an absolute number -> start at that stream sequence. Any other value fails
+the subscribe (as in amqp091's offset parsing) rather than silently starting
+the consumer at a different position than it asked for. The offset only
+applies on first creation: JetStream fixes a durable's start position when the
+consumer is created, so a re-subscribe that requests a different offset logs a
+warning and resumes from the durable's stored ack position — use a new durable
+(source or `ConsumerGroup` name) to reposition. Numeric offsets are JetStream
+stream sequence numbers (as surfaced by `SourceStats`) and are not portable
+across brokers.
 
 ## Ack, retry, and dead-letter mapping
 

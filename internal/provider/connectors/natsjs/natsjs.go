@@ -490,7 +490,10 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	if prefetch <= 0 {
 		prefetch = 1
 	}
-	deliverPolicy, startSeq := deliverPolicyFor(source)
+	deliverPolicy, startSeq, derr := deliverPolicyFor(source)
+	if derr != nil {
+		return &pb.Error{Message: fmt.Sprintf("source %q: %s", source.GetName(), derr.Error()), IsFatal: true}
+	}
 	consCfg := jetstream.ConsumerConfig{
 		FilterSubjects: filterSubjectsFor(source),
 		AckPolicy:      jetstream.AckExplicitPolicy,
@@ -512,6 +515,21 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	}
 
 	cons, cerr := stream.CreateOrUpdateConsumer(tctx, consCfg)
+	if cerr != nil && consCfg.Durable != "" {
+		// A durable's start position (DeliverPolicy/OptStartSeq) is fixed at
+		// creation — JetStream rejects updates to it (err 10012), so a client
+		// re-subscribing with a different Offset would otherwise fail here
+		// forever. The documented contract is that Offset applies on first
+		// creation only and a reconnecting durable resumes from its stored ack
+		// position, so attach to the existing consumer as-is; to reposition,
+		// use a new durable (source/ConsumerGroup) name.
+		if existing, aerr := stream.Consumer(tctx, consCfg.Durable); aerr == nil {
+			util.Logger.Warn(
+				"natsjs: durable consumer {0} exists with a different configuration ({1}); resuming it unchanged",
+				consCfg.Durable, cerr.Error())
+			cons, cerr = existing, nil
+		}
+	}
 	if cerr != nil {
 		// Include the mapped filter subjects: a NATS "invalid subject" (10052)
 		// otherwise gives no hint which source/subject produced it.
@@ -567,24 +585,27 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 // NOTE: numeric offsets are JetStream stream sequence numbers (as reported by
 // SourceStats), which are 1-based and not portable across brokers. Sequence 0
 // therefore means "from the beginning" and maps to DeliverAll rather than an
-// invalid start sequence. An unparseable offset falls back to "new".
-func deliverPolicyFor(source *pb.Source) (jetstream.DeliverPolicy, uint64) {
+// invalid start sequence. An unrecognized offset is an error, like
+// toStreamOffset: starting a consumer at a silently different position than
+// the one it asked for loses or replays data.
+func deliverPolicyFor(source *pb.Source) (jetstream.DeliverPolicy, uint64, error) {
 	off := source.GetOptions()["Offset"]
 	switch strings.ToLower(off) {
 	case "first", "continue":
-		return jetstream.DeliverAllPolicy, 0
+		return jetstream.DeliverAllPolicy, 0, nil
 	case "last":
-		return jetstream.DeliverLastPolicy, 0
+		return jetstream.DeliverLastPolicy, 0, nil
 	case "next", "":
-		return jetstream.DeliverNewPolicy, 0
+		return jetstream.DeliverNewPolicy, 0, nil
 	default:
 		if seq, err := strconv.ParseUint(strings.TrimSpace(off), 10, 64); err == nil {
 			if seq == 0 {
-				return jetstream.DeliverAllPolicy, 0
+				return jetstream.DeliverAllPolicy, 0, nil
 			}
-			return jetstream.DeliverByStartSequencePolicy, seq
+			return jetstream.DeliverByStartSequencePolicy, seq, nil
 		}
-		return jetstream.DeliverNewPolicy, 0
+		return jetstream.DeliverNewPolicy, 0, fmt.Errorf(
+			"invalid offset: %q (expected first, continue, last, next, or a numeric stream sequence)", off)
 	}
 }
 
