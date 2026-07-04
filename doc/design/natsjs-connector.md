@@ -232,12 +232,13 @@ Legend: **Native** = NATS does it; **Proxy** = rebuilt in the connector;
 ## Source options
 
 Per the connector-interface contract, `SupportedSourceOptions()` advertises
-every `Source.Options` key the connector reads:
+the `Source.Options` keys the connector accepts — the same list as the
+amqp091 connector, so existing client sources validate unchanged:
 
 | Key | Type | Description |
 | --- | --- | --- |
-| `MessageTTL` | string (ms) | Per-source message TTL (mapped to stream `MaxAge`). |
-| `Expires` | string (ms) | Source expiry when unused (mapped to stream `MaxAge`). |
+| `MessageTTL` | string (ms) | Accepted for compatibility; not applied per source — retention is the stream-wide `NATSJS_STREAM_MAX_AGE` (see Known limitations). |
+| `Expires` | string (ms) | Accepted for compatibility; not applied — streams are shared per address root and are not deleted when a source goes unused. |
 | `DeadLetterAddress` | string | Address whose stream receives dead-lettered messages. |
 | `DeadLetterSubject` | string | Routing key for dead-lettered messages. |
 | `Offset` | string | Stream starting offset (`first`, `continue`, `last`, `next`, or a numeric sequence). |
@@ -246,12 +247,14 @@ every `Source.Options` key the connector reads:
 ## Known limitations
 
 - **Per-source TTL fidelity.** The connector uses one stream per address
-  root, so `MessageTTL` / `Expires` can only be honored as a stream-wide
-  `MaxAge`, not a faithful per-source TTL. True per-source TTL (or switching
-  queue sources to a delete-on-ack policy such as `WorkQueuePolicy` /
-  `InterestPolicy`) needs a per-source stream topology, and `Retention` is
-  immutable, so that is a stream-recreate migration rather than an in-place
-  change.
+  root, so a per-source `MessageTTL` / `Expires` cannot be mapped onto the
+  shared stream without one source's value flapping another's retention.
+  Both options are therefore accepted but ignored; retention comes from the
+  stream-wide `NATSJS_STREAM_MAX_AGE` / `NATSJS_STREAM_MAX_BYTES`
+  configuration. True per-source TTL (or switching queue sources to a
+  delete-on-ack policy such as `WorkQueuePolicy` / `InterestPolicy`) needs a
+  per-source stream topology, and `Retention` is immutable, so that is a
+  stream-recreate migration rather than an in-place change.
 - **Publish / deliver rates** are not exposed by JetStream stream info, so
   `SourceStats` leaves those rate fields at zero. The message count for a
   durable source is the consumer's backlog (undelivered plus unacked, with
