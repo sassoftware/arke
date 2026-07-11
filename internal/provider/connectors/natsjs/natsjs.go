@@ -598,7 +598,18 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	bd.consumeContexts.Add(source.GetName(), cc)
 	defer func() {
 		cc.Stop()
+		// Stop is asynchronous: wait (bounded) for the consume loop to finish
+		// unsubscribing, then flush so the server has processed the
+		// unsubscribe before the naks below — otherwise a nak'd message can
+		// be redelivered straight into this subscription's still-registered
+		// pull request and sit unclaimed until AckWait expires it again.
+		select {
+		case <-cc.Closed():
+		case <-time.After(ephemeralDeleteTimeout):
+		}
+		_ = bd.nc.FlushTimeout(ephemeralDeleteTimeout)
 		bd.consumeContexts.Delete(source.GetName())
+		releaseInFlight(bd, streamName, cons.CachedInfo().Name, consCfg.Durable != "")
 		if consCfg.Durable == "" {
 			deleteEphemeralConsumer(ctx, stream, cons.CachedInfo().Name)
 		}
@@ -606,6 +617,39 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 
 	<-ctx.Done()
 	return nil
+}
+
+// releaseInFlight drops a just-ended subscription's unresolved deliveries from
+// activeMessages. Acks travel on the consume stream that closed, so nothing
+// can resolve these uuids anymore; left alone they would sit in the map for
+// the life of the connection (a leak that also inflates the active-message
+// stat). Durable consumers additionally get a best-effort Nak so the messages
+// redeliver promptly — RabbitMQ requeues a closed channel's unacked deliveries
+// immediately, whereas an untouched JetStream delivery waits out the full
+// AckWait. Ephemeral consumers skip the Nak: the consumer is deleted on this
+// same teardown path, which discards its delivery state anyway. A message the
+// client resolves concurrently with teardown is deleted by whichever side gets
+// there first; the loser's ack/nak fails and is ignored (at-least-once either
+// way).
+func releaseInFlight(bd *natsBrokerDetails, streamName, consumerName string, nak bool) {
+	for _, uuid := range bd.activeMessages.GetList() {
+		mu, ok := bd.activeMessages.Get(uuid)
+		if !ok {
+			continue
+		}
+		m := mu.(jetstream.Msg)
+		md, err := m.Metadata()
+		if err != nil || md.Stream != streamName || md.Consumer != consumerName {
+			continue
+		}
+		bd.activeMessages.Delete(uuid)
+		if !nak {
+			continue
+		}
+		if err := m.Nak(); err != nil {
+			util.Logger.Debugf("natsjs: nak of in-flight message %s at subscription end: %s", uuid, err.Error())
+		}
+	}
 }
 
 // deleteEphemeralConsumer removes an ephemeral consumer as soon as its
@@ -737,7 +781,12 @@ func (p *natsjsProvider) handleDelivery(ctx context.Context, bd *natsBrokerDetai
 	case out <- pbmsg:
 		atomic.AddInt64(&bd.consumed, 1)
 	case <-ctx.Done():
+		// The subscription ended before the server took the message: drop the
+		// claim and nak (best-effort) so a durable redelivers it promptly
+		// instead of after AckWait. Harmless for ephemerals, whose consumer is
+		// deleted on teardown.
 		bd.activeMessages.Delete(uuid)
+		_ = m.Nak()
 	}
 }
 

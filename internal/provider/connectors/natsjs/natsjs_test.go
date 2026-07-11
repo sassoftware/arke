@@ -1020,6 +1020,53 @@ func TestEphemeralConsumerDeletedOnTeardown(t *testing.T) {
 	}, 10*time.Second, 20*time.Millisecond, "ephemeral consumer was not deleted on teardown")
 }
 
+// TestTeardownReleasesInFlightMessages: when a subscription ends, its
+// delivered-but-unresolved messages are removed from the active-message map
+// (their acks can only arrive on the consume stream that just closed, so they
+// could never be resolved again — a leak for the life of the connection) and
+// nak'd, so a durable redelivers them promptly instead of after the full
+// AckWait, matching RabbitMQ's immediate requeue of a closed channel's
+// unacked deliveries.
+func TestTeardownReleasesInFlightMessages(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.inflight", Subjects: []string{"e"}}
+	const n = 3
+	for i := 0; i < n; i++ {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte(fmt.Sprintf("m%d", i))}))
+	}
+
+	// First subscription receives the backlog but never resolves it.
+	src := queueSource("events.inflight.consumer", "events.inflight", "e")
+	out := make(chan *pb.Message, n)
+	subCtx, cancel := context.WithCancel(ctx)
+	errCh := make(chan *pb.Error, 1)
+	go func() { errCh <- p.Subscribe(subCtx, src, out) }()
+	for i := 0; i < n; i++ {
+		recv(t, out) // deliberately left unacked
+	}
+	cancel()
+	require.Nil(t, <-errCh)
+
+	// The abandoned deliveries are no longer tracked...
+	stats := p.Stats()
+	require.Len(t, stats.Clients, 1)
+	assert.Zero(t, stats.Clients[0].ActiveMessages,
+		"teardown must release the subscription's in-flight messages")
+
+	// ...and a re-subscribe gets them back well before AckWait (30s) because
+	// teardown nak'd them (recv's 10s timeout is the proof of promptness).
+	out2 := make(chan *pb.Message, n)
+	subCtx2, cancel2 := context.WithCancel(ctx)
+	defer cancel2()
+	go p.Subscribe(subCtx2, src, out2)
+	for i := 0; i < n; i++ {
+		m := recv(t, out2)
+		require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	}
+}
+
 // TestDeclareOnlyEphemeralConsumerCleanedUp: DeclareOnly on a transient source
 // validates topology, but the ephemeral consumer it creates can never be
 // attached to afterwards (its server-generated name is not surfaced), so it is

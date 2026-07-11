@@ -100,6 +100,13 @@ The connector chooses the consumer kind from the source
   exits and churning transient clients cannot accumulate dead consumers
   against the server's per-stream consumer limit.
 
+When a subscription ends, its delivered-but-unresolved messages are released:
+their acks could only have arrived on the consume stream that just closed, so
+the connector drops its claim on them and (for durable consumers) naks them
+so they redeliver promptly. This matches RabbitMQ, which requeues a closed
+channel's unacked deliveries immediately; without the nak they would only
+redeliver after the full ack wait.
+
 The `DeliverPolicy` is taken from the `Offset` option, mirroring the amqp091
 connector's offset vocabulary so both accept the same values: `first`/`continue`
 -> deliver all, `last` -> the final message, `next` (or unset) -> deliver new,
