@@ -135,6 +135,16 @@ connector maps those onto JetStream primitives:
 | nack, `requeue_delay == 0`, DLA set | `DeadLetter` | publish to DLQ + `Term()` |
 | nack, `requeue_delay == 0`, no DLA | `Nack` | `msg.Nak()` |
 
+A delivered message that is neither acked nor nacked redelivers after the
+consumer's ack wait (`NATSJS_ACK_WAIT`, default 30s). That value sets one
+dial between two failure modes: a crashed client's in-flight messages are
+stuck until the ack wait passes before another consumer gets them (shorter
+is better), while a healthy consumer that holds a message longer than the
+ack wait — including time spent queued in the client-side pull buffer behind
+a large prefetch — gets a duplicate redelivery (longer is better). The
+default favors failover; RabbitMQ's equivalent consumer timeout defaults to
+30 minutes, so deployments with legitimately slow consumers should raise it.
+
 `NakWithDelay` is the native replacement for RabbitMQ's per-message-TTL +
 dead-letter retry-queue idiom; JetStream increments the delivery count, which
 the connector surfaces back to the client as the `x-retry-count` header (see
@@ -221,6 +231,7 @@ forming a raft group per stream and per durable consumer:
 | `NATSJS_STREAM_MAX_AGE` | `72h` | Max age before messages are evicted (Go duration; `0` = keep forever). |
 | `NATSJS_STREAM_MAX_BYTES` | `0` (unlimited) | Hard per-stream storage cap in bytes. |
 | `NATSJS_API_TIMEOUT` | `30s` | Deadline for JetStream management API calls (stream / consumer creation). Go duration. |
+| `NATSJS_ACK_WAIT` | `30s` | How long the server waits for an ack before redelivering a message. Go duration. |
 
 TLS and credentials come from the standard `ConnectionConfiguration` (`Tls`,
 `Credentials`) and the server's `tlsSkipVerify` flag, exactly as for the AMQP

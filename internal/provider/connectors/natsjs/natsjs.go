@@ -41,6 +41,9 @@ const providerName = "natsjs"
 const retryCountHeaderName = "x-retry-count"
 
 const (
+	// defaultAckWait is how long the server waits for an ack before
+	// redelivering a message. See ackWait for the trade-off it sets;
+	// override via NATSJS_ACK_WAIT.
 	defaultAckWait           = 30 * time.Second
 	defaultInactiveThreshold = 5 * time.Minute
 	defaultDedupWindow       = 2 * time.Minute
@@ -233,6 +236,26 @@ func jsAPITimeout() time.Duration {
 		}
 	}
 	return defaultJSAPITimeout
+}
+
+// ackWait is how long the server waits for a delivered message's ack before
+// redelivering it. It sets one dial between two failure modes: a crashed
+// client's in-flight messages are stuck for the full ack wait before another
+// consumer gets them (shorter is better), while a healthy consumer that takes
+// longer than the ack wait to process a message gets a duplicate redelivery
+// (longer is better). The 30s default favors failover; deployments whose
+// consumers legitimately hold messages longer — RabbitMQ's equivalent
+// consumer timeout defaults to 30 minutes — should raise it via
+// NATSJS_ACK_WAIT (Go duration). Note the pull buffer counts too: with a
+// large prefetch a backlogged consumer can hold messages client-side longer
+// than the ack wait just waiting their turn.
+func ackWait() time.Duration {
+	if v := os.Getenv("NATSJS_ACK_WAIT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultAckWait
 }
 
 func (p *natsjsProvider) getBrokerDetails(ctx context.Context) (*natsBrokerDetails, error) {
@@ -520,7 +543,7 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		AckPolicy:      jetstream.AckExplicitPolicy,
 		DeliverPolicy:  deliverPolicy,
 		OptStartSeq:    startSeq, // 0 (ignored) unless DeliverByStartSequence
-		AckWait:        defaultAckWait,
+		AckWait:        ackWait(),
 		MaxAckPending:  prefetch,
 	}
 	// Durable work-queue consumer for non-transient QUEUE / stream-group sources:

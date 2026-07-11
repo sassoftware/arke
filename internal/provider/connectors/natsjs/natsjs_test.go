@@ -440,6 +440,15 @@ func TestJSAPITimeoutFromEnv(t *testing.T) {
 	assert.Equal(t, defaultJSAPITimeout, jsAPITimeout())
 }
 
+func TestAckWaitFromEnv(t *testing.T) {
+	t.Setenv("NATSJS_ACK_WAIT", "5m")
+	assert.Equal(t, 5*time.Minute, ackWait())
+	t.Setenv("NATSJS_ACK_WAIT", "bad")
+	assert.Equal(t, defaultAckWait, ackWait())
+	t.Setenv("NATSJS_ACK_WAIT", "0")
+	assert.Equal(t, defaultAckWait, ackWait())
+}
+
 func TestStreamRegistryCollapsesConcurrentCalls(t *testing.T) {
 	r := newStreamRegistry()
 	release := make(chan struct{})
