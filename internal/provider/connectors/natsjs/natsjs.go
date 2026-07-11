@@ -16,6 +16,7 @@ package natsjs
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -535,17 +536,21 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	}
 
 	cons, cerr := stream.CreateOrUpdateConsumer(tctx, consCfg)
-	if cerr != nil && consCfg.Durable != "" {
+	if cerr != nil && consCfg.Durable != "" && isStartPositionConflict(cerr) {
 		// A durable's start position (DeliverPolicy/OptStartSeq) is fixed at
 		// creation — JetStream rejects updates to it (err 10012), so a client
 		// re-subscribing with a different Offset would otherwise fail here
 		// forever. The documented contract is that Offset applies on first
 		// creation only and a reconnecting durable resumes from its stored ack
 		// position, so attach to the existing consumer as-is; to reposition,
-		// use a new durable (source/ConsumerGroup) name.
+		// use a new durable (source/ConsumerGroup) name. Only start-position
+		// conflicts are absorbed this way: any other configuration error stays
+		// fatal, because attaching to a consumer whose effective config
+		// silently differs from the requested one (wrong ack policy, stale
+		// filter subjects) would consume the wrong way without any signal.
 		if existing, aerr := stream.Consumer(tctx, consCfg.Durable); aerr == nil {
 			util.Logger.Warn(
-				"natsjs: durable consumer {0} exists with a different configuration ({1}); resuming it unchanged",
+				"natsjs: durable consumer {0} exists with a different start position ({1}); resuming it unchanged",
 				consCfg.Durable, cerr.Error())
 			cons, cerr = existing, nil
 		}
@@ -662,6 +667,35 @@ func deliverPolicyFor(source *pb.Source) (jetstream.DeliverPolicy, uint64, error
 		return jetstream.DeliverNewPolicy, 0, fmt.Errorf(
 			"invalid offset: %q (expected first, continue, last, next, or a numeric stream sequence)", off)
 	}
+}
+
+// startPositionConflictMessages are the server's refusals to change a durable
+// consumer's start position, which JetStream fixes at creation. They arrive
+// wrapped in the generic consumer-create API error (err 10012) whose
+// description carries the specific refusal, so the description is what
+// distinguishes an immutable start position from every other create or update
+// failure sharing that code.
+var startPositionConflictMessages = []string{
+	"deliver policy can not be updated",
+	"start sequence can not be updated",
+	"start time can not be updated",
+}
+
+// isStartPositionConflict reports whether err is JetStream refusing to move an
+// existing durable consumer's start position (DeliverPolicy / OptStartSeq /
+// OptStartTime) — the one configuration conflict Subscribe absorbs by
+// attaching to the existing consumer unchanged.
+func isStartPositionConflict(err error) bool {
+	var apiErr *jetstream.APIError
+	if !errors.As(err, &apiErr) || apiErr.ErrorCode != jetstream.JSErrCodeConsumerCreate {
+		return false
+	}
+	for _, m := range startPositionConflictMessages {
+		if strings.Contains(apiErr.Description, m) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *natsjsProvider) handleDelivery(ctx context.Context, bd *natsBrokerDetails, source *pb.Source, m jetstream.Msg, out chan<- *pb.Message) {

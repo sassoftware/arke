@@ -858,6 +858,64 @@ func TestDurableOffsetPinnedAtCreation(t *testing.T) {
 	require.Nil(t, <-errCh2, "conflicting offset on an existing durable must not fail the subscribe")
 }
 
+// TestIsStartPositionConflict pins down which consumer-create errors the
+// durable fallback absorbs: only the server's refusals to move a start
+// position. Everything else — other immutable-field refusals sharing err code
+// 10012, other API errors, non-API errors — stays fatal.
+func TestIsStartPositionConflict(t *testing.T) {
+	mk := func(code jetstream.ErrorCode, desc string) error {
+		return &jetstream.APIError{ErrorCode: code, Description: desc}
+	}
+	assert.True(t, isStartPositionConflict(mk(jetstream.JSErrCodeConsumerCreate, "deliver policy can not be updated")))
+	assert.True(t, isStartPositionConflict(mk(jetstream.JSErrCodeConsumerCreate, "start sequence can not be updated")))
+	assert.True(t, isStartPositionConflict(mk(jetstream.JSErrCodeConsumerCreate, "start time can not be updated")))
+
+	// Same error code, different refusal: not a start-position conflict.
+	assert.False(t, isStartPositionConflict(mk(jetstream.JSErrCodeConsumerCreate, "replay policy can not be updated")))
+	assert.False(t, isStartPositionConflict(mk(jetstream.JSErrCodeConsumerCreate, "invalid subject")))
+	// Different code, or not an API error at all.
+	assert.False(t, isStartPositionConflict(mk(jetstream.JSErrCodeStreamNotFound, "stream not found")))
+	assert.False(t, isStartPositionConflict(fmt.Errorf("deliver policy can not be updated")))
+}
+
+// TestDurableConflictBeyondStartPositionStaysFatal: the attach-unchanged
+// fallback exists for start-position conflicts only. If the existing durable
+// differs in any other way — here an incompatible ReplayPolicy — resuming it
+// unchanged would silently consume with a configuration the source never
+// asked for, so the subscribe must fail instead.
+func TestDurableConflictBeyondStartPositionStaysFatal(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.replay", Subjects: []string{"e"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("x")}))
+
+	src := queueSource("events.replay.consumer", "events.replay", "e")
+
+	// A consumer with the connector's durable name already exists, matching on
+	// start position but differing in another immutable field.
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	stream, serr := bd.js.Stream(ctx, streamNameFor("events.replay"))
+	require.NoError(t, serr)
+	_, cerr := stream.CreateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:        durableName(src),
+		FilterSubjects: filterSubjectsFor(src),
+		AckPolicy:      jetstream.AckExplicitPolicy,
+		DeliverPolicy:  jetstream.DeliverAllPolicy, // matches Offset "first"
+		ReplayPolicy:   jetstream.ReplayOriginalPolicy,
+	})
+	require.NoError(t, cerr)
+
+	// Bound the subscribe so a regression (wrongly attaching and blocking)
+	// fails the test instead of hanging it.
+	subCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	perr := p.Subscribe(subCtx, src, make(chan *pb.Message, 1))
+	require.NotNil(t, perr, "a non-start-position config conflict must fail the subscribe")
+	assert.True(t, perr.GetIsFatal())
+	assert.Contains(t, perr.GetMessage(), "create consumer")
+}
+
 // TestEmptyRoutingKeyDelivers covers fanout-style publishes that carry no
 // routing key: they map to the bare "<root>.~" subject, which both the stream
 // and a pattern-less consumer capture.

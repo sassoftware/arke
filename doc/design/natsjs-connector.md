@@ -108,9 +108,12 @@ the consumer at a different position than it asked for. The offset only
 applies on first creation: JetStream fixes a durable's start position when the
 consumer is created, so a re-subscribe that requests a different offset logs a
 warning and resumes from the durable's stored ack position — use a new durable
-(source or `ConsumerGroup` name) to reposition. Numeric offsets are JetStream
-stream sequence numbers (as surfaced by `SourceStats`) and are not portable
-across brokers.
+(source or `ConsumerGroup` name) to reposition. Only that start-position
+conflict is absorbed; any other error creating or updating the consumer fails
+the subscribe, since resuming a consumer whose configuration silently differs
+from the requested one would consume the wrong way with no signal. Numeric
+offsets are JetStream stream sequence numbers (as surfaced by `SourceStats`)
+and are not portable across brokers.
 
 ## Ack, retry, and dead-letter mapping
 
