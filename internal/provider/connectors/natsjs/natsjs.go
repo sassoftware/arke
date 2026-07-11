@@ -1067,14 +1067,15 @@ func (p *natsjsProvider) SourceStats(ctx context.Context, source *pb.Source) *pb
 	// consumer (or before it exists), fall back to the stream view.
 	if durable := durableName(source); durable != "" {
 		if cons, cerr := stream.Consumer(ctx, durable); cerr == nil {
-			if ci, ierr := cons.Info(ctx); ierr == nil {
-				stats.MessageCount = int64(ci.NumPending) + int64(ci.NumAckPending) //nolint:gosec
-				stats.CurrentOffset = int64(ci.AckFloor.Stream)                     //nolint:gosec
-				// Delivered.Consumer counts deliveries (redeliveries included,
-				// like RabbitMQ's deliver rate). Ephemeral sources have no
-				// consumer identity to sample here, so their rate stays zero.
-				stats.DeliverRate = bd.rates.observe("del/"+streamName+"/"+durable, now, ci.Delivered.Consumer)
-			}
+			// Consumer() fetched fresh info to return the handle; reuse it
+			// instead of paying a second round-trip on every stats poll.
+			ci := cons.CachedInfo()
+			stats.MessageCount = int64(ci.NumPending) + int64(ci.NumAckPending) //nolint:gosec
+			stats.CurrentOffset = int64(ci.AckFloor.Stream)                     //nolint:gosec
+			// Delivered.Consumer counts deliveries (redeliveries included,
+			// like RabbitMQ's deliver rate). Ephemeral sources have no
+			// consumer identity to sample here, so their rate stays zero.
+			stats.DeliverRate = bd.rates.observe("del/"+streamName+"/"+durable, now, ci.Delivered.Consumer)
 		}
 	}
 	return stats
