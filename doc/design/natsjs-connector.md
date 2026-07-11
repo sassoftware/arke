@@ -95,7 +95,8 @@ The connector chooses the consumer kind from the source
 - Ephemeral consumers auto-expire after an inactivity threshold. Used for
   auto-delete / exclusive / `TEMPORARY` sources, which clients commonly use
   for per-instance, transient subscriptions. They are also deleted eagerly
-  when their subscription ends, so the threshold only has to cover unclean
+  when their subscription ends (or never starts — a declare-only call, or a
+  failure to begin consuming), so the threshold only has to cover unclean
   exits and churning transient clients cannot accumulate dead consumers
   against the server's per-stream consumer limit.
 

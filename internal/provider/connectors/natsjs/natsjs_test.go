@@ -1020,6 +1020,33 @@ func TestEphemeralConsumerDeletedOnTeardown(t *testing.T) {
 	}, 10*time.Second, 20*time.Millisecond, "ephemeral consumer was not deleted on teardown")
 }
 
+// TestDeclareOnlyEphemeralConsumerCleanedUp: DeclareOnly on a transient source
+// validates topology, but the ephemeral consumer it creates can never be
+// attached to afterwards (its server-generated name is not surfaced), so it is
+// deleted before Subscribe returns instead of lingering until the inactivity
+// threshold.
+func TestDeclareOnlyEphemeralConsumerCleanedUp(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	src := &pb.Source{
+		Name:        "events.tmpdecl.listener",
+		Type:        pb.Source_QUEUE,
+		AutoDelete:  true, // transient -> ephemeral consumer
+		DeclareOnly: true,
+		Address:     &pb.Address{Name: "events.tmpdecl", Subjects: []string{"a"}},
+	}
+	require.Empty(t, durableName(src), "test source must map to an ephemeral consumer")
+	require.Nil(t, p.Subscribe(ctx, src, nil))
+
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	stream, serr := bd.js.Stream(ctx, streamNameFor("events.tmpdecl"))
+	require.NoError(t, serr)
+	info, ierr := stream.Info(ctx)
+	require.NoError(t, ierr)
+	assert.Zero(t, info.State.Consumers, "declare-only ephemeral consumer must not linger")
+}
+
 func TestRateTracker(t *testing.T) {
 	rt := newRateTracker()
 	t0 := time.Now()

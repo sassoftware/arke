@@ -564,8 +564,14 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		}
 	}
 
-	// DeclareOnly: topology established, do not consume.
+	// DeclareOnly: topology established, do not consume. An ephemeral consumer
+	// created only to validate that topology is garbage the moment we return —
+	// its server-generated name is never seen again — so delete it eagerly
+	// rather than letting it linger for the full inactivity threshold.
 	if source.GetDeclareOnly() {
+		if consCfg.Durable == "" {
+			deleteEphemeralConsumer(ctx, stream, cons.CachedInfo().Name)
+		}
 		return nil
 	}
 
@@ -584,6 +590,9 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		}),
 	)
 	if cerr != nil {
+		if consCfg.Durable == "" {
+			deleteEphemeralConsumer(ctx, stream, cons.CachedInfo().Name)
+		}
 		return &pb.Error{Message: fmt.Sprintf("consume: %s", cerr.Error()), IsFatal: true}
 	}
 	bd.consumeContexts.Add(source.GetName(), cc)
@@ -708,9 +717,15 @@ func (p *natsjsProvider) handleDelivery(ctx context.Context, bd *natsBrokerDetai
 		headers[retryCountHeaderName] = strconv.FormatUint(md.NumDelivered-1, 10)
 	}
 
-	// Proxy-side replacement for RabbitMQ headers-exchange routing.
+	// Proxy-side replacement for RabbitMQ headers-exchange routing. A failed
+	// ack here only means the message will be redelivered and re-filtered —
+	// harmless, but it inflates NumDelivered (and so the synthesized
+	// x-retry-count) of a message the client never saw, so leave a trace.
 	if !evaluateFilters(source.GetFilters(), headers) {
-		_ = m.Ack()
+		if err := m.Ack(); err != nil {
+			util.Logger.Debugf("natsjs: ack of header-filtered message on source %s failed: %s",
+				source.GetName(), err.Error())
+		}
 		return
 	}
 
