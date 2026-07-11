@@ -741,24 +741,56 @@ func (p *natsjsProvider) Retry(ctx context.Context, _ *pb.Source, uuid string, d
 
 // DeadLetter publishes the message to the configured dead-letter subject (there
 // is no native DLX in JetStream) and terminates redelivery.
+//
+// RabbitMQ moves a nacked message to its DLX broker-side; here the move is two
+// proxy-side steps, so ordering is what protects the data: the original is
+// Term'd only after the DLQ publish succeeds. If the DLQ stream cannot be
+// ensured or published to, the message is left in flight — still ack-pending on
+// the server and still resolvable by uuid — and an error is returned, so the
+// caller's fallback (the server nacks on a DeadLetter error) redelivers it and
+// dead-lettering is retried, instead of the message being removed from
+// redelivery while also absent from the DLQ. The DLQ publish carries a
+// Nats-Msg-Id derived from the original's stream sequence, so a retried
+// dead-letter of the same message cannot duplicate it in the DLQ within the
+// dedup window.
 func (p *natsjsProvider) DeadLetter(ctx context.Context, source *pb.Source, uuid string) *pb.Error {
-	m, bd, perr := p.takeMessage(ctx, uuid)
-	if perr != nil {
-		return perr
+	bd, err := p.getBrokerDetails(ctx)
+	if err != nil {
+		return &pb.Error{Message: err.Error()}
 	}
+	mu, ok := bd.activeMessages.Get(uuid)
+	if !ok {
+		return &pb.Error{Message: fmt.Sprintf("no message with uuid %s", uuid)}
+	}
+	m := mu.(jetstream.Msg)
 	opts := source.GetOptions()
 	if dla := opts["DeadLetterAddress"]; dla != "" {
-		if _, err := p.ensureStream(ctx, bd, dla); err == nil {
-			dlqMsg := &nats.Msg{
-				Subject: publishSubjectFor(dla, opts["DeadLetterSubject"]),
-				Data:    m.Data(),
-				Header:  m.Headers(),
-			}
-			if _, err := bd.js.PublishMsg(ctx, dlqMsg); err != nil {
-				util.Logger.Debugf("natsjs: dead-letter publish failed for %s: %s", uuid, err.Error())
-			}
+		if _, serr := p.ensureStream(ctx, bd, dla); serr != nil {
+			util.Logger.Warn(
+				"natsjs: dead-letter of message {0} failed (ensure stream for {1}: {2}); message stays in flight",
+				uuid, dla, serr.Error())
+			return &pb.Error{Message: fmt.Sprintf("dead-letter ensure stream: %s", serr.Error())}
+		}
+		dlqMsg := &nats.Msg{
+			Subject: publishSubjectFor(dla, opts["DeadLetterSubject"]),
+			Data:    m.Data(),
+			// Copied so the publish options below do not mutate the original's
+			// header map.
+			Header: copyHeader(m.Headers()),
+		}
+		var pubOpts []jetstream.PublishOpt
+		if md, merr := m.Metadata(); merr == nil {
+			pubOpts = append(pubOpts,
+				jetstream.WithMsgID(fmt.Sprintf("dlq-%s-%d", md.Stream, md.Sequence.Stream)))
+		}
+		if _, perr := bd.js.PublishMsg(ctx, dlqMsg, pubOpts...); perr != nil {
+			util.Logger.Warn(
+				"natsjs: dead-letter of message {0} failed (publish to {1}: {2}); message stays in flight",
+				uuid, dlqMsg.Subject, perr.Error())
+			return &pb.Error{Message: fmt.Sprintf("dead-letter publish: %s", perr.Error())}
 		}
 	}
+	bd.activeMessages.Delete(uuid)
 	if err := m.Term(); err != nil {
 		return &pb.Error{Message: err.Error()}
 	}

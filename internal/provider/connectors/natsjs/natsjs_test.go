@@ -222,6 +222,56 @@ func TestDeadLetter(t *testing.T) {
 	})
 	assert.Nil(t, dlqStats.GetError())
 	assert.Equal(t, int64(1), dlqStats.GetMessageCount())
+
+	// The copy carries a deterministic Nats-Msg-Id, so a retried dead-letter of
+	// the same message dedups in the DLQ instead of duplicating.
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	dlqStream, serr := bd.js.Stream(ctx, streamNameFor("events.dlq"))
+	require.NoError(t, serr)
+	raw, gerr := dlqStream.GetMsg(ctx, 1)
+	require.NoError(t, gerr)
+	assert.NotEmpty(t, raw.Header.Get("Nats-Msg-Id"), "DLQ copy must carry a dedup message id")
+}
+
+// TestDeadLetterFailureKeepsMessage: when the dead-letter publish cannot happen
+// (here the DLQ address's subject space is already claimed by a foreign
+// stream, so ensuring its stream fails), DeadLetter must NOT Term the
+// original. It returns an error and leaves the message in flight, so the
+// caller's fallback nack still resolves the uuid and the message is
+// redelivered — the failure mode is retry, not silent loss.
+func TestDeadLetterFailureKeepsMessage(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	// Claim the DLQ subject space so ensureStream for the DLA fails with
+	// "subjects overlap with an existing stream".
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	_, serr := bd.js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:     "squatter",
+		Subjects: []string{"events.dlx.~", "events.dlx.~.>"},
+	})
+	require.NoError(t, serr)
+
+	addr := &pb.Address{Name: "events.dlfail", Subjects: []string{"job"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("poison")}))
+
+	out := make(chan *pb.Message, 2)
+	src := queueSource("events.dlfail.consumer", "events.dlfail", "job")
+	src.Options["DeadLetterAddress"] = "events.dlx"
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	m := recv(t, out)
+	perr := p.DeadLetter(ctx, src, m.GetUuid())
+	require.NotNil(t, perr, "DeadLetter must fail when the DLQ publish cannot happen")
+	assert.Contains(t, perr.GetMessage(), "dead-letter")
+
+	// Not Term'd: the same uuid is still nackable, and the nack redelivers.
+	require.Nil(t, p.Nack(ctx, m.GetUuid()), "a failed dead-letter leaves the message nackable")
+	again := recv(t, out)
+	assert.Equal(t, "poison", string(again.GetBody()))
+	require.Nil(t, p.Ack(ctx, again.GetUuid()))
 }
 
 func TestDeduplication(t *testing.T) {

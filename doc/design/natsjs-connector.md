@@ -129,7 +129,15 @@ dead-letter retry-queue idiom; JetStream increments the delivery count, which
 the connector surfaces back to the client as the `x-retry-count` header (see
 below). JetStream has no native dead-letter exchange, so `DeadLetter`
 republishes the message to the configured dead-letter subject and then
-`Term()`s it to stop redelivery.
+`Term()`s it to stop redelivery. RabbitMQ performs that move broker-side;
+here it is two proxy-side steps, so ordering is what protects the data: the
+original is terminated only after the DLQ publish succeeds. If the DLQ stream
+cannot be ensured or published to, `DeadLetter` returns an error and leaves
+the message ack-pending — the server then falls back to a nack, so the
+message is redelivered and dead-lettering is retried instead of the message
+being lost. The DLQ copy carries a `Nats-Msg-Id` derived from the original's
+stream sequence, so a retried dead-letter of the same message deduplicates in
+the DLQ within its dedup window.
 
 ## Retry-count header
 
@@ -282,8 +290,10 @@ amqp091 connector, so existing client sources validate unchanged:
   traffic. That is fine when header filters refine an already-narrow subject,
   but a high-volume address consumed almost entirely through header filters
   should be remodeled onto routing keys (subjects) instead.
-- **Dead-letter is fire-and-forget.** Messages are republished to the
-  dead-letter subject; there is no advisory-driven re-consumption.
+- **Dead-letter is a proxy-side republish.** The DLQ is an ordinary stream
+  fed by the connector; there is no advisory-driven re-consumption. A failed
+  DLQ publish fails the dead-letter call — the message stays in flight and is
+  redelivered — rather than dropping the message.
 - **Connection authentication.** The connector supports user/password and TLS
   today; NKEYs / JWT auth are a natural follow-up for production deployments.
 

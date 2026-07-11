@@ -246,6 +246,20 @@ func pbToNatsHeader(in map[string]string) nats.Header {
 	return h
 }
 
+// copyHeader shallow-copies a NATS header so options applied to the copy at
+// publish time (e.g. a message id) do not mutate the source message's header
+// map.
+func copyHeader(in nats.Header) nats.Header {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(nats.Header, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 // natsToPbHeader converts a NATS header to Arke's flat string headers, keeping
 // the first value of each key.
 func natsToPbHeader(in nats.Header) map[string]string {
