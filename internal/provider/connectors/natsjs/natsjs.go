@@ -69,6 +69,14 @@ const (
 	// realistic consumer-outage backlog, short enough to stop indefinite
 	// accumulation. Override via NATSJS_STREAM_MAX_AGE.
 	defaultStreamMaxAge = 72 * time.Hour
+	// sacPriorityGroup is the priority group name used for single-active-
+	// consumer sources. One group is enough: RabbitMQ's SAC has no notion of
+	// multiple groups, and every subscriber of the durable joins this one.
+	sacPriorityGroup = "arke"
+	// defaultSACPinnedTTL is how long the server waits for a new pull request
+	// from the pinned (active) client before unpinning and failing over to a
+	// standby. See sacPinnedTTL; override via NATSJS_SAC_PINNED_TTL.
+	defaultSACPinnedTTL = time.Minute
 )
 
 // supportedSourceOptionsList intentionally matches the amqp091 connector so that
@@ -256,6 +264,22 @@ func ackWait() time.Duration {
 		}
 	}
 	return defaultAckWait
+}
+
+// sacPinnedTTL is the failover deadline for single-active-consumer sources:
+// when the pinned (active) client sends no new pull request for this long,
+// the server unpins it and the next standby's pull takes over. It must
+// comfortably exceed the pull re-issue cadence (~30s with the client
+// library's defaults) or the pin flaps between healthy standbys; lower it —
+// together with faster pulls — only to shrink failover time. Configured via
+// NATSJS_SAC_PINNED_TTL (Go duration).
+func sacPinnedTTL() time.Duration {
+	if v := os.Getenv("NATSJS_SAC_PINNED_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultSACPinnedTTL
 }
 
 func (p *natsjsProvider) getBrokerDetails(ctx context.Context) (*natsBrokerDetails, error) {
@@ -554,6 +578,19 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	// sources stay ephemeral and auto-expire after InactiveThreshold.
 	if durable := durableName(source); durable != "" {
 		consCfg.Durable = durable
+		if source.GetSingleActiveConsumer() {
+			// RabbitMQ's single-active-consumer delivers to one consumer at a
+			// time — the point is ordered processing across competing
+			// instances — and fails over when that consumer goes away. The
+			// JetStream equivalent is a pinned-client priority group
+			// (nats-server 2.11+): the server pins the first client to pull
+			// and standbys' pulls wait; when the pinned client stops pulling
+			// for PinnedTTL (or its pin is otherwise released) the next
+			// standby takes over.
+			consCfg.PriorityPolicy = jetstream.PriorityPolicyPinned
+			consCfg.PriorityGroups = []string{sacPriorityGroup}
+			consCfg.PinnedTTL = sacPinnedTTL()
+		}
 	} else {
 		consCfg.InactiveThreshold = defaultInactiveThreshold
 	}
@@ -598,20 +635,38 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		return nil
 	}
 
-	cc, cerr := cons.Consume(func(m jetstream.Msg) {
-		p.handleDelivery(ctx, bd, source, m, out)
-	},
+	consumeOpts := []jetstream.PullConsumeOpt{
 		// A short idle heartbeat plus an error handler keep a stalled delivery
 		// path from failing silently: if the server stops serving this
 		// consumer's pulls (broker restart, consumer raft leader not yet
 		// serving after creation), the missed heartbeat is logged at warn and
 		// the library re-issues its pull request after ~2x the heartbeat,
-		// instead of ~30s — and invisibly — with the defaults.
+		// instead of ~30s — and invisibly — with the defaults. Standby pulls
+		// of a pinned consumer receive idle heartbeats too, so single-active
+		// standbys do not trip this.
 		jetstream.PullHeartbeat(defaultConsumeHeartbeat),
 		jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
 			util.Logger.Warn("natsjs: consume error on source {0}: {1}", source.GetName(), err.Error())
 		}),
-	)
+	}
+	// Pull requests must carry the priority group exactly when the consumer
+	// has one, so key off the effective (server-reported) config, not the
+	// requested one: a server too old for priority groups (< 2.11) silently
+	// drops the fields, and an existing durable the subscribe merely attached
+	// to may predate them. In either case single-active cannot be enforced —
+	// consumers compete, today's behavior — and that degradation must be
+	// visible, not silent.
+	if groups := cons.CachedInfo().Config.PriorityGroups; len(groups) > 0 {
+		consumeOpts = append(consumeOpts, jetstream.PullPriorityGroup(groups[0]))
+	} else if consCfg.PriorityPolicy == jetstream.PriorityPolicyPinned {
+		util.Logger.Warn(
+			"natsjs: source {0} requested a single active consumer but the consumer has no priority group "+
+				"(broker predates them, or an existing durable could not be updated); consumers will compete",
+			source.GetName())
+	}
+	cc, cerr := cons.Consume(func(m jetstream.Msg) {
+		p.handleDelivery(ctx, bd, source, m, out)
+	}, consumeOpts...)
 	if cerr != nil {
 		if consCfg.Durable == "" {
 			deleteEphemeralConsumer(ctx, stream, cons.CachedInfo().Name)

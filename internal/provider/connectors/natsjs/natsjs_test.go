@@ -449,6 +449,15 @@ func TestAckWaitFromEnv(t *testing.T) {
 	assert.Equal(t, defaultAckWait, ackWait())
 }
 
+func TestSACPinnedTTLFromEnv(t *testing.T) {
+	t.Setenv("NATSJS_SAC_PINNED_TTL", "10s")
+	assert.Equal(t, 10*time.Second, sacPinnedTTL())
+	t.Setenv("NATSJS_SAC_PINNED_TTL", "bad")
+	assert.Equal(t, defaultSACPinnedTTL, sacPinnedTTL())
+	t.Setenv("NATSJS_SAC_PINNED_TTL", "0")
+	assert.Equal(t, defaultSACPinnedTTL, sacPinnedTTL())
+}
+
 func TestStreamRegistryCollapsesConcurrentCalls(t *testing.T) {
 	r := newStreamRegistry()
 	release := make(chan struct{})
@@ -1074,6 +1083,113 @@ func TestTeardownReleasesInFlightMessages(t *testing.T) {
 		m := recv(t, out2)
 		require.Nil(t, p.Ack(ctx, m.GetUuid()))
 	}
+}
+
+// sacSource is queueSource with SingleActiveConsumer set.
+func sacSource(name, addr string, subjects ...string) *pb.Source {
+	s := queueSource(name, addr, subjects...)
+	s.SingleActiveConsumer = true
+	return s
+}
+
+// TestSingleActiveConsumerPinsOneClient: a SingleActiveConsumer source maps to
+// a pinned-client priority group, so with two live subscribers exactly one
+// receives (RabbitMQ SAC semantics — ordered processing across competing
+// instances) and the standby takes over after the active one goes away and
+// its pin expires.
+func TestSingleActiveConsumerPinsOneClient(t *testing.T) {
+	t.Setenv("NATSJS_SAC_PINNED_TTL", "1s") // fast failover for the test
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.sac", Subjects: []string{"e"}}
+	src := sacSource("events.sac.consumer", "events.sac", "e")
+
+	// The first subscriber pulls alone, so it takes the pin.
+	outA := make(chan *pb.Message, 8)
+	ctxA, cancelA := context.WithCancel(ctx)
+	errA := make(chan *pb.Error, 1)
+	go func() { errA <- p.Subscribe(ctxA, src, outA) }()
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m0")}))
+	m := recv(t, outA)
+	assert.Equal(t, "m0", string(m.GetBody()))
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+
+	// A standby joins. Everything published while the pin holder is alive
+	// must keep going to the pin holder only.
+	outB := make(chan *pb.Message, 8)
+	ctxB, cancelB := context.WithCancel(ctx)
+	defer cancelB()
+	go p.Subscribe(ctxB, src, outB)
+	time.Sleep(500 * time.Millisecond) // let the standby's pull reach the server
+
+	for i := 1; i <= 3; i++ {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte(fmt.Sprintf("m%d", i))}))
+	}
+	for i := 1; i <= 3; i++ {
+		m := recv(t, outA)
+		require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	}
+	select {
+	case got := <-outB:
+		t.Fatalf("standby received %q while another consumer held the pin", got.GetBody())
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// The active subscriber goes away; once its pin expires (1s here) the
+	// standby is pinned and receives.
+	cancelA()
+	require.Nil(t, <-errA)
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m4")}))
+	m = recv(t, outB)
+	assert.Equal(t, "m4", string(m.GetBody()), "standby takes over after the active consumer goes away")
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+}
+
+// TestSingleActiveConsumerUpgradesExistingDurable: priority-group config is
+// update-mutable, so a durable created before SingleActiveConsumer was set on
+// the source is upgraded in place — same name, same ack position — instead of
+// failing the subscribe.
+func TestSingleActiveConsumerUpgradesExistingDurable(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.sacup", Subjects: []string{"e"}}
+	plain := queueSource("events.sacup.consumer", "events.sacup", "e")
+
+	// Create the durable without single-active (an older deployment).
+	out := make(chan *pb.Message, 1)
+	subCtx, cancel := context.WithCancel(ctx)
+	errCh := make(chan *pb.Error, 1)
+	go func() { errCh <- p.Subscribe(subCtx, plain, out) }()
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m0")}))
+	m := recv(t, out)
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	cancel()
+	require.Nil(t, <-errCh)
+
+	// Re-subscribe with SingleActiveConsumer set: the consumer is updated in
+	// place and keeps delivering from its stored position.
+	sac := sacSource("events.sacup.consumer", "events.sacup", "e")
+	out2 := make(chan *pb.Message, 1)
+	subCtx2, cancel2 := context.WithCancel(ctx)
+	defer cancel2()
+	go p.Subscribe(subCtx2, sac, out2)
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m1")}))
+	m = recv(t, out2)
+	assert.Equal(t, "m1", string(m.GetBody()))
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+
+	// The effective config now carries the pinned priority group.
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	stream, serr := bd.js.Stream(ctx, streamNameFor("events.sacup"))
+	require.NoError(t, serr)
+	cons, cerr := stream.Consumer(ctx, durableName(sac))
+	require.NoError(t, cerr)
+	assert.Equal(t, []string{sacPriorityGroup}, cons.CachedInfo().Config.PriorityGroups)
+	assert.Equal(t, jetstream.PriorityPolicyPinned, cons.CachedInfo().Config.PriorityPolicy)
 }
 
 // TestDeclareOnlyEphemeralConsumerCleanedUp: DeclareOnly on a transient source

@@ -100,6 +100,22 @@ The connector chooses the consumer kind from the source
   exits and churning transient clients cannot accumulate dead consumers
   against the server's per-stream consumer limit.
 
+A source with `SingleActiveConsumer` additionally maps onto a pinned-client
+priority group (nats-server 2.11+): the server pins the first subscriber to
+pull and delivers only to it, standbys' pulls wait, and when the pinned
+client stops pulling for `NATSJS_SAC_PINNED_TTL` the pin moves to a standby.
+That reproduces RabbitMQ's single-active-consumer semantics — ordered
+processing across competing instances with automatic failover — natively,
+with two caveats. Failover is bounded by the pinned TTL rather than
+instantaneous on disconnect, and the TTL must comfortably exceed the pull
+re-issue cadence (~30s with the client defaults) or the pin flaps. And on a
+server that predates priority groups the config fields are silently dropped,
+so single-active cannot be enforced; the connector detects that from the
+effective consumer config and logs a warning that consumers will compete.
+Priority-group config is update-mutable, so a durable created before its
+source set `SingleActiveConsumer` is upgraded in place, keeping its name and
+ack position.
+
 When a subscription ends, its delivered-but-unresolved messages are released:
 their acks could only have arrived on the consume stream that just closed, so
 the connector drops its claim on them and (for durable consumers) naks them
@@ -232,6 +248,7 @@ forming a raft group per stream and per durable consumer:
 | `NATSJS_STREAM_MAX_BYTES` | `0` (unlimited) | Hard per-stream storage cap in bytes. |
 | `NATSJS_API_TIMEOUT` | `30s` | Deadline for JetStream management API calls (stream / consumer creation). Go duration. |
 | `NATSJS_ACK_WAIT` | `30s` | How long the server waits for an ack before redelivering a message. Go duration. |
+| `NATSJS_SAC_PINNED_TTL` | `1m` | Single-active-consumer failover deadline: how long the pinned client may go without pulling before a standby takes over. Go duration. |
 
 TLS and credentials come from the standard `ConnectionConfiguration` (`Tls`,
 `Credentials`) and the server's `tlsSkipVerify` flag, exactly as for the AMQP
@@ -250,7 +267,7 @@ Legend: **Native** = NATS does it; **Proxy** = rebuilt in the connector;
 | Publish confirms | Native | `js.PublishMsg` returns a `PubAck`. |
 | Message dedup (`publish_id` + `publisher_name`) | Native | `Nats-Msg-Id` + stream `Duplicates` window. |
 | Streams: offsets, start position | Native | JetStream is a log; `DeliverPolicy` maps `Offset`. |
-| Single active consumer | Native | Consumer config (needs a durable name). |
+| Single active consumer | Native | Pinned-client priority group on the durable (nats-server 2.11+); standby takes over within `NATSJS_SAC_PINNED_TTL`. |
 | Prefetch / QoS | Native | `MaxAckPending`; prefetch 0 (AMQP "unlimited") maps to unlimited (-1). |
 | HA / quorum queues | Native | JetStream R3 (Raft) via `NATSJS_STREAM_REPLICAS`. |
 | Delayed retry (per-msg TTL + DLX idiom) | Proxy -> Native | Replaced with `NakWithDelay`. |
