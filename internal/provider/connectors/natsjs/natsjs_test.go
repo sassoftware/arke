@@ -878,3 +878,56 @@ func TestEphemeralConsumerDeletedOnTeardown(t *testing.T) {
 		return err == nil && info.State.Consumers == 0
 	}, 10*time.Second, 20*time.Millisecond, "ephemeral consumer was not deleted on teardown")
 }
+
+func TestRateTracker(t *testing.T) {
+	rt := newRateTracker()
+	t0 := time.Now()
+
+	// First observation only establishes the baseline.
+	assert.Zero(t, rt.observe("k", t0, 100))
+	// 10 messages over 2 seconds.
+	assert.InDelta(t, 5.0, rt.observe("k", t0.Add(2*time.Second), 110), 1e-6)
+	// A counter that moved backwards (stream recreated) re-baselines at zero.
+	assert.Zero(t, rt.observe("k", t0.Add(3*time.Second), 4))
+	assert.InDelta(t, 6.0, rt.observe("k", t0.Add(4*time.Second), 10), 1e-6)
+	// A non-advancing clock cannot divide by zero.
+	assert.Zero(t, rt.observe("k", t0.Add(4*time.Second), 20))
+	// Keys are independent.
+	assert.Zero(t, rt.observe("other", t0, 1))
+}
+
+// TestSourceStatsRates verifies publish/deliver rates are sampled between
+// SourceStats calls: the first call baselines at zero, and a later call after
+// publishing and consuming reports positive rates.
+func TestSourceStatsRates(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.rates", Subjects: []string{"e"}}
+	src := queueSource("events.rates.consumer", "events.rates", "e")
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("x")}))
+
+	out := make(chan *pb.Message, 8)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+	require.Nil(t, p.Ack(ctx, recv(t, out).GetUuid()))
+
+	// Baseline scrape: no previous observation, rates are zero.
+	stats := p.SourceStats(ctx, src)
+	require.Nil(t, stats.GetError())
+	assert.Zero(t, stats.GetPublishRate())
+	assert.Zero(t, stats.GetDeliverRate())
+
+	for i := 0; i < 5; i++ {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("y")}))
+		require.Nil(t, p.Ack(ctx, recv(t, out).GetUuid()))
+	}
+	time.Sleep(50 * time.Millisecond) // guarantee a measurable interval
+
+	stats = p.SourceStats(ctx, src)
+	require.Nil(t, stats.GetError())
+	assert.Positive(t, stats.GetPublishRate(), "5 publishes since the last scrape")
+	assert.Positive(t, stats.GetDeliverRate(), "5 deliveries since the last scrape")
+}

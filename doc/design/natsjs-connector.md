@@ -229,7 +229,7 @@ Legend: **Native** = NATS does it; **Proxy** = rebuilt in the connector;
 | Header-filter exchange (`Filter` / `Match`) | Proxy | NATS routes on subject; evaluated in `evaluateFilters`. |
 | `MessageTTL` / `Expires` | Partial | Mapped onto stream-level `MaxAge` (see limitations). |
 | Source stats (depth / consumers) | Native | JetStream stream / consumer `Info`. |
-| Publish / deliver rates in stats | Drop | Not exposed by JetStream info; would need sampling. |
+| Publish / deliver rates in stats | Proxy | Sampled: counter deltas between `SourceStats` calls (see limitations). |
 | RabbitMQ management HTTP API | Drop | Replaced by the JetStream API over NATS itself. |
 
 ## Source options
@@ -258,14 +258,18 @@ amqp091 connector, so existing client sources validate unchanged:
   delete-on-ack policy such as `WorkQueuePolicy` / `InterestPolicy`) needs a
   per-source stream topology, and `Retention` is immutable, so that is a
   stream-recreate migration rather than an in-place change.
-- **Publish / deliver rates** are not exposed by JetStream stream info, so
-  `SourceStats` leaves those rate fields at zero. The message count for a
-  durable source is the consumer's backlog (undelivered plus unacked, with
-  `current_offset` from its ack floor) rather than the stream depth — the
-  stream retains acked messages under its retention limits, so its depth
-  keeps growing after consumers catch up, which would mislead anything using
-  message count as queue length (e.g. consumer autoscaling). Sources without
-  a durable consumer fall back to the stream view.
+- **Publish / deliver rates are sampled, not native.** JetStream exposes
+  absolute counters, not rates, so `SourceStats` differences them between
+  successive calls: the first call after a (re)connect returns zero, the
+  publish rate covers the whole address stream rather than a single binding,
+  and sources without a durable consumer report a zero deliver rate. The
+  message count for a durable source is the consumer's backlog (undelivered
+  plus unacked, with `current_offset` from its ack floor) rather than the
+  stream depth — the stream retains acked messages under its retention
+  limits, so its depth keeps growing after consumers catch up, which would
+  mislead anything using message count as queue length (e.g. consumer
+  autoscaling). Sources without a durable consumer fall back to the stream
+  view.
 - **Dead-letter is fire-and-forget.** Messages are republished to the
   dead-letter subject; there is no advisory-driven re-consumption.
 - **Connection authentication.** The connector supports user/password and TLS

@@ -92,6 +92,8 @@ type natsBrokerDetails struct {
 	knownStreams *util.ConcurrentMap
 	// consumeContexts maps source name -> jetstream.ConsumeContext for teardown.
 	consumeContexts *util.ConcurrentMap
+	// rates derives SourceStats publish/deliver rates from JetStream counters.
+	rates *rateTracker
 
 	state    atomic.Uint32
 	consumed int64
@@ -273,6 +275,7 @@ func (p *natsjsProvider) Connect(ctx context.Context, cfg *pb.ConnectionConfigur
 		activeMessages:   util.NewConcurrentMap(),
 		knownStreams:     util.NewConcurrentMap(),
 		consumeContexts:  util.NewConcurrentMap(),
+		rates:            newRateTracker(),
 	}
 	bd.state.Store(provider.CONNECTING)
 
@@ -761,6 +764,39 @@ func (p *natsjsProvider) Stats() *provider.Stats {
 	return stats
 }
 
+// rateTracker derives messages-per-second rates from the monotonic counters
+// JetStream exposes. RabbitMQ's management API computes publish/deliver rates
+// server-side; JetStream reports only absolute counters, so the connector
+// differences them between successive SourceStats calls. The first
+// observation of a key establishes a baseline and reports zero, as does a
+// counter that moved backwards (a recreated stream or consumer).
+type rateTracker struct {
+	mu      sync.Mutex
+	samples map[string]rateSample
+}
+
+type rateSample struct {
+	when  time.Time
+	count uint64
+}
+
+func newRateTracker() *rateTracker {
+	return &rateTracker{samples: make(map[string]rateSample)}
+}
+
+// observe records (now, count) for key and returns the average rate since the
+// previous observation of that key.
+func (rt *rateTracker) observe(key string, now time.Time, count uint64) float32 {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	prev, ok := rt.samples[key]
+	rt.samples[key] = rateSample{when: now, count: count}
+	if !ok || count < prev.count || !now.After(prev.when) {
+		return 0
+	}
+	return float32(float64(count-prev.count) / now.Sub(prev.when).Seconds())
+}
+
 func (p *natsjsProvider) SourceStats(ctx context.Context, source *pb.Source) *pb.SourceStats {
 	stats := &pb.SourceStats{Name: source.GetName()}
 	bd, err := p.getBrokerDetails(ctx)
@@ -779,9 +815,14 @@ func (p *natsjsProvider) SourceStats(ctx context.Context, source *pb.Source) *pb
 		stats.Error = &pb.Error{Message: ierr.Error()}
 		return stats
 	}
+	now := time.Now()
 	stats.MessageCount = int64(info.State.Msgs)       //nolint:gosec
 	stats.ConsumerCount = int32(info.State.Consumers) //nolint:gosec
 	stats.LastOffset = int64(info.State.LastSeq)      //nolint:gosec
+	// JetStream exposes no rates, only counters; sample them between calls
+	// (see rateTracker). The stream's LastSeq counts every publish to the
+	// address root, so the publish rate is per address, not per binding.
+	stats.PublishRate = bd.rates.observe("pub/"+streamName, now, info.State.LastSeq)
 	// For a source with a durable consumer, report that consumer's actual
 	// backlog (undelivered + delivered-but-unacked) instead of the stream
 	// depth: the stream retains acked messages under its retention limits, so
@@ -794,11 +835,12 @@ func (p *natsjsProvider) SourceStats(ctx context.Context, source *pb.Source) *pb
 			if ci, ierr := cons.Info(ctx); ierr == nil {
 				stats.MessageCount = int64(ci.NumPending) + int64(ci.NumAckPending) //nolint:gosec
 				stats.CurrentOffset = int64(ci.AckFloor.Stream)                     //nolint:gosec
+				// Delivered.Consumer counts deliveries (redeliveries included,
+				// like RabbitMQ's deliver rate). Ephemeral sources have no
+				// consumer identity to sample here, so their rate stays zero.
+				stats.DeliverRate = bd.rates.observe("del/"+streamName+"/"+durable, now, ci.Delivered.Consumer)
 			}
 		}
 	}
-	// Note: publish_rate / deliver_rate are not exposed directly by
-	// JetStream stream info; they would need to be derived from sampling. Left
-	// at zero for now.
 	return stats
 }
