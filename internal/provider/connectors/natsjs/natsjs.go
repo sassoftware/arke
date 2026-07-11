@@ -502,9 +502,13 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		return &pb.Error{Message: fmt.Sprintf("open stream: %s", serr.Error()), IsFatal: true}
 	}
 
+	// AMQP prefetch 0 means unlimited (amqp091 leaves the channel default in
+	// that case rather than calling SetPrefetch), so map it to JetStream's
+	// explicit unlimited (-1) — not to the server default of 1000, and
+	// certainly not to 1, which would silently serialize the consumer.
 	prefetch := int(source.GetPrefetchCount())
 	if prefetch <= 0 {
-		prefetch = 1
+		prefetch = -1
 	}
 	deliverPolicy, startSeq, derr := deliverPolicyFor(source)
 	if derr != nil {

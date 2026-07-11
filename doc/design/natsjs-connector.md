@@ -229,7 +229,7 @@ Legend: **Native** = NATS does it; **Proxy** = rebuilt in the connector;
 | Message dedup (`publish_id` + `publisher_name`) | Native | `Nats-Msg-Id` + stream `Duplicates` window. |
 | Streams: offsets, start position | Native | JetStream is a log; `DeliverPolicy` maps `Offset`. |
 | Single active consumer | Native | Consumer config (needs a durable name). |
-| Prefetch / QoS | Native | `MaxAckPending`. |
+| Prefetch / QoS | Native | `MaxAckPending`; prefetch 0 (AMQP "unlimited") maps to unlimited (-1). |
 | HA / quorum queues | Native | JetStream R3 (Raft) via `NATSJS_STREAM_REPLICAS`. |
 | Delayed retry (per-msg TTL + DLX idiom) | Proxy -> Native | Replaced with `NakWithDelay`. |
 | Retry-count header (`x-retry-count`) | Proxy | Synthesized from JetStream `NumDelivered`. |

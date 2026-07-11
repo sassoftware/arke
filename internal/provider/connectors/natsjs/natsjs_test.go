@@ -274,6 +274,33 @@ func TestDeadLetterFailureKeepsMessage(t *testing.T) {
 	require.Nil(t, p.Ack(ctx, again.GetUuid()))
 }
 
+// TestPrefetchMapsToMaxAckPending: a positive PrefetchCount becomes the
+// consumer's MaxAckPending. A prefetch of 0 is the AMQP "unlimited"
+// convention — the amqp091 connector honors it by leaving the channel
+// default, which is unlimited — so it maps to JetStream's unlimited (-1),
+// not to a one-message-at-a-time clamp.
+func TestPrefetchMapsToMaxAckPending(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	maxAckPending := func(name string, prefetch int32) int {
+		t.Helper()
+		src := queueSource(name, "events.prefetch", "e")
+		src.PrefetchCount = prefetch
+		src.DeclareOnly = true
+		require.Nil(t, p.Subscribe(ctx, src, nil))
+		stream, serr := bd.js.Stream(ctx, streamNameFor("events.prefetch"))
+		require.NoError(t, serr)
+		cons, cerr := stream.Consumer(ctx, durableName(src))
+		require.NoError(t, cerr)
+		return cons.CachedInfo().Config.MaxAckPending
+	}
+
+	assert.Equal(t, 7, maxAckPending("events.prefetch.limited", 7))
+	assert.Equal(t, -1, maxAckPending("events.prefetch.unlimited", 0))
+}
+
 func TestDeduplication(t *testing.T) {
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)
@@ -795,7 +822,13 @@ func TestDurableOffsetPinnedAtCreation(t *testing.T) {
 	}
 
 	src := func(offset string) *pb.Source {
-		return streamSource("events.pinned.consumer", "events.pinned", offset, "e")
+		s := streamSource("events.pinned.consumer", "events.pinned", offset, "e")
+		// One message in flight at a time, so m1..m3 stay undelivered while
+		// the first subscription is up and are immediately deliverable to the
+		// re-attach below (unlimited prefetch would leave them ack-pending
+		// until AckWait).
+		s.PrefetchCount = 1
+		return s
 	}
 
 	// Create the durable at "first" and ack only m0, leaving m1..m3 pending.
