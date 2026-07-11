@@ -477,6 +477,15 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	if err != nil {
 		return &pb.Error{Message: err.Error(), IsFatal: true}
 	}
+	// MessageTTL/Expires are accepted so existing client sources validate
+	// against SupportedSourceOptions, but retention here is stream-wide: warn
+	// instead of silently ignoring them, so a source owner asking for a short
+	// TTL learns their data outlives it without reading the design doc.
+	if unapplied := unappliedSourceOptions(source); len(unapplied) > 0 {
+		util.Logger.Warn(
+			"natsjs: source {0} sets {1}, which natsjs accepts but does not apply; retention is stream-wide (NATSJS_STREAM_MAX_AGE / NATSJS_STREAM_MAX_BYTES)",
+			source.GetName(), strings.Join(unapplied, ", "))
+	}
 	addr := source.GetAddress().GetName()
 	streamName, serr := p.ensureStream(ctx, bd, addr)
 	if serr != nil {
@@ -597,6 +606,20 @@ func deleteEphemeralConsumer(ctx context.Context, stream jetstream.Stream, name 
 	if err := stream.DeleteConsumer(dctx, name); err != nil {
 		util.Logger.Debugf("natsjs: delete ephemeral consumer %s: %s", name, err.Error())
 	}
+}
+
+// unappliedSourceOptions returns the retention options the source sets that
+// natsjs accepts (so sources written for the amqp091 connector still validate)
+// but does not apply — retention on natsjs is stream-wide (see streamMaxAge
+// and the design doc's Known limitations).
+func unappliedSourceOptions(source *pb.Source) []string {
+	var unapplied []string
+	for _, opt := range []string{"MessageTTL", "Expires"} {
+		if source.GetOptions()[opt] != "" {
+			unapplied = append(unapplied, opt)
+		}
+	}
+	return unapplied
 }
 
 // deliverPolicyFor maps the RabbitMQ-Streams `Offset` option onto a JetStream

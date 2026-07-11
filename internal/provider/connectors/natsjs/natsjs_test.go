@@ -931,3 +931,13 @@ func TestSourceStatsRates(t *testing.T) {
 	assert.Positive(t, stats.GetPublishRate(), "5 publishes since the last scrape")
 	assert.Positive(t, stats.GetDeliverRate(), "5 deliveries since the last scrape")
 }
+
+func TestUnappliedSourceOptions(t *testing.T) {
+	src := func(opts map[string]string) *pb.Source { return &pb.Source{Options: opts} }
+
+	assert.Empty(t, unappliedSourceOptions(src(nil)))
+	assert.Empty(t, unappliedSourceOptions(src(map[string]string{"Offset": "first", "MessageTTL": ""})))
+	assert.Equal(t, []string{"MessageTTL"}, unappliedSourceOptions(src(map[string]string{"MessageTTL": "300000"})))
+	assert.Equal(t, []string{"MessageTTL", "Expires"},
+		unappliedSourceOptions(src(map[string]string{"MessageTTL": "300000", "Expires": "600000"})))
+}

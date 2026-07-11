@@ -240,8 +240,8 @@ amqp091 connector, so existing client sources validate unchanged:
 
 | Key | Type | Description |
 | --- | --- | --- |
-| `MessageTTL` | string (ms) | Accepted for compatibility; not applied per source — retention is the stream-wide `NATSJS_STREAM_MAX_AGE` (see Known limitations). |
-| `Expires` | string (ms) | Accepted for compatibility; not applied — streams are shared per address root and are not deleted when a source goes unused. |
+| `MessageTTL` | string (ms) | Accepted for compatibility; not applied per source — retention is the stream-wide `NATSJS_STREAM_MAX_AGE` (see Known limitations). A warning is logged at subscribe time. |
+| `Expires` | string (ms) | Accepted for compatibility; not applied — streams are shared per address root and are not deleted when a source goes unused. A warning is logged at subscribe time. |
 | `DeadLetterAddress` | string | Address whose stream receives dead-lettered messages. |
 | `DeadLetterSubject` | string | Routing key for dead-lettered messages. |
 | `Offset` | string | Stream starting offset (`first`, `continue`, `last`, `next`, or a numeric sequence). |
@@ -252,9 +252,11 @@ amqp091 connector, so existing client sources validate unchanged:
 - **Per-source TTL fidelity.** The connector uses one stream per address
   root, so a per-source `MessageTTL` / `Expires` cannot be mapped onto the
   shared stream without one source's value flapping another's retention.
-  Both options are therefore accepted but ignored; retention comes from the
-  stream-wide `NATSJS_STREAM_MAX_AGE` / `NATSJS_STREAM_MAX_BYTES`
-  configuration. True per-source TTL (or switching queue sources to a
+  Both options are therefore accepted but not applied, and a subscribe that
+  sets either logs a warning naming the source — silent divergence in data
+  retention is the one place a client must not have to read a design doc to
+  notice. Retention comes from the stream-wide `NATSJS_STREAM_MAX_AGE` /
+  `NATSJS_STREAM_MAX_BYTES` configuration. True per-source TTL (or switching queue sources to a
   delete-on-ack policy such as `WorkQueuePolicy` / `InterestPolicy`) needs a
   per-source stream topology, and `Retention` is immutable, so that is a
   stream-recreate migration rather than an in-place change.
