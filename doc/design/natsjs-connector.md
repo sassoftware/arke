@@ -226,7 +226,7 @@ Legend: **Native** = NATS does it; **Proxy** = rebuilt in the connector;
 | Delayed retry (per-msg TTL + DLX idiom) | Proxy -> Native | Replaced with `NakWithDelay`. |
 | Retry-count header (`x-retry-count`) | Proxy | Synthesized from JetStream `NumDelivered`. |
 | Dead-letter (DLX) | Proxy | No native DLX; republish to DLQ subject then `Term()`. |
-| Header-filter exchange (`Filter` / `Match`) | Proxy | NATS routes on subject; evaluated in `evaluateFilters`. |
+| Header-filter exchange (`Filter` / `Match`) | Proxy | NATS routes on subject; evaluated in `evaluateFilters` (see limitations). |
 | `MessageTTL` / `Expires` | Partial | Mapped onto stream-level `MaxAge` (see limitations). |
 | Source stats (depth / consumers) | Native | JetStream stream / consumer `Info`. |
 | Publish / deliver rates in stats | Proxy | Sampled: counter deltas between `SourceStats` calls (see limitations). |
@@ -256,8 +256,9 @@ amqp091 connector, so existing client sources validate unchanged:
   sets either logs a warning naming the source — silent divergence in data
   retention is the one place a client must not have to read a design doc to
   notice. Retention comes from the stream-wide `NATSJS_STREAM_MAX_AGE` /
-  `NATSJS_STREAM_MAX_BYTES` configuration. True per-source TTL (or switching queue sources to a
-  delete-on-ack policy such as `WorkQueuePolicy` / `InterestPolicy`) needs a
+  `NATSJS_STREAM_MAX_BYTES` configuration. True per-source TTL (or switching
+  queue sources to a delete-on-ack policy such as `WorkQueuePolicy` /
+  `InterestPolicy`) needs a
   per-source stream topology, and `Retention` is immutable, so that is a
   stream-recreate migration rather than an in-place change.
 - **Publish / deliver rates are sampled, not native.** JetStream exposes
@@ -272,6 +273,15 @@ amqp091 connector, so existing client sources validate unchanged:
   mislead anything using message count as queue length (e.g. consumer
   autoscaling). Sources without a durable consumer fall back to the stream
   view.
+- **Header filters are evaluated proxy-side.** NATS routes on subjects only,
+  so a source's header `Filter`s cannot narrow what the server delivers:
+  every message matching the source's subject filters is delivered to the
+  connector, which evaluates the headers and acks non-matching messages
+  without forwarding them. Bandwidth and CPU between broker and proxy
+  therefore scale with the subject-matched traffic, not the header-matched
+  traffic. That is fine when header filters refine an already-narrow subject,
+  but a high-volume address consumed almost entirely through header filters
+  should be remodeled onto routing keys (subjects) instead.
 - **Dead-letter is fire-and-forget.** Messages are republished to the
   dead-letter subject; there is no advisory-driven re-consumption.
 - **Connection authentication.** The connector supports user/password and TLS
