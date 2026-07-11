@@ -55,6 +55,10 @@ const (
 	// consume error handler and the client re-issues its pull request after
 	// roughly twice this interval, instead of ~30s with the library defaults.
 	defaultConsumeHeartbeat = 5 * time.Second
+	// ephemeralDeleteTimeout bounds the best-effort DeleteConsumer issued when
+	// an ephemeral subscription ends; teardown must not hang on a broker that
+	// is already gone.
+	ephemeralDeleteTimeout = 5 * time.Second
 	// defaultStreamMaxAge bounds how long a stream retains messages so the
 	// JetStream log does not grow without bound (RabbitMQ deletes on ack;
 	// JetStream LimitsPolicy does not). 72h is generous enough not to truncate a
@@ -565,10 +569,31 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	defer func() {
 		cc.Stop()
 		bd.consumeContexts.Delete(source.GetName())
+		if consCfg.Durable == "" {
+			deleteEphemeralConsumer(ctx, stream, cons.CachedInfo().Name)
+		}
 	}()
 
 	<-ctx.Done()
 	return nil
+}
+
+// deleteEphemeralConsumer removes an ephemeral consumer as soon as its
+// subscription ends. Ephemeral consumers do expire on their own after
+// InactiveThreshold, but until then each one still counts against the server's
+// per-stream consumer limit, so clients that churn transient subscriptions
+// faster than the threshold would accumulate dead consumers on the server.
+// Deleting eagerly leaves the threshold as a janitor for unclean exits (a
+// crashed client never reaches this path) only. Best-effort: the subscription
+// context is already cancelled when this runs, so the call gets a detached,
+// bounded context, and a failure is only logged — the consumer then simply
+// expires via the threshold as before.
+func deleteEphemeralConsumer(ctx context.Context, stream jetstream.Stream, name string) {
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ephemeralDeleteTimeout)
+	defer cancel()
+	if err := stream.DeleteConsumer(dctx, name); err != nil {
+		util.Logger.Debugf("natsjs: delete ephemeral consumer %s: %s", name, err.Error())
+	}
 }
 
 // deliverPolicyFor maps the RabbitMQ-Streams `Offset` option onto a JetStream

@@ -94,7 +94,10 @@ The connector chooses the consumer kind from the source
   and any `SingleActiveConsumer`.
 - Ephemeral consumers auto-expire after an inactivity threshold. Used for
   auto-delete / exclusive / `TEMPORARY` sources, which clients commonly use
-  for per-instance, transient subscriptions.
+  for per-instance, transient subscriptions. They are also deleted eagerly
+  when their subscription ends, so the threshold only has to cover unclean
+  exits and churning transient clients cannot accumulate dead consumers
+  against the server's per-stream consumer limit.
 
 The `DeliverPolicy` is taken from the `Offset` option, mirroring the amqp091
 connector's offset vocabulary so both accept the same values: `first`/`continue`

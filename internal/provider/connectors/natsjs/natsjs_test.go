@@ -833,3 +833,48 @@ func TestSourceStatsReportsConsumerBacklog(t *testing.T) {
 		return st.GetError() == nil && st.GetMessageCount() == 0
 	}, 10*time.Second, 200*time.Millisecond, "backlog drains to 0 after acks")
 }
+
+// TestEphemeralConsumerDeletedOnTeardown verifies a transient source's
+// ephemeral consumer is removed from the server as soon as its subscription
+// ends, instead of counting against the stream's consumer limit until the
+// inactivity threshold expires it.
+func TestEphemeralConsumerDeletedOnTeardown(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	src := &pb.Source{
+		Name:       "events.tmp.listener",
+		Type:       pb.Source_QUEUE,
+		AutoDelete: true, // transient -> ephemeral consumer
+		Address:    &pb.Address{Name: "events.tmp", Subjects: []string{"a"}},
+	}
+	require.Empty(t, durableName(src), "test source must map to an ephemeral consumer")
+
+	out := make(chan *pb.Message, 1)
+	subCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		_ = p.Subscribe(subCtx, src, out)
+		close(done)
+	}()
+
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	var stream jetstream.Stream
+	require.Eventually(t, func() bool {
+		st, err := bd.js.Stream(ctx, streamNameFor("events.tmp"))
+		if err != nil {
+			return false
+		}
+		stream = st
+		info, ierr := st.Info(ctx)
+		return ierr == nil && info.State.Consumers == 1
+	}, 10*time.Second, 20*time.Millisecond, "ephemeral consumer never appeared")
+
+	cancel()
+	<-done
+
+	assert.Eventually(t, func() bool {
+		info, err := stream.Info(ctx)
+		return err == nil && info.State.Consumers == 0
+	}, 10*time.Second, 20*time.Millisecond, "ephemeral consumer was not deleted on teardown")
+}
