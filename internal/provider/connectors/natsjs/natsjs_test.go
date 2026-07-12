@@ -288,6 +288,88 @@ func TestDeadLetterFailureKeepsMessage(t *testing.T) {
 // convention — the amqp091 connector honors it by leaving the channel
 // default, which is unlimited — so it maps to JetStream's unlimited (-1),
 // not to a one-message-at-a-time clamp.
+// A stream can be deleted out from under a live connection — an operator
+// reset, a storage wipe, external cleanup — without the NATS connection
+// noticing, and knownStreams pins the "already ensured" answer for the
+// connection's lifetime. Publish, Subscribe, and the dead-letter path must
+// detect the resulting no-stream errors, drop the stale entry, and re-create
+// the stream instead of failing every call until the client reconnects.
+func TestPublishRecreatesDeletedStream(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.wiped", Subjects: []string{"created"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("before")}))
+
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	require.NoError(t, bd.js.DeleteStream(ctx, streamNameFor("events.wiped")))
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("after")}),
+		"publish must re-ensure the stream instead of failing on the stale memo")
+
+	stream, serr := bd.js.Stream(ctx, streamNameFor("events.wiped"))
+	require.NoError(t, serr, "the stream must have been re-created")
+	assert.Equal(t, uint64(1), stream.CachedInfo().State.Msgs, "the retried publish must be stored")
+}
+
+func TestSubscribeRecreatesDeletedStream(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.wiped2", Subjects: []string{"created"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("before")}))
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	require.NoError(t, bd.js.DeleteStream(ctx, streamNameFor("events.wiped2")))
+
+	out := make(chan *pb.Message, 1)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, queueSource("events.wiped2.consumer", "events.wiped2", "created"), out)
+
+	// The subscribe must have re-created the stream and its consumer; without
+	// the heal it returns fatal "stream not found" and nothing ever consumes.
+	require.Eventually(t, func() bool {
+		stream, serr := bd.js.Stream(ctx, streamNameFor("events.wiped2"))
+		return serr == nil && stream.CachedInfo().State.Consumers > 0
+	}, 10*time.Second, 50*time.Millisecond, "subscribe must re-create the deleted stream")
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("after")}))
+	m := recv(t, out)
+	assert.Equal(t, "after", string(m.GetBody()))
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+}
+
+func TestDeadLetterRecoversDeletedDLQStream(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.dlsrc", Subjects: []string{"job"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("p1")}))
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("p2")}))
+
+	out := make(chan *pb.Message, 2)
+	src := queueSource("events.dlsrc.consumer", "events.dlsrc", "job")
+	src.Options["DeadLetterAddress"] = "events.dlq.wiped"
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	first := recv(t, out)
+	require.Nil(t, p.DeadLetter(ctx, src, first.GetUuid()), "first dead-letter creates the DLQ stream")
+
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	require.NoError(t, bd.js.DeleteStream(ctx, streamNameFor("events.dlq.wiped")))
+
+	second := recv(t, out)
+	require.NotNil(t, p.DeadLetter(ctx, src, second.GetUuid()),
+		"the publish into the deleted DLQ stream must fail")
+	// The failed call dropped the stale memo, so this retry — the message is
+	// still in flight and resolvable, per the dead-letter failure contract —
+	// re-creates the DLQ stream and succeeds.
+	require.Nil(t, p.DeadLetter(ctx, src, second.GetUuid()),
+		"the dead-letter retry must re-create the DLQ stream")
+}
+
 func TestPrefetchMapsToMaxAckPending(t *testing.T) {
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)

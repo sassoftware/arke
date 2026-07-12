@@ -239,7 +239,7 @@ is intended as the primary disk guard.
 
 ## Operational resilience
 
-Three mechanisms harden the connector against a cold or busy broker. All are
+Four mechanisms harden the connector against a cold or busy broker. All are
 sized for a clustered (replicated) server, where creating topology also means
 forming a raft group per stream and per durable consumer:
 
@@ -260,6 +260,16 @@ forming a raft group per stream and per durable consumer:
   the missed heartbeat is logged at warn level and the client re-issues its
   pull request after roughly twice the heartbeat. With library defaults the
   same stall would go unlogged and take ~30s per detection cycle.
+- **Stale-topology recovery.** A stream can be deleted out from under a
+  live connection — an operator reset, a storage wipe — and a NATS client
+  outlives broker state changes that would sever an AMQP connection, so the
+  memoized "already ensured" answer can go stale. When a publish gets "no
+  response from stream" or a subscribe finds the stream missing, the
+  connection drops its memoized entry, re-asserts the stream, and retries
+  once (the failed publish attempt was not stored, so the retry cannot
+  duplicate it), instead of failing every call until the client reconnects.
+  A failed dead-letter publish likewise drops the entry so the retry that
+  follows re-creates the DLQ stream.
 
 ## Configuration
 

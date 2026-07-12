@@ -497,7 +497,8 @@ func (p *natsjsProvider) PublishOne(ctx context.Context, msg *pb.Message) *pb.Er
 
 func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, msg *pb.Message) *pb.Error {
 	addr := msg.GetAddress()
-	if _, err := p.ensureStream(ctx, bd, addr.GetName()); err != nil {
+	streamName, err := p.ensureStream(ctx, bd, addr.GetName())
+	if err != nil {
 		return &pb.Error{Message: fmt.Sprintf("ensure stream: %s", err.Error())}
 	}
 	nmsg := &nats.Msg{
@@ -510,8 +511,23 @@ func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, 
 	if msg.GetPublisherName() != "" || msg.GetPublishId() != 0 {
 		pubOpts = append(pubOpts, jetstream.WithMsgID(fmt.Sprintf("%s-%d", msg.GetPublisherName(), msg.GetPublishId())))
 	}
-	if _, err := bd.js.PublishMsg(ctx, nmsg, pubOpts...); err != nil {
-		return &pb.Error{Message: fmt.Sprintf("publish: %s", err.Error())}
+	_, perr := bd.js.PublishMsg(ctx, nmsg, pubOpts...)
+	if errors.Is(perr, jetstream.ErrNoStreamResponse) {
+		// No stream captured the subject even though this connection ensured
+		// one: the stream has been deleted underneath the connection (an
+		// operator reset, a storage wipe). The memoized entry would pin that
+		// stale answer for the connection's lifetime, failing every subsequent
+		// publish — and a NATS client outlives broker state changes that would
+		// sever an AMQP connection. Drop the entry, re-assert the stream, and
+		// retry once; the first attempt was not stored (no stream answered),
+		// so the retry cannot duplicate it.
+		bd.knownStreams.Delete(streamName)
+		if _, rerr := p.ensureStream(ctx, bd, addr.GetName()); rerr == nil {
+			_, perr = bd.js.PublishMsg(ctx, nmsg, pubOpts...)
+		}
+	}
+	if perr != nil {
+		return &pb.Error{Message: fmt.Sprintf("publish: %s", perr.Error())}
 	}
 	atomic.AddInt64(&bd.produced, 1)
 	return nil
@@ -557,6 +573,16 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	tctx, tcancel := context.WithTimeout(ctx, jsAPITimeout())
 	defer tcancel()
 	stream, serr := bd.js.Stream(tctx, streamName)
+	if errors.Is(serr, jetstream.ErrStreamNotFound) {
+		// Same stale-memo case as the publish path: the stream was deleted out
+		// from under the connection after this connection ensured it. Drop the
+		// entry and re-assert the stream instead of failing the subscribe until
+		// the client reconnects.
+		bd.knownStreams.Delete(streamName)
+		if _, rerr := p.ensureStream(ctx, bd, addr); rerr == nil {
+			stream, serr = bd.js.Stream(tctx, streamName)
+		}
+	}
 	if serr != nil {
 		return &pb.Error{Message: fmt.Sprintf("open stream: %s", serr.Error()), IsFatal: true}
 	}
@@ -989,6 +1015,13 @@ func (p *natsjsProvider) DeadLetter(ctx context.Context, source *pb.Source, uuid
 			Header:  dlqHeader,
 		}
 		if _, perr := bd.js.PublishMsg(ctx, dlqMsg, pubOpts...); perr != nil {
+			if errors.Is(perr, jetstream.ErrNoStreamResponse) {
+				// The DLQ stream was deleted after this connection ensured it.
+				// Drop the memoized entry so the dead-letter retry that follows
+				// the returned error (the server nacks, the message redelivers)
+				// re-creates the stream instead of failing the same way forever.
+				bd.knownStreams.Delete(streamNameFor(dla))
+			}
 			util.Logger.Warn(
 				"natsjs: dead-letter of message {0} failed (publish to {1}: {2}); message stays in flight",
 				uuid, dlqMsg.Subject, perr.Error())
