@@ -184,8 +184,11 @@ default favors failover; RabbitMQ's equivalent consumer timeout defaults to
 dead-letter retry-queue idiom; JetStream increments the delivery count, which
 the connector surfaces back to the client as the `x-retry-count` header (see
 below). JetStream has no native dead-letter exchange, so `DeadLetter`
-republishes the message to the configured dead-letter subject and then
-`Term()`s it to stop redelivery. RabbitMQ performs that move broker-side;
+republishes the message to the dead-letter address — under the message's
+original routing key unless `DeadLetterSubject` overrides it, exactly as
+RabbitMQ dead-letters under the original key unless
+`x-dead-letter-routing-key` is set — and then `Term()`s it to stop
+redelivery. RabbitMQ performs that move broker-side;
 here it is two proxy-side steps, so ordering is what protects the data: the
 original is terminated only after the DLQ publish succeeds. If the DLQ stream
 cannot be ensured or published to, `DeadLetter` returns an error and leaves
@@ -322,7 +325,7 @@ amqp091 connector, so existing client sources validate unchanged:
 | `MessageTTL` | string (ms) | Accepted for compatibility; not applied per source — retention is the stream-wide `NATSJS_STREAM_MAX_AGE` (see Known limitations). A warning is logged at subscribe time. |
 | `Expires` | string (ms) | Accepted for compatibility; not applied — streams are shared per address root and are not deleted when a source goes unused. A warning is logged at subscribe time. |
 | `DeadLetterAddress` | string | Address whose stream receives dead-lettered messages. |
-| `DeadLetterSubject` | string | Routing key for dead-lettered messages. |
+| `DeadLetterSubject` | string | Routing-key override for dead-lettered messages; when unset, the copy keeps the message's original routing key (RabbitMQ's default dead-letter behavior). |
 | `Offset` | string | Stream starting offset (`first`, `continue`, `last`, `next`, or a numeric sequence). |
 | `ConsumerGroup` | string | Durable consumer group name (stream sources; also names the durable that single-active instances coordinate through, and is required for a single-active stream source). |
 

@@ -152,6 +152,18 @@ func translateWildcards(key string) string {
 	return strings.Join(out, ".")
 }
 
+// routingKeyFromSubject recovers the routing key a delivered message was
+// published with by stripping the address's subject prefix — the inverse of
+// publishSubjectFor for subjects the connector itself produced. The bare
+// prefix (an empty routing key) and any subject not under the prefix (which
+// a consumer's filter subjects make impossible) yield "".
+func routingKeyFromSubject(addressName, subject string) string {
+	if rk, ok := strings.CutPrefix(subject, subjectPrefix(addressName)+"."); ok {
+		return rk
+	}
+	return ""
+}
+
 // streamSubjectsFor returns the subject set a stream captures for the given
 // address: the bare prefix (empty routing key) and everything under it. The
 // two are disjoint from each other ('>' needs at least one more token) and,

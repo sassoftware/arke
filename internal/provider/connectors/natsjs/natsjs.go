@@ -1009,8 +1009,18 @@ func (p *natsjsProvider) DeadLetter(ctx context.Context, source *pb.Source, uuid
 				dlqHeader.Set(retryCountHeaderName, strconv.FormatUint(md.NumDelivered-1, 10))
 			}
 		}
+		// RabbitMQ dead-letters a message under its original routing key
+		// unless the queue overrides it (x-dead-letter-routing-key, which is
+		// what DeadLetterSubject maps to on the AMQP side). Preserve the
+		// original key the same way when no override is set, so DLQ consumers
+		// can bind by routing key and reprocessing tools can see where each
+		// message was originally headed.
+		dlSubject := opts["DeadLetterSubject"]
+		if dlSubject == "" {
+			dlSubject = routingKeyFromSubject(source.GetAddress().GetName(), m.Subject())
+		}
 		dlqMsg := &nats.Msg{
-			Subject: publishSubjectFor(dla, opts["DeadLetterSubject"]),
+			Subject: publishSubjectFor(dla, dlSubject),
 			Data:    m.Data(),
 			Header:  dlqHeader,
 		}

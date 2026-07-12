@@ -54,6 +54,18 @@ func TestPublishSubjectFor(t *testing.T) {
 	assert.Equal(t, "events.orders.~.a_b", publishSubjectFor("events.orders", "a b"))
 }
 
+func TestRoutingKeyFromSubject(t *testing.T) {
+	// inverse of publishSubjectFor
+	assert.Equal(t, "region.us.created",
+		routingKeyFromSubject("events.orders", "events.orders.~.region.us.created"))
+	// the bare prefix is the empty routing key
+	assert.Equal(t, "", routingKeyFromSubject("events.orders", "events.orders.~"))
+	// a subject outside the address's space yields no key
+	assert.Equal(t, "", routingKeyFromSubject("events.orders", "events.audit.~.x"))
+	// empty address: subjects live directly under the delimiter
+	assert.Equal(t, "a.b", routingKeyFromSubject("", "~.a.b"))
+}
+
 func TestStreamSubjectsFor(t *testing.T) {
 	assert.Equal(t,
 		[]string{"events.orders.~", "events.orders.~.>"},

@@ -242,6 +242,36 @@ func TestDeadLetter(t *testing.T) {
 		"DLQ copy must carry the retry count at dead-letter time")
 }
 
+// TestDeadLetterPreservesRoutingKey: when a source sets no DeadLetterSubject,
+// the DLQ copy must keep the original message's routing key — RabbitMQ
+// dead-letters under the original key unless x-dead-letter-routing-key
+// overrides it, and DLQ consumers may bind by routing key.
+func TestDeadLetterPreservesRoutingKey(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.dlrk", Subjects: []string{"region.us.created"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("poison")}))
+
+	out := make(chan *pb.Message, 1)
+	src := queueSource("events.dlrk.consumer", "events.dlrk", "region.#")
+	src.Options["DeadLetterAddress"] = "events.dlrk.dlq"
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	m := recv(t, out)
+	require.Nil(t, p.DeadLetter(ctx, src, m.GetUuid()))
+
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	dlqStream, serr := bd.js.Stream(ctx, streamNameFor("events.dlrk.dlq"))
+	require.NoError(t, serr)
+	raw, gerr := dlqStream.GetMsg(ctx, 1)
+	require.NoError(t, gerr)
+	assert.Equal(t, "events.dlrk.dlq.~.region.us.created", raw.Subject,
+		"the DLQ copy must carry the original routing key under the DLA root")
+}
+
 // TestDeadLetterFailureKeepsMessage: when the dead-letter publish cannot happen
 // (here the DLQ address's subject space is already claimed by a foreign
 // stream, so ensuring its stream fails), DeadLetter must NOT Term the
