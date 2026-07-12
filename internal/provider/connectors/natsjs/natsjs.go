@@ -1082,7 +1082,12 @@ func (p *natsjsProvider) SourceStats(ctx context.Context, source *pb.Source) *pb
 	// JetStream exposes no rates, only counters; sample them between calls
 	// (see rateTracker). The stream's LastSeq counts every publish to the
 	// address root, so the publish rate is per address, not per binding.
-	stats.PublishRate = bd.rates.observe("pub/"+streamName, now, info.State.LastSeq)
+	// The sample key includes the polling source: the counters are shared,
+	// but each source polls on its own cadence, and a shared key would make
+	// every observation window the gap since whichever source polled last —
+	// with several sources on one address the later polls of a cycle would
+	// report rates over milliseconds instead of the poll interval.
+	stats.PublishRate = bd.rates.observe("pub/"+streamName+"/"+source.GetName(), now, info.State.LastSeq)
 	// For a source with a durable consumer, report that consumer's actual
 	// backlog (undelivered + delivered-but-unacked) instead of the stream
 	// depth: the stream retains acked messages under its retention limits, so
@@ -1100,7 +1105,9 @@ func (p *natsjsProvider) SourceStats(ctx context.Context, source *pb.Source) *pb
 			// Delivered.Consumer counts deliveries (redeliveries included,
 			// like RabbitMQ's deliver rate). Ephemeral sources have no
 			// consumer identity to sample here, so their rate stays zero.
-			stats.DeliverRate = bd.rates.observe("del/"+streamName+"/"+durable, now, ci.Delivered.Consumer)
+			// Keyed per polling source like the publish rate above (sources
+			// can share a durable through a common ConsumerGroup).
+			stats.DeliverRate = bd.rates.observe("del/"+streamName+"/"+durable+"/"+source.GetName(), now, ci.Delivered.Consumer)
 		}
 	}
 	return stats

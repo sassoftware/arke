@@ -1389,6 +1389,39 @@ func TestSourceStatsRates(t *testing.T) {
 	assert.Positive(t, stats.GetDeliverRate(), "5 deliveries since the last scrape")
 }
 
+// TestSourceStatsRatesIndependentPerSource: several sources commonly share
+// one address (many queues bound to one exchange), and each polls its stats
+// on its own cadence. The rate baselines must therefore be per source: with
+// a shared per-stream key, any other source's poll resets the window, and a
+// poll right after it reports the rate over that tiny gap — here, zero —
+// instead of over the poller's own interval.
+func TestSourceStatsRatesIndependentPerSource(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.ratesplit", Subjects: []string{"e"}}
+	srcA := queueSource("events.ratesplit.a", "events.ratesplit", "e")
+	srcB := queueSource("events.ratesplit.b", "events.ratesplit", "e")
+
+	// Create the stream and baseline source A.
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("x")}))
+	require.Nil(t, p.SourceStats(ctx, srcA).GetError())
+
+	for i := 0; i < 5; i++ {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("y")}))
+	}
+
+	// Source B polls (its own baseline) between A's polls. A's next poll must
+	// still see the 5 publishes inside its own window.
+	require.Nil(t, p.SourceStats(ctx, srcB).GetError())
+	time.Sleep(20 * time.Millisecond)
+
+	stats := p.SourceStats(ctx, srcA)
+	require.Nil(t, stats.GetError())
+	assert.Positive(t, stats.GetPublishRate(),
+		"another source's poll must not reset this source's rate window")
+}
+
 func TestUnappliedSourceOptions(t *testing.T) {
 	src := func(opts map[string]string) *pb.Source { return &pb.Source{Options: opts} }
 
