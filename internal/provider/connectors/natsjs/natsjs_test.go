@@ -1118,6 +1118,34 @@ func TestSourceStatsReportsConsumerBacklog(t *testing.T) {
 // ephemeral consumer is removed from the server as soon as its subscription
 // ends, instead of counting against the stream's consumer limit until the
 // inactivity threshold expires it.
+// Streams are shared per address root, so the stream-wide consumer count
+// spans every source on the address. A durable source's ConsumerCount must
+// instead reflect the clients attached to ITS consumer — RabbitMQ reports the
+// queue's own consumer count — or two queues on one exchange each report the
+// other's consumers.
+func TestSourceStatsConsumerCountIsPerSource(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	srcA := queueSource("events.cc.a", "events.cc", "created")
+	srcB := queueSource("events.cc.b", "events.cc", "created")
+	outA := make(chan *pb.Message, 1)
+	outB := make(chan *pb.Message, 1)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, srcA, outA)
+	go p.Subscribe(subCtx, srcB, outB)
+
+	// Wait for both subscriptions' pulls to register, then check that each
+	// source counts only its own attached client. Pre-fix both report the
+	// stream-wide count of 2.
+	require.Eventually(t, func() bool {
+		return p.SourceStats(ctx, srcA).GetConsumerCount() == 1 &&
+			p.SourceStats(ctx, srcB).GetConsumerCount() == 1
+	}, 10*time.Second, 100*time.Millisecond,
+		"each durable source must report exactly its own attached client")
+}
+
 func TestEphemeralConsumerDeletedOnTeardown(t *testing.T) {
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)

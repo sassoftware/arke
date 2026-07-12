@@ -354,7 +354,11 @@ amqp091 connector, so existing client sources validate unchanged:
   limits, so its depth keeps growing after consumers catch up, which would
   mislead anything using message count as queue length (e.g. consumer
   autoscaling). Sources without a durable consumer fall back to the stream
-  view.
+  view. A durable source's consumer count is likewise per source: the number
+  of clients with an open pull request on its consumer — a client working
+  through a full pull buffer can briefly read as zero — while sources
+  without a durable consumer report the stream-wide consumer count, which
+  spans every source on the address.
 - **Header filters are evaluated proxy-side.** NATS routes on subjects only,
   so a source's header `Filter`s cannot narrow what the server delivers:
   every message matching the source's subject filters is delivered to the

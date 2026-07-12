@@ -1145,6 +1145,14 @@ func (p *natsjsProvider) SourceStats(ctx context.Context, source *pb.Source) *pb
 			ci := cons.CachedInfo()
 			stats.MessageCount = int64(ci.NumPending) + int64(ci.NumAckPending) //nolint:gosec
 			stats.CurrentOffset = int64(ci.AckFloor.Stream)                     //nolint:gosec
+			// The stream-wide consumer count set above spans every source on
+			// the address (streams are shared per address root), so it says
+			// nothing about THIS source — it cannot even distinguish zero
+			// attached clients from many, because the durable itself counts.
+			// The per-source equivalent of RabbitMQ's queue consumer count is
+			// the clients pulling this durable: report its open pull requests.
+			// (A client whose pull buffer is full can briefly read as zero.)
+			stats.ConsumerCount = int32(ci.NumWaiting) //nolint:gosec
 			// Delivered.Consumer counts deliveries (redeliveries included,
 			// like RabbitMQ's deliver rate). Ephemeral sources have no
 			// consumer identity to sample here, so their rate stays zero.
