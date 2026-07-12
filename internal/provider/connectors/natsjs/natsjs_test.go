@@ -212,7 +212,12 @@ func TestDeadLetter(t *testing.T) {
 	defer cancel()
 	go p.Subscribe(subCtx, src, out)
 
+	// Fail the first delivery, then dead-letter the redelivery, so the copy
+	// has a retry trail to carry.
+	first := recv(t, out)
+	require.Nil(t, p.Nack(ctx, first.GetUuid()))
 	m := recv(t, out)
+	require.Equal(t, "1", m.GetHeaders()[retryCountHeaderName], "redelivery precondition")
 	require.Nil(t, p.DeadLetter(ctx, src, m.GetUuid()))
 
 	// The dead-lettered copy lands on the DLQ stream.
@@ -224,13 +229,17 @@ func TestDeadLetter(t *testing.T) {
 	assert.Equal(t, int64(1), dlqStats.GetMessageCount())
 
 	// The copy carries a deterministic Nats-Msg-Id, so a retried dead-letter of
-	// the same message dedups in the DLQ instead of duplicating.
+	// the same message dedups in the DLQ instead of duplicating — and the same
+	// retry count the consumer saw when it gave the message up (RabbitMQ's
+	// broker-side dead-lettering preserves the death trail via x-death).
 	bd := p.getBrokerDetailsByIdentifier("test-client")
 	dlqStream, serr := bd.js.Stream(ctx, streamNameFor("events.dlq"))
 	require.NoError(t, serr)
 	raw, gerr := dlqStream.GetMsg(ctx, 1)
 	require.NoError(t, gerr)
 	assert.NotEmpty(t, raw.Header.Get("Nats-Msg-Id"), "DLQ copy must carry a dedup message id")
+	assert.Equal(t, "1", raw.Header.Get(retryCountHeaderName),
+		"DLQ copy must carry the retry count at dead-letter time")
 }
 
 // TestDeadLetterFailureKeepsMessage: when the dead-letter publish cannot happen

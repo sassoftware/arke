@@ -943,7 +943,9 @@ func (p *natsjsProvider) Retry(ctx context.Context, _ *pb.Source, uuid string, d
 // redelivery while also absent from the DLQ. The DLQ publish carries a
 // Nats-Msg-Id derived from the original's stream sequence, so a retried
 // dead-letter of the same message cannot duplicate it in the DLQ within the
-// dedup window.
+// dedup window, and the x-retry-count the consumer saw when it gave the
+// message up (the proxy-side analogue of the x-death trail RabbitMQ's
+// broker-side move preserves).
 func (p *natsjsProvider) DeadLetter(ctx context.Context, source *pb.Source, uuid string) *pb.Error {
 	bd, err := p.getBrokerDetails(ctx)
 	if err != nil {
@@ -962,17 +964,29 @@ func (p *natsjsProvider) DeadLetter(ctx context.Context, source *pb.Source, uuid
 				uuid, dla, serr.Error())
 			return &pb.Error{Message: fmt.Sprintf("dead-letter ensure stream: %s", serr.Error())}
 		}
-		dlqMsg := &nats.Msg{
-			Subject: publishSubjectFor(dla, opts["DeadLetterSubject"]),
-			Data:    m.Data(),
-			// Copied so the publish options below do not mutate the original's
-			// header map.
-			Header: copyHeader(m.Headers()),
-		}
+		// Copied so neither the retry count below nor the publish options
+		// mutate the original's header map.
+		dlqHeader := copyHeader(m.Headers())
 		var pubOpts []jetstream.PublishOpt
 		if md, merr := m.Metadata(); merr == nil {
 			pubOpts = append(pubOpts,
 				jetstream.WithMsgID(fmt.Sprintf("dlq-%s-%d", md.Stream, md.Sequence.Stream)))
+			// RabbitMQ stamps a dead-lettered copy broker-side (x-death) with
+			// how it died; the JetStream copy is a plain publish that would
+			// otherwise lose that trail. Carry the same retry count the
+			// consumer saw when it gave the message up, synthesized exactly
+			// like handleDelivery does for deliveries.
+			if md.NumDelivered > 1 {
+				if dlqHeader == nil {
+					dlqHeader = nats.Header{}
+				}
+				dlqHeader.Set(retryCountHeaderName, strconv.FormatUint(md.NumDelivered-1, 10))
+			}
+		}
+		dlqMsg := &nats.Msg{
+			Subject: publishSubjectFor(dla, opts["DeadLetterSubject"]),
+			Data:    m.Data(),
+			Header:  dlqHeader,
 		}
 		if _, perr := bd.js.PublishMsg(ctx, dlqMsg, pubOpts...); perr != nil {
 			util.Logger.Warn(

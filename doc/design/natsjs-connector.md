@@ -193,7 +193,10 @@ the message ack-pending — the server then falls back to a nack, so the
 message is redelivered and dead-lettering is retried instead of the message
 being lost. The DLQ copy carries a `Nats-Msg-Id` derived from the original's
 stream sequence, so a retried dead-letter of the same message deduplicates in
-the DLQ within its dedup window.
+the DLQ within its dedup window, and the `x-retry-count` the consumer saw
+when it gave the message up — RabbitMQ's broker-side move preserves the
+death trail in `x-death`, and the retry count is this connector's equivalent
+(a plain republish would lose it).
 
 ## Retry-count header
 
