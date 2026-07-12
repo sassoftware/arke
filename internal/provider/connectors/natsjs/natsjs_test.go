@@ -854,6 +854,56 @@ func TestUnderscoreSourceNamesStayIndependent(t *testing.T) {
 	}
 }
 
+// TestSameSourceNameSubscriptionsTrackedSeparately: consumer groups share one
+// source name and differ only by ConsumerGroup, so a single connection can
+// hold several live subscriptions for the same name. Each must keep its own
+// bookkeeping entry: keyed by name alone, the second Add overwrites the
+// first, Stats undercounts the connection's streams, and the first teardown
+// deletes the survivor's entry (so Disconnect would no longer Stop it).
+func TestSameSourceNameSubscriptionsTrackedSeparately(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	src := func(cg string) *pb.Source {
+		return &pb.Source{
+			Name:    "events.shared.consumer",
+			Type:    pb.Source_STREAM,
+			Address: &pb.Address{Name: "events.shared", Subjects: []string{"e"}},
+			Options: map[string]string{"Offset": "first", "ConsumerGroup": cg},
+		}
+	}
+
+	outA := make(chan *pb.Message, 2)
+	outB := make(chan *pb.Message, 2)
+	ctxA, cancelA := context.WithCancel(ctx)
+	ctxB, cancelB := context.WithCancel(ctx)
+	defer cancelB()
+	errA := make(chan *pb.Error, 1)
+	go func() { errA <- p.Subscribe(ctxA, src("grp.a"), outA) }()
+	go p.Subscribe(ctxB, src("grp.b"), outB)
+
+	// Each group's durable receives the message, proving both subscriptions
+	// are live and consuming.
+	addr := &pb.Address{Name: "events.shared", Subjects: []string{"e"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("x")}))
+	require.Nil(t, p.Ack(ctx, recv(t, outA).GetUuid()))
+	require.Nil(t, p.Ack(ctx, recv(t, outB).GetUuid()))
+
+	require.Eventually(t, func() bool {
+		stats := p.Stats()
+		return len(stats.Clients) == 1 && stats.Clients[0].Streams == 2
+	}, 5*time.Second, 20*time.Millisecond,
+		"two live subscriptions sharing a source name must both be tracked")
+
+	// Ending one subscription removes only its own entry.
+	cancelA()
+	require.Nil(t, <-errA)
+	stats := p.Stats()
+	require.Len(t, stats.Clients, 1)
+	assert.Equal(t, 1, stats.Clients[0].Streams,
+		"the sibling's teardown must not drop the survivor's entry")
+}
+
 // streamSource builds a stream-style source positioned at the given RabbitMQ
 // Streams offset ("first"/"next"/...). It is the offset-parameterized sibling
 // of queueSource.

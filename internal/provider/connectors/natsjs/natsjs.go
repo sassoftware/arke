@@ -102,8 +102,16 @@ type natsBrokerDetails struct {
 	activeMessages *util.ConcurrentMap
 	// knownStreams memoizes streams we have already ensured.
 	knownStreams *util.ConcurrentMap
-	// consumeContexts maps source name -> jetstream.ConsumeContext for teardown.
+	// consumeContexts holds each live subscription's jetstream.ConsumeContext
+	// so Disconnect can stop them and Stats can count them. Keyed per
+	// subscription (source name plus a serial from subscriptionSeq), NOT per
+	// source name: one connection may legitimately subscribe the same source
+	// name more than once — single-active groups share a name and differ only
+	// by ConsumerGroup — and a name key would make those overwrite each other,
+	// undercounting Stats and letting one teardown drop the other's entry.
 	consumeContexts *util.ConcurrentMap
+	// subscriptionSeq disambiguates consumeContexts keys.
+	subscriptionSeq atomic.Uint64
 	// rates derives SourceStats publish/deliver rates from JetStream counters.
 	rates *rateTracker
 
@@ -710,7 +718,8 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		}
 		return &pb.Error{Message: fmt.Sprintf("consume: %s", cerr.Error()), IsFatal: true}
 	}
-	bd.consumeContexts.Add(source.GetName(), cc)
+	subKey := fmt.Sprintf("%s#%d", source.GetName(), bd.subscriptionSeq.Add(1))
+	bd.consumeContexts.Add(subKey, cc)
 	defer func() {
 		cc.Stop()
 		// Stop is asynchronous: wait (bounded) for the consume loop to finish
@@ -723,7 +732,7 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		case <-time.After(ephemeralDeleteTimeout):
 		}
 		_ = bd.nc.FlushTimeout(ephemeralDeleteTimeout)
-		bd.consumeContexts.Delete(source.GetName())
+		bd.consumeContexts.Delete(subKey)
 		releaseInFlight(bd, streamName, cons.CachedInfo().Name, consCfg.Durable != "")
 		if consCfg.Durable == "" {
 			deleteEphemeralConsumer(ctx, stream, cons.CachedInfo().Name)
