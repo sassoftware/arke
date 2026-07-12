@@ -82,6 +82,10 @@ meaning only in bindings, and NATS forbids wildcard tokens in published
 subjects — so wildcard characters are sanitized to `_` like any other illegal
 character. In address names, empty tokens and tokens equal to `~` are
 replaced with `_` rather than dropped, so distinct names keep distinct roots.
+For `Address_QUEUE` (AMQP direct-exchange parity), binding subjects are exact
+routing keys rather than topic patterns: `#` and `*` are literals and are
+sanitized the same way a published routing key is sanitized, instead of
+matching as wildcards.
 
 A redundant binding set — a wildcard binding alongside a specific key it
 already covers, such as `orders.#` with `orders.created` — is legal in AMQP,
@@ -217,12 +221,14 @@ original is terminated only after the DLQ publish succeeds. If the DLQ stream
 cannot be ensured or published to, `DeadLetter` returns an error and leaves
 the message ack-pending — the server then falls back to a nack, so the
 message is redelivered and dead-lettering is retried instead of the message
-being lost. The DLQ copy carries a `Nats-Msg-Id` derived from the original's
-stream sequence, so a retried dead-letter of the same message deduplicates in
-the DLQ within its dedup window, and the `x-retry-count` the consumer saw
-when it gave the message up — RabbitMQ's broker-side move preserves the
-death trail in `x-death`, and the retry count is this connector's equivalent
-(a plain republish would lose it).
+being lost. A present but empty `DeadLetterAddress` is treated the same way:
+the connector returns an error and leaves the original in flight rather than
+terminating it without a DLQ publish. The DLQ copy carries a `Nats-Msg-Id`
+derived from the original's stream sequence, so a retried dead-letter of the
+same message deduplicates in the DLQ within its dedup window, and the
+`x-retry-count` the consumer saw when it gave the message up — RabbitMQ's
+broker-side move preserves the death trail in `x-death`, and the retry count
+is this connector's equivalent (a plain republish would lose it).
 
 ## Retry-count header
 
@@ -235,9 +241,11 @@ equivalent.
 ## Deduplication
 
 Publish-side dedup maps onto JetStream's `Nats-Msg-Id` plus the stream
-`Duplicates` window. When a message carries a publisher name and/or publish id,
-the connector sets `Nats-Msg-Id` so re-publishes within the window are
-collapsed.
+`Duplicates` window. When a message carries a positive publish id, it must
+also carry a publisher name (matching the stream-publish contract of the AMQP
+connector); the connector sets `Nats-Msg-Id` from that pair so re-publishes
+within the window are collapsed. A publisher name by itself does not enable
+deduplication.
 
 ## Retention: work-queue vs append-log
 

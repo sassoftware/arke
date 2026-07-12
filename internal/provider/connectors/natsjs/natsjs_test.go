@@ -313,6 +313,31 @@ func TestDeadLetterFailureKeepsMessage(t *testing.T) {
 	require.Nil(t, p.Ack(ctx, again.GetUuid()))
 }
 
+func TestDeadLetterEmptyAddressKeepsMessage(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.dlempty", Subjects: []string{"job"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("poison")}))
+
+	out := make(chan *pb.Message, 2)
+	src := queueSource("events.dlempty.consumer", "events.dlempty", "job")
+	src.Options["DeadLetterAddress"] = ""
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	m := recv(t, out)
+	perr := p.DeadLetter(ctx, src, m.GetUuid())
+	require.NotNil(t, perr, "an empty DLA must fail instead of terming the original")
+	assert.Contains(t, perr.GetMessage(), "DeadLetterAddress is empty")
+
+	require.Nil(t, p.Nack(ctx, m.GetUuid()), "a failed dead-letter leaves the message nackable")
+	again := recv(t, out)
+	assert.Equal(t, "poison", string(again.GetBody()))
+	require.Nil(t, p.Ack(ctx, again.GetUuid()))
+}
+
 // TestPrefetchMapsToMaxAckPending: a positive PrefetchCount becomes the
 // consumer's MaxAckPending. A prefetch of 0 is the AMQP "unlimited"
 // convention — the amqp091 connector honors it by leaving the channel
@@ -439,6 +464,35 @@ func TestDeduplication(t *testing.T) {
 	})
 	assert.Nil(t, stats.GetError())
 	assert.Equal(t, int64(1), stats.GetMessageCount(), "duplicate publish_id within the window is collapsed")
+}
+
+func TestPublishIDRequiresPublisherName(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	perr := p.PublishOne(ctx, &pb.Message{
+		Address:   &pb.Address{Name: "events.dedup.required", Subjects: []string{"e"}},
+		Body:      []byte("x"),
+		PublishId: 1,
+	})
+	require.NotNil(t, perr)
+	assert.Contains(t, perr.GetMessage(), "PublisherName not set")
+}
+
+func TestPublisherNameWithoutPublishIDDoesNotDedup(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.dedup.nameonly", Subjects: []string{"e"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("a"), PublisherName: "pub"}))
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("b"), PublisherName: "pub"}))
+
+	stats := p.SourceStats(ctx, &pb.Source{
+		Name:    "events.dedup.nameonly.consumer",
+		Address: &pb.Address{Name: "events.dedup.nameonly"},
+	})
+	assert.Nil(t, stats.GetError())
+	assert.Equal(t, int64(2), stats.GetMessageCount(), "publisher_name alone must not collapse messages as pub-0")
 }
 
 func TestHeaderFilterDropsNonMatching(t *testing.T) {
@@ -1223,6 +1277,43 @@ func TestEmptyRoutingKeyDelivers(t *testing.T) {
 	m := recv(t, out)
 	assert.Equal(t, "no-key", string(m.GetBody()))
 	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+}
+
+func TestDirectAddressBindingIsExact(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	src := &pb.Source{
+		Name: "events.direct.consumer",
+		Address: &pb.Address{
+			Name:     "events.direct",
+			Type:     pb.Address_QUEUE,
+			Subjects: []string{"#"},
+		},
+		Options: map[string]string{"Offset": "first"},
+	}
+	out := make(chan *pb.Message, 2)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: &pb.Address{Name: "events.direct", Type: pb.Address_QUEUE, Subjects: []string{"actual"}},
+		Body:    []byte("wildcard-leak"),
+	}))
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: &pb.Address{Name: "events.direct", Type: pb.Address_QUEUE, Subjects: []string{"#"}},
+		Body:    []byte("literal-match"),
+	}))
+
+	m := recv(t, out)
+	assert.Equal(t, "literal-match", string(m.GetBody()), "direct bindings must not treat # as a topic wildcard")
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	select {
+	case extra := <-out:
+		t.Fatalf("unexpected direct-address wildcard delivery: %q", string(extra.GetBody()))
+	case <-time.After(500 * time.Millisecond):
+	}
 }
 
 // TestSourceStatsReportsConsumerBacklog: for a durable source the message

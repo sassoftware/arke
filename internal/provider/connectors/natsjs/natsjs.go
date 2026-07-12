@@ -516,7 +516,10 @@ func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, 
 	}
 	var pubOpts []jetstream.PublishOpt
 	// publish_id + publisher_name -> Nats-Msg-Id (dedup within the stream window).
-	if msg.GetPublisherName() != "" || msg.GetPublishId() != 0 {
+	if msg.GetPublishId() > 0 && msg.GetPublisherName() == "" {
+		return &pb.Error{Message: "PublisherName not set on message, PublisherName is required when PublishID is set"}
+	}
+	if msg.GetPublishId() > 0 {
 		pubOpts = append(pubOpts, jetstream.WithMsgID(fmt.Sprintf("%s-%d", msg.GetPublisherName(), msg.GetPublishId())))
 	}
 	_, perr := bd.js.PublishMsg(ctx, nmsg, pubOpts...)
@@ -997,60 +1000,65 @@ func (p *natsjsProvider) DeadLetter(ctx context.Context, source *pb.Source, uuid
 	}
 	m := mu.(jetstream.Msg)
 	opts := source.GetOptions()
-	if dla := opts["DeadLetterAddress"]; dla != "" {
-		if _, serr := p.ensureStream(ctx, bd, dla); serr != nil {
-			util.Logger.Warn(
-				"natsjs: dead-letter of message {0} failed (ensure stream for {1}: {2}); message stays in flight",
-				uuid, dla, serr.Error())
-			return &pb.Error{Message: fmt.Sprintf("dead-letter ensure stream: %s", serr.Error())}
-		}
-		// Copied so neither the retry count below nor the publish options
-		// mutate the original's header map.
-		dlqHeader := copyHeader(m.Headers())
-		var pubOpts []jetstream.PublishOpt
-		if md, merr := m.Metadata(); merr == nil {
-			pubOpts = append(pubOpts,
-				jetstream.WithMsgID(fmt.Sprintf("dlq-%s-%d", md.Stream, md.Sequence.Stream)))
-			// RabbitMQ stamps a dead-lettered copy broker-side (x-death) with
-			// how it died; the JetStream copy is a plain publish that would
-			// otherwise lose that trail. Carry the same retry count the
-			// consumer saw when it gave the message up, synthesized exactly
-			// like handleDelivery does for deliveries.
-			if md.NumDelivered > 1 {
-				if dlqHeader == nil {
-					dlqHeader = nats.Header{}
-				}
-				dlqHeader.Set(retryCountHeaderName, strconv.FormatUint(md.NumDelivered-1, 10))
+	dla, hasDLA := opts["DeadLetterAddress"]
+	if !hasDLA {
+		return &pb.Error{Message: "DeadLetterAddress not set"}
+	}
+	if dla == "" {
+		return &pb.Error{Message: "DeadLetterAddress is empty"}
+	}
+	if _, serr := p.ensureStream(ctx, bd, dla); serr != nil {
+		util.Logger.Warn(
+			"natsjs: dead-letter of message {0} failed (ensure stream for {1}: {2}); message stays in flight",
+			uuid, dla, serr.Error())
+		return &pb.Error{Message: fmt.Sprintf("dead-letter ensure stream: %s", serr.Error())}
+	}
+	// Copied so neither the retry count below nor the publish options
+	// mutate the original's header map.
+	dlqHeader := copyHeader(m.Headers())
+	var pubOpts []jetstream.PublishOpt
+	if md, merr := m.Metadata(); merr == nil {
+		pubOpts = append(pubOpts,
+			jetstream.WithMsgID(fmt.Sprintf("dlq-%s-%d", md.Stream, md.Sequence.Stream)))
+		// RabbitMQ stamps a dead-lettered copy broker-side (x-death) with
+		// how it died; the JetStream copy is a plain publish that would
+		// otherwise lose that trail. Carry the same retry count the
+		// consumer saw when it gave the message up, synthesized exactly
+		// like handleDelivery does for deliveries.
+		if md.NumDelivered > 1 {
+			if dlqHeader == nil {
+				dlqHeader = nats.Header{}
 			}
+			dlqHeader.Set(retryCountHeaderName, strconv.FormatUint(md.NumDelivered-1, 10))
 		}
-		// RabbitMQ dead-letters a message under its original routing key
-		// unless the queue overrides it (x-dead-letter-routing-key, which is
-		// what DeadLetterSubject maps to on the AMQP side). Preserve the
-		// original key the same way when no override is set, so DLQ consumers
-		// can bind by routing key and reprocessing tools can see where each
-		// message was originally headed.
-		dlSubject := opts["DeadLetterSubject"]
-		if dlSubject == "" {
-			dlSubject = routingKeyFromSubject(source.GetAddress().GetName(), m.Subject())
+	}
+	// RabbitMQ dead-letters a message under its original routing key
+	// unless the queue overrides it (x-dead-letter-routing-key, which is
+	// what DeadLetterSubject maps to on the AMQP side). Preserve the
+	// original key the same way when no override is set, so DLQ consumers
+	// can bind by routing key and reprocessing tools can see where each
+	// message was originally headed.
+	dlSubject := opts["DeadLetterSubject"]
+	if dlSubject == "" {
+		dlSubject = routingKeyFromSubject(source.GetAddress().GetName(), m.Subject())
+	}
+	dlqMsg := &nats.Msg{
+		Subject: publishSubjectFor(dla, dlSubject),
+		Data:    m.Data(),
+		Header:  dlqHeader,
+	}
+	if _, perr := bd.js.PublishMsg(ctx, dlqMsg, pubOpts...); perr != nil {
+		if errors.Is(perr, jetstream.ErrNoStreamResponse) {
+			// The DLQ stream was deleted after this connection ensured it.
+			// Drop the memoized entry so the dead-letter retry that follows
+			// the returned error (the server nacks, the message redelivers)
+			// re-creates the stream instead of failing the same way forever.
+			bd.knownStreams.Delete(streamNameFor(dla))
 		}
-		dlqMsg := &nats.Msg{
-			Subject: publishSubjectFor(dla, dlSubject),
-			Data:    m.Data(),
-			Header:  dlqHeader,
-		}
-		if _, perr := bd.js.PublishMsg(ctx, dlqMsg, pubOpts...); perr != nil {
-			if errors.Is(perr, jetstream.ErrNoStreamResponse) {
-				// The DLQ stream was deleted after this connection ensured it.
-				// Drop the memoized entry so the dead-letter retry that follows
-				// the returned error (the server nacks, the message redelivers)
-				// re-creates the stream instead of failing the same way forever.
-				bd.knownStreams.Delete(streamNameFor(dla))
-			}
-			util.Logger.Warn(
-				"natsjs: dead-letter of message {0} failed (publish to {1}: {2}); message stays in flight",
-				uuid, dlqMsg.Subject, perr.Error())
-			return &pb.Error{Message: fmt.Sprintf("dead-letter publish: %s", perr.Error())}
-		}
+		util.Logger.Warn(
+			"natsjs: dead-letter of message {0} failed (publish to {1}: {2}); message stays in flight",
+			uuid, dlqMsg.Subject, perr.Error())
+		return &pb.Error{Message: fmt.Sprintf("dead-letter publish: %s", perr.Error())}
 	}
 	bd.activeMessages.Delete(uuid)
 	if err := m.Term(); err != nil {

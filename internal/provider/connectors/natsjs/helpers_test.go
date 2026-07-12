@@ -200,6 +200,23 @@ func TestFilterSubjectsFor(t *testing.T) {
 		filterSubjectsFor(src("*.b", "a.*")))
 }
 
+func TestDirectFilterSubjectsAreExact(t *testing.T) {
+	src := func(subjects ...string) *pb.Source {
+		return &pb.Source{Address: &pb.Address{Name: "events.direct", Type: pb.Address_QUEUE, Subjects: subjects}}
+	}
+
+	assert.Equal(t,
+		[]string{"events.direct.~._"},
+		filterSubjectsFor(src("#")),
+		"direct bindings treat # as a literal routing key, not a wildcard")
+	assert.Equal(t,
+		[]string{"events.direct.~.created", "events.direct.~.region.us"},
+		filterSubjectsFor(src("created", "region.us", "created")))
+	assert.Equal(t,
+		[]string{"events.direct.~"},
+		filterSubjectsFor(src()))
+}
+
 func TestSubjectSubsumes(t *testing.T) {
 	cover := func(wide, narrow string) bool { return subjectSubsumes(wide, narrow) }
 

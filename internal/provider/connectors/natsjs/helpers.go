@@ -241,6 +241,10 @@ func streamSubjectsFor(addressName string) []string {
 // AMQP '#' matches zero or more words while NATS '>' matches one or more, so
 // binding "a.#" must match routing key "a" too.
 func filterSubjectsFor(source *pb.Source) []string {
+	if source.GetAddress().GetType() == pb.Address_QUEUE {
+		return directFilterSubjectsFor(source)
+	}
+
 	prefix := subjectPrefix(source.GetAddress().GetName())
 	pats := source.GetAddress().GetSubjects()
 	if len(pats) == 0 {
@@ -292,6 +296,24 @@ func filterSubjectsFor(source *pb.Source) []string {
 		}
 	}
 	return kept
+}
+
+func directFilterSubjectsFor(source *pb.Source) []string {
+	prefix := subjectPrefix(source.GetAddress().GetName())
+	pats := source.GetAddress().GetSubjects()
+	if len(pats) == 0 {
+		return []string{prefix}
+	}
+	out := make([]string, 0, len(pats))
+	seen := make(map[string]bool, len(pats))
+	for _, p := range pats {
+		s := publishSubjectFor(source.GetAddress().GetName(), p)
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // subjectSubsumes reports whether every subject matched by narrow is also
