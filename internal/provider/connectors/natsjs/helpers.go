@@ -78,11 +78,58 @@ func subjectPrefix(addressName string) string {
 	return addressDelim
 }
 
-// streamNameFor derives a JetStream-legal stream name from an address name.
-// Stream names may not contain '.', ' ', '*' or '>'. Derived from the
-// sanitized root so every address that shares a root shares a stream.
+// nameEscapes encodes, inside the escaped name form (see streamNameFor), the
+// characters JetStream rejects in stream/consumer names plus '_' itself.
+// Every code is two characters starting with '_' and no literal character
+// maps to '_', so an escaped name decodes unambiguously left to right —
+// which is what makes the encoding injective.
+var nameEscapes = map[rune]string{
+	'.':  "_d",
+	'_':  "_u",
+	'/':  "_s",
+	'\\': "_b",
+	'\r': "_r",
+	'\n': "_n",
+	'\f': "_f",
+}
+
+// nameEscapeTriggers are the characters that force a root into the escaped
+// name form: '_' because the plain form could not tell it apart from an
+// encoded '.', and the rest because JetStream rejects them in names outright
+// (they are legal in subjects, so sanitization keeps them in the root).
+const nameEscapeTriggers = "_/\\\r\n\f"
+
+// streamNameFor derives a JetStream-legal name from an address (or consumer
+// group / source) name; durable consumer names use it too, as JetStream
+// validates both identically. Names may not contain whitespace, '.', '*',
+// '>', '/' or '\'. Derived from the sanitized root so every address that
+// shares a root shares a stream.
+//
+// The common case — tokens free of '_' and of characters JetStream rejects
+// in names — keeps the readable historical form, dots swapped for
+// underscores ("events.orders" -> "arke_events_orders"). That replacement is
+// only unambiguous while no token contains '_' of its own: "a.b" and "a_b"
+// would otherwise both read "arke_a_b", and two addresses colliding onto one
+// stream name silently reconfigure each other's stream (each re-ensure
+// flips the stream's subjects to its own address). Such roots instead take
+// an escaped form under the disjoint "arke-" prefix, where every '_' starts
+// a two-character escape code (nameEscapes), so distinct roots always yield
+// distinct names across both forms.
 func streamNameFor(addressName string) string {
-	return "arke_" + strings.ReplaceAll(addressRoot(addressName), ".", "_")
+	root := addressRoot(addressName)
+	if !strings.ContainsAny(root, nameEscapeTriggers) {
+		return "arke_" + strings.ReplaceAll(root, ".", "_")
+	}
+	var b strings.Builder
+	b.WriteString("arke-")
+	for _, r := range root {
+		if esc, ok := nameEscapes[r]; ok {
+			b.WriteString(esc)
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // publishSubjectFor maps an address + routing key onto the concrete subject a

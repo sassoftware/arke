@@ -798,6 +798,62 @@ func TestPrefixAddressesCoexist(t *testing.T) {
 	assert.True(t, got["to-parent"] && got["still-to-parent"], "got %v", got)
 }
 
+// TestUnderscoreAddressesCoexist: address names "events.a" and "events_a" are
+// distinct AMQP exchanges, but a naive dots-to-underscores stream name maps
+// both onto one JetStream stream, whose config each address's re-ensure then
+// flips to its own subjects — each breaking the other. The name mapping must
+// keep them on separate streams.
+func TestUnderscoreAddressesCoexist(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	dotted := &pb.Address{Name: "events.a", Subjects: []string{"k"}}
+	scored := &pb.Address{Name: "events_a", Subjects: []string{"k"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: dotted, Body: []byte("to-dotted")}))
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: scored, Body: []byte("to-scored")}),
+		"publishing to events_a after events.a must not hijack its stream")
+
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	for addr, want := range map[string]string{"events.a": "to-dotted", "events_a": "to-scored"} {
+		out := make(chan *pb.Message, 2)
+		go p.Subscribe(subCtx, queueSource(addr+".consumer", addr, "k"), out)
+		m := recv(t, out)
+		assert.Equal(t, want, string(m.GetBody()), "consumer on %q sees its own message", addr)
+		require.Nil(t, p.Ack(ctx, m.GetUuid()))
+		select {
+		case extra := <-out:
+			t.Fatalf("unexpected cross-address delivery on %q: %q", addr, extra.GetBody())
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+// TestUnderscoreSourceNamesStayIndependent: two queues named "grp.a" and
+// "grp_a" bound to the same address are independent queues — each receives
+// every message — but a naive name mapping collapses them onto one durable,
+// turning them into competing consumers that split the traffic.
+func TestUnderscoreSourceNamesStayIndependent(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.split", Subjects: []string{"k"}}
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	outDot := make(chan *pb.Message, 2)
+	outScore := make(chan *pb.Message, 2)
+	go p.Subscribe(subCtx, queueSource("grp.a", "events.split", "k"), outDot)
+	go p.Subscribe(subCtx, queueSource("grp_a", "events.split", "k"), outScore)
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("fan-out")}))
+
+	for name, out := range map[string]<-chan *pb.Message{"grp.a": outDot, "grp_a": outScore} {
+		m := recv(t, out)
+		assert.Equal(t, "fan-out", string(m.GetBody()), "queue %q gets its own copy", name)
+		require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	}
+}
+
 // streamSource builds a stream-style source positioned at the given RabbitMQ
 // Streams offset ("first"/"next"/...). It is the offset-parameterized sibling
 // of queueSource.

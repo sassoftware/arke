@@ -42,6 +42,19 @@ an empty routing key maps to the bare prefix `events.orders.~`. A JetStream
 stream named `arke_<address>` captures `<address>.~` and `<address>.~.>`, and
 each consumer filters on the mapped source subjects.
 
+Stream names (and durable consumer names, which JetStream validates the same
+way) may not contain `.`, whitespace, `*`, `>`, `/` or `\`, so they are
+derived from the address (or source / consumer-group) name by swapping dots
+for underscores: `events.orders` becomes `arke_events_orders`. That
+replacement alone is ambiguous the moment a name contains a literal `_` —
+`a.b` and `a_b` would both read `arke_a_b`, and two addresses colliding onto
+one stream name silently reconfigure each other's stream — so such names
+take an escaped form instead, under the disjoint `arke-` prefix, in which
+every `_` starts a two-character escape code (`_d` for `.`, `_u` for `_`,
+and codes for the other characters JetStream rejects in names). Distinct
+names therefore always yield distinct streams and durables, while names free
+of underscores keep the readable historical form.
+
 The `~` delimiter is what keeps distinct addresses' streams disjoint, which
 JetStream requires: two subjects may belong to at most one stream. Address
 names are themselves dotted, so two addresses can sit in a prefix
@@ -79,14 +92,19 @@ filters to the widest set before creating the consumer; the surviving
 wildcard filter matches everything the dropped filters did. Intersecting
 patterns where neither contains the other are kept as-is.
 
-This subject scheme is part of the connector's persistence contract:
-retained messages are stored under these subjects for the life of the
-stream's retention limits, so any future change to the encoding is a
-breaking change for deployed data (`CreateOrUpdateStream` moves the stream's
-captured subjects forward, after which messages stored under the previous
-encoding no longer match any consumer filter and age out). Treat this layout
-as canonical: external tooling that reads or writes JetStream subjects
-directly must use the same mapping, including the `~` delimiter.
+This subject scheme — and the stream/durable name encoding above — is part
+of the connector's persistence contract: retained messages are stored under
+these subjects for the life of the stream's retention limits, so any future
+change to the encoding is a breaking change for deployed data
+(`CreateOrUpdateStream` moves the stream's captured subjects forward, after
+which messages stored under the previous encoding no longer match any
+consumer filter and age out; a renamed stream or durable simply strands the
+old one and its state). Treat this layout as canonical: external tooling
+that reads or writes JetStream subjects directly must use the same mapping,
+including the `~` delimiter. Deployments whose address or source names
+contain `_`, `/` or `\` predating the escaped name form had those names
+colliding or rejected outright, so the escaped form changes only names that
+were already broken.
 
 AMQP headers-exchange routing has no NATS subject equivalent. It is reproduced
 proxy-side in `evaluateFilters`: multiple `Filter`s are OR'd (each is a

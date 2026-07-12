@@ -14,9 +14,37 @@ import (
 func TestStreamNameFor(t *testing.T) {
 	assert.Equal(t, "arke_events_orders", streamNameFor("events.orders"))
 	assert.Equal(t, "arke_events_audit", streamNameFor("events.audit"))
-	// illegal subject chars are sanitized
-	assert.Equal(t, "arke_a_b_c", streamNameFor("a.b*c"))
 	assert.Equal(t, "arke_", streamNameFor(""))
+
+	// Names whose tokens contain '_' (directly, or via sanitization of an
+	// illegal subject char) take the escaped "arke-" form so they cannot
+	// collide with a dotted sibling: under the plain dots-to-underscores
+	// replacement "a.b" and "a_b" would both read "arke_a_b" and clobber each
+	// other's stream.
+	assert.Equal(t, "arke_a_b", streamNameFor("a.b"))
+	assert.Equal(t, "arke-a_ub", streamNameFor("a_b"))
+	assert.Equal(t, "arke-a_ub_dc", streamNameFor("a_b.c"))
+	// sanitized chars ('*' -> '_') route through the escaped form too
+	assert.Equal(t, "arke-a_db_uc", streamNameFor("a.b*c"))
+	// characters JetStream rejects in names but allows in subjects are escaped
+	assert.Equal(t, "arke-a_sb", streamNameFor("a/b"))
+	assert.Equal(t, "arke-a_bb", streamNameFor(`a\b`))
+
+	// The mapping must be injective: distinct address roots may never share a
+	// stream name, or the two addresses silently reconfigure each other's
+	// stream. These are the collision pairs of the plain replacement.
+	collisionProne := []string{"a.b", "a_b", "a.b.c", "a_b.c", "a.b_c", "a_b_c", "a/b", `a\b`}
+	seen := map[string]string{}
+	for _, addr := range collisionProne {
+		name := streamNameFor(addr)
+		if prev, ok := seen[name]; ok {
+			t.Errorf("streamNameFor collision: %q and %q both map to %q", prev, addr, name)
+		}
+		seen[name] = addr
+		assert.NotContains(t, name, ".", "stream name must be JetStream-legal")
+		assert.NotContains(t, name, "/", "stream name must be JetStream-legal")
+		assert.NotContains(t, name, `\`, "stream name must be JetStream-legal")
+	}
 }
 
 func TestAddressRoot(t *testing.T) {
@@ -257,6 +285,11 @@ func TestDurableName(t *testing.T) {
 	st2 := q("st2")
 	st2.Type = pb.Source_STREAM
 	assert.Equal(t, "", durableName(st2))
+
+	// durable names inherit streamNameFor's injectivity: source names "grp.a"
+	// and "grp_a" must not share a durable, or the two sources silently
+	// become competing consumers on one queue instead of independent queues
+	assert.NotEqual(t, durableName(q("grp.a")), durableName(q("grp_a")))
 }
 
 func TestEvaluateFilters(t *testing.T) {
