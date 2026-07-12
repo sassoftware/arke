@@ -56,7 +56,9 @@ publishing routing key `filtered.x` to `events.orders` is indistinguishable
 from publishing `x` to `events.orders.filtered`.
 
 NATS subjects are stricter than AMQP routing keys, so each token is also
-sanitized. In binding patterns (`translateWildcards`): a non-terminal `#`
+sanitized. In binding patterns (`translateWildcards`): runs of consecutive
+`#` collapse into one first (they are equivalent in AMQP, and `#.#` must
+keep the zero-word match its trailing `#` provides), a non-terminal `#`
 becomes `*` (NATS `>` is tail-only), illegal characters (space, tab, `*`,
 `>`) inside a literal token become `_`, and empty tokens (from `a..b` or a
 trailing dot) are dropped. A pattern whose trailing `#` became `>` also gets

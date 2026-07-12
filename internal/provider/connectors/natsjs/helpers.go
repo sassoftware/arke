@@ -128,10 +128,27 @@ var tokenSanitizer = strings.NewReplacer(" ", "_", "\t", "_", "*", "_", ">", "_"
 //	                           would otherwise be empty — and thus invalid — tokens)
 //	other             -> illegal chars (space/tab/'*'/'>') replaced with '_'
 //
+// Runs of consecutive '#' are collapsed into one before translation — they
+// are equivalent in AMQP ('#' matches zero or more words) — so "#.#" gets
+// the exact tail mapping instead of a first-'#' narrowed to '*'.
+//
 // The result is always a valid NATS subject fragment (possibly empty if every
 // token was empty; filterSubjectsFor handles that).
 func translateWildcards(key string) string {
-	tokens := strings.Split(key, ".")
+	raw := strings.Split(key, ".")
+	// Drop empty tokens, and collapse runs of consecutive '#' into one: AMQP's
+	// '#' matches zero or more words, so adjacent '#'s are equivalent to a
+	// single one ("a.#.#" ≡ "a.#"). Collapsing has to happen before the
+	// position-based translation below, or a trailing run like "#.#" would put
+	// its first '#' in a non-terminal position and take the lossy '*' mapping —
+	// losing the zero-word match a lone trailing '#' keeps.
+	tokens := make([]string, 0, len(raw))
+	for _, t := range raw {
+		if t == "" || (t == "#" && len(tokens) > 0 && tokens[len(tokens)-1] == "#") {
+			continue
+		}
+		tokens = append(tokens, t)
+	}
 	out := make([]string, 0, len(tokens))
 	for i, t := range tokens {
 		switch t {
@@ -143,8 +160,6 @@ func translateWildcards(key string) string {
 			} else {
 				out = append(out, "*")
 			}
-		case "":
-			// drop empty token
 		default:
 			out = append(out, tokenSanitizer.Replace(t))
 		}

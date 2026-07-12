@@ -137,6 +137,18 @@ func TestFilterSubjectsFor(t *testing.T) {
 	assert.Equal(t,
 		[]string{"events.orders.~", "events.orders.~.>"},
 		filterSubjectsFor(src("#")))
+	// consecutive '#'s are one '#' in AMQP (each matches zero or more words):
+	// "#.#" must still match the empty routing key, and "a.#.#" must not lose
+	// zero-or-more to the non-terminal-'#' narrowing
+	assert.Equal(t,
+		[]string{"events.orders.~", "events.orders.~.>"},
+		filterSubjectsFor(src("#.#")))
+	assert.Equal(t,
+		[]string{"events.orders.~.a", "events.orders.~.a.>"},
+		filterSubjectsFor(src("a.#.#")))
+	assert.Equal(t,
+		[]string{"events.orders.~.*.b"},
+		filterSubjectsFor(src("#.#.b")))
 	// duplicates collapse
 	assert.Equal(t,
 		[]string{"events.orders.~", "events.orders.~.>"},
