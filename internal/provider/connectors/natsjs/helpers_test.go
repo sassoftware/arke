@@ -129,6 +129,52 @@ func TestFilterSubjectsFor(t *testing.T) {
 	assert.Equal(t,
 		[]string{"events.orders.~", "events.orders.~.>"},
 		filterSubjectsFor(src("#", "")))
+	// redundant bindings collapse to the widest filters: JetStream rejects a
+	// consumer whose filter subjects overlap, while AMQP happily routes a
+	// message once however many bindings match
+	assert.Equal(t,
+		[]string{"events.orders.~", "events.orders.~.>"},
+		filterSubjectsFor(src("#", "orders.created")))
+	assert.Equal(t,
+		[]string{"events.orders.~.region", "events.orders.~.region.>"},
+		filterSubjectsFor(src("region.#", "region.us", "region.us.updated")))
+	assert.Equal(t,
+		[]string{"events.orders.~.*"},
+		filterSubjectsFor(src("*", "created")))
+	// intersecting patterns where neither contains the other both survive
+	// (JetStream accepts them)
+	assert.Equal(t,
+		[]string{"events.orders.~.*.b", "events.orders.~.a.*"},
+		filterSubjectsFor(src("*.b", "a.*")))
+}
+
+func TestSubjectSubsumes(t *testing.T) {
+	cover := func(wide, narrow string) bool { return subjectSubsumes(wide, narrow) }
+
+	assert.True(t, cover("a.>", "a.b"))
+	assert.True(t, cover("a.>", "a.b.c"))
+	assert.True(t, cover("a.>", "a.b.>"))
+	assert.True(t, cover("a.>", "a.*"))
+	assert.True(t, cover("a.*", "a.b"))
+	assert.True(t, cover("a.*.c", "a.b.c"))
+	assert.True(t, cover(">", "anything.at.all"))
+
+	// '>' needs at least one token, so it does not cover the bare base
+	assert.False(t, cover("a.>", "a"))
+	// a bounded pattern cannot cover an unbounded one
+	assert.False(t, cover("a.*", "a.>"))
+	assert.False(t, cover("a.b.>", "a.>"))
+	// '*' does not cover a different literal position count
+	assert.False(t, cover("a.*", "a.b.c"))
+	assert.False(t, cover("a.b", "a"))
+	assert.False(t, cover("a", "a.b"))
+	// literal mismatch
+	assert.False(t, cover("a.b", "a.c"))
+	// a literal never covers a wildcard
+	assert.False(t, cover("a.b", "a.*"))
+	// intersecting but neither is a subset
+	assert.False(t, cover("*.b", "a.*"))
+	assert.False(t, cover("a.*", "*.b"))
 }
 
 func TestDurableName(t *testing.T) {

@@ -68,6 +68,15 @@ subjects — so wildcard characters are sanitized to `_` like any other illegal
 character. In address names, empty tokens and tokens equal to `~` are
 replaced with `_` rather than dropped, so distinct names keep distinct roots.
 
+A redundant binding set — a wildcard binding alongside a specific key it
+already covers, such as `orders.#` with `orders.created` — is legal in AMQP,
+where a message is routed to the queue once no matter how many bindings
+match. JetStream instead rejects a consumer whose filter subjects overlap
+(one being a subset of another), so the connector collapses the mapped
+filters to the widest set before creating the consumer; the surviving
+wildcard filter matches everything the dropped filters did. Intersecting
+patterns where neither contains the other are kept as-is.
+
 This subject scheme is part of the connector's persistence contract:
 retained messages are stored under these subjects for the life of the
 stream's retention limits, so any future change to the encoding is a

@@ -198,7 +198,52 @@ func filterSubjectsFor(source *pb.Source) []string {
 			add(prefix + "." + pat)
 		}
 	}
-	return out
+	// An AMQP binding set may be redundant — "orders.#" alongside
+	// "orders.created" — which is harmless on a broker that routes a message
+	// to a queue once no matter how many of its bindings match. JetStream
+	// instead rejects a consumer whose filter subjects overlap (one being a
+	// subset of another), so drop every filter another filter already covers.
+	// The surviving wider filter matches everything the dropped one did.
+	kept := make([]string, 0, len(out))
+	for _, s := range out {
+		subsumed := false
+		for _, t := range out {
+			if t != s && subjectSubsumes(t, s) {
+				subsumed = true
+				break
+			}
+		}
+		if !subsumed {
+			kept = append(kept, s)
+		}
+	}
+	return kept
+}
+
+// subjectSubsumes reports whether every subject matched by narrow is also
+// matched by wide (both may contain NATS wildcards): a wide '>' covers any
+// one or more remaining tokens, and a wide '*' covers a literal token or
+// another '*' but never '>'. This is the subset relation JetStream applies
+// when it rejects a consumer's filter subjects as overlapping.
+func subjectSubsumes(wide, narrow string) bool {
+	w := strings.Split(wide, ".")
+	n := strings.Split(narrow, ".")
+	for i, wt := range w {
+		if i >= len(n) {
+			return false
+		}
+		if wt == ">" {
+			return true
+		}
+		nt := n[i]
+		if nt == ">" || (nt == "*" && wt != "*") {
+			return false
+		}
+		if wt != "*" && wt != nt {
+			return false
+		}
+	}
+	return len(w) == len(n)
 }
 
 // durableName returns the JetStream durable consumer name for a source, or ""

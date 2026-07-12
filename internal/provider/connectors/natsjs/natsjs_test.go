@@ -1085,6 +1085,51 @@ func TestTeardownReleasesInFlightMessages(t *testing.T) {
 	}
 }
 
+// TestRedundantBindingsCoexist: an AMQP binding set may be redundant — a
+// wildcard binding alongside a specific key it already covers — and RabbitMQ
+// routes each message to the queue once no matter how many bindings match.
+// JetStream rejects a consumer whose filter subjects overlap, so the
+// connector must collapse the redundant filters instead of failing the
+// subscribe (and each message still arrives exactly once).
+func TestRedundantBindingsCoexist(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	pub := func(key, body string) {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{
+			Address: &pb.Address{Name: "events.redundant", Subjects: []string{key}},
+			Body:    []byte(body),
+		}))
+	}
+	pub("orders.created", "covered-by-both")
+	pub("other.thing", "covered-by-wildcard")
+
+	out := make(chan *pb.Message, 4)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errCh := make(chan *pb.Error, 1)
+	go func() {
+		errCh <- p.Subscribe(subCtx,
+			queueSource("events.redundant.consumer", "events.redundant", "#", "orders.created"), out)
+	}()
+
+	got := map[string]int{}
+	for i := 0; i < 2; i++ {
+		m := recv(t, out)
+		got[string(m.GetBody())]++
+		require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	}
+	assert.Equal(t, map[string]int{"covered-by-both": 1, "covered-by-wildcard": 1}, got)
+
+	select {
+	case extra := <-out:
+		t.Fatalf("message delivered twice: %q", extra.GetBody())
+	case perr := <-errCh:
+		t.Fatalf("subscribe failed on redundant bindings: %s", perr.GetMessage())
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
 // sacSource is queueSource with SingleActiveConsumer set.
 func sacSource(name, addr string, subjects ...string) *pb.Source {
 	s := queueSource(name, addr, subjects...)
