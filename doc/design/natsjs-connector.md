@@ -323,7 +323,7 @@ Legend: **Native** = NATS does it; **Proxy** = rebuilt in the connector;
 | Message dedup (`publish_id` + `publisher_name`) | Native | `Nats-Msg-Id` + stream `Duplicates` window. |
 | Streams: offsets, start position | Native | JetStream is a log; `DeliverPolicy` maps `Offset`. |
 | Single active consumer | Native | Pinned-client priority group on the durable (nats-server 2.11+); standby takes over within `NATSJS_SAC_PINNED_TTL`. |
-| Prefetch / QoS | Native | `MaxAckPending`; prefetch 0 (AMQP "unlimited") maps to unlimited (-1). |
+| Prefetch / QoS | Native | `MaxAckPending`; prefetch 0 (AMQP "unlimited") maps to unlimited (-1). The Arke gRPC server raises a prefetch below 1 to 1 before any provider sees it, so the unlimited mapping applies to direct provider use. |
 | HA / quorum queues | Native | JetStream R3 (Raft) via `NATSJS_STREAM_REPLICAS`. |
 | Delayed retry (per-msg TTL + DLX idiom) | Proxy -> Native | Replaced with `NakWithDelay`. |
 | Retry-count header (`x-retry-count`) | Proxy | Synthesized from JetStream `NumDelivered`. |

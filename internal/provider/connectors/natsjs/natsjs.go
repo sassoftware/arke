@@ -598,7 +598,12 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	// AMQP prefetch 0 means unlimited (amqp091 leaves the channel default in
 	// that case rather than calling SetPrefetch), so map it to JetStream's
 	// explicit unlimited (-1) — not to the server default of 1000, and
-	// certainly not to 1, which would silently serialize the consumer.
+	// certainly not to 1, which would silently serialize the consumer. Note
+	// that Arke's gRPC server raises a prefetch below 1 to 1 before any
+	// provider sees the source (SetSourceDefaults, internal/server), so a
+	// subscribe arriving through the server never takes this branch; it keeps
+	// the provider contract honest for direct (in-process) users and for any
+	// future change to the server-side defaulting.
 	prefetch := int(source.GetPrefetchCount())
 	if prefetch <= 0 {
 		prefetch = -1
