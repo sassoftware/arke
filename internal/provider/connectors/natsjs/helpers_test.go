@@ -160,6 +160,23 @@ func TestDurableName(t *testing.T) {
 	sac.SingleActiveConsumer = true
 	assert.Equal(t, "arke_sac", durableName(sac))
 
+	// SingleActiveConsumer with a ConsumerGroup -> the group is the
+	// coordination identity, so it names the durable (amqp091 uses the group
+	// as the single-active consumer reference the same way). Sources sharing
+	// a name but split into groups must NOT collapse onto one durable.
+	sacg := q("sac")
+	sacg.SingleActiveConsumer = true
+	sacg.Options = map[string]string{"ConsumerGroup": "grp.b"}
+	assert.Equal(t, "arke_grp_b", durableName(sacg))
+
+	// single-active STREAM source without a ConsumerGroup: no coordination
+	// identity exists; Subscribe rejects it (amqp091 parity), and there is no
+	// durable name for it
+	sacs := q("sacs")
+	sacs.SingleActiveConsumer = true
+	sacs.Type = pb.Source_STREAM
+	assert.Equal(t, "", durableName(sacs))
+
 	// STREAM with ConsumerGroup -> durable (named after the group)
 	st := q("st")
 	st.Type = pb.Source_STREAM

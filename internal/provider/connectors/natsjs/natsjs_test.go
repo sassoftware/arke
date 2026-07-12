@@ -1192,6 +1192,69 @@ func TestSingleActiveConsumerUpgradesExistingDurable(t *testing.T) {
 	assert.Equal(t, jetstream.PriorityPolicyPinned, cons.CachedInfo().Config.PriorityPolicy)
 }
 
+// TestSingleActiveConsumerGroupsAreIndependent: the ConsumerGroup option is
+// the identity single-active instances coordinate through (amqp091 uses it as
+// the consumer reference the same way), so two groups of a source — same
+// source name, different ConsumerGroup — must get independent pinned durables
+// that each receive the whole stream. Naming the durable after the source
+// name instead would collapse every group onto one pinned consumer and starve
+// all groups but the pin holder's.
+func TestSingleActiveConsumerGroupsAreIndependent(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.sacgroups", Subjects: []string{"e"}}
+	mkSrc := func(group string) *pb.Source {
+		return &pb.Source{
+			Name:                 "events.sacgroups.consumer", // shared across groups
+			Type:                 pb.Source_STREAM,
+			SingleActiveConsumer: true,
+			Address:              &pb.Address{Name: "events.sacgroups", Subjects: []string{"e"}},
+			Options:              map[string]string{"Offset": "first", "ConsumerGroup": "grp-" + group},
+		}
+	}
+
+	const n = 2
+	for i := 0; i < n; i++ {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte(fmt.Sprintf("m%d", i))}))
+	}
+
+	outA := make(chan *pb.Message, n)
+	outB := make(chan *pb.Message, n)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, mkSrc("a"), outA)
+	go p.Subscribe(subCtx, mkSrc("b"), outB)
+
+	// Each group replays the full backlog independently.
+	for i := 0; i < n; i++ {
+		require.Nil(t, p.Ack(ctx, recv(t, outA).GetUuid()))
+	}
+	for i := 0; i < n; i++ {
+		require.Nil(t, p.Ack(ctx, recv(t, outB).GetUuid()))
+	}
+}
+
+// TestSingleActiveStreamSourceRequiresConsumerGroup: a single-active stream
+// source names no ConsumerGroup to coordinate through — amqp091 rejects the
+// combination, and so does natsjs, instead of inventing a per-subscriber
+// durable that would make the instances compete.
+func TestSingleActiveStreamSourceRequiresConsumerGroup(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	src := &pb.Source{
+		Name:                 "events.sacnogroup.consumer",
+		Type:                 pb.Source_STREAM,
+		SingleActiveConsumer: true,
+		Address:              &pb.Address{Name: "events.sacnogroup", Subjects: []string{"e"}},
+	}
+	perr := p.Subscribe(ctx, src, make(chan *pb.Message, 1))
+	require.NotNil(t, perr)
+	assert.Contains(t, perr.GetMessage(), "no ConsumerGroup option set")
+	assert.True(t, perr.GetIsFatal())
+}
+
 // TestDeclareOnlyEphemeralConsumerCleanedUp: DeclareOnly on a transient source
 // validates topology, but the ephemeral consumer it creates can never be
 // attached to afterwards (its server-generated name is not surfaced), so it is

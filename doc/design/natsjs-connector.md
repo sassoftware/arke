@@ -104,6 +104,16 @@ A source with `SingleActiveConsumer` additionally maps onto a pinned-client
 priority group (nats-server 2.11+): the server pins the first subscriber to
 pull and delivers only to it, standbys' pulls wait, and when the pinned
 client stops pulling for `NATSJS_SAC_PINNED_TTL` the pin moves to a standby.
+The durable such a source attaches to is named after its `ConsumerGroup`
+option when set: the group is the identity the instances coordinate through
+(amqp091 uses it as the single-active consumer reference the same way), so
+sources that share one name but split their subscribers into groups — one
+independently ordered group per partition of a shared stream — get one
+pinned consumer per group instead of collapsing onto a single pin that
+starves every other group. Without a group, a single-active queue source
+falls back to its own name (all instances of a single-active queue share the
+queue by definition), and a single-active stream source is rejected at
+subscribe time, as in amqp091.
 That reproduces RabbitMQ's single-active-consumer semantics — ordered
 processing across competing instances with automatic failover — natively,
 with two caveats. Failover is bounded by the pinned TTL rather than
@@ -292,7 +302,7 @@ amqp091 connector, so existing client sources validate unchanged:
 | `DeadLetterAddress` | string | Address whose stream receives dead-lettered messages. |
 | `DeadLetterSubject` | string | Routing key for dead-lettered messages. |
 | `Offset` | string | Stream starting offset (`first`, `continue`, `last`, `next`, or a numeric sequence). |
-| `ConsumerGroup` | string | Durable consumer group name (Streams only). |
+| `ConsumerGroup` | string | Durable consumer group name (stream sources; also names the durable that single-active instances coordinate through, and is required for a single-active stream source). |
 
 ## Known limitations
 

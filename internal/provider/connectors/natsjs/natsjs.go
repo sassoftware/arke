@@ -534,6 +534,17 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 			"natsjs: source {0} sets {1}, which natsjs accepts but does not apply; retention is stream-wide (NATSJS_STREAM_MAX_AGE / NATSJS_STREAM_MAX_BYTES)",
 			source.GetName(), strings.Join(unapplied, ", "))
 	}
+	// A single-active stream source must name the ConsumerGroup its instances
+	// coordinate through (see durableName); amqp091 rejects this combination
+	// with the same message. Without a group each subscriber would get its own
+	// durable and they would all compete — the opposite of single-active.
+	if source.GetSingleActiveConsumer() && source.GetType() == pb.Source_STREAM &&
+		source.GetOptions()["ConsumerGroup"] == "" {
+		return &pb.Error{
+			Message: fmt.Sprintf("source %q: single active consumer requested but no ConsumerGroup option set", source.GetName()),
+			IsFatal: true,
+		}
+	}
 	addr := source.GetAddress().GetName()
 	streamName, serr := p.ensureStream(ctx, bd, addr)
 	if serr != nil {

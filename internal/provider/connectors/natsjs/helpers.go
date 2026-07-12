@@ -219,6 +219,26 @@ func durableName(source *pb.Source) string {
 		return ""
 	}
 	if source.GetSingleActiveConsumer() {
+		// Single-active instances coordinate by attaching to one shared
+		// consumer, so the durable must be named for the coordination
+		// identity, not the individual subscriber. That identity is the
+		// ConsumerGroup option when set — amqp091 uses it as the consumer
+		// reference for single-active stream sources for the same reason —
+		// which also lets sources that share one name but separate their
+		// instances only by group (one group per partition/tenant/shard of a
+		// shared stream) get one durable per group instead of collapsing
+		// onto a single pinned consumer that starves every other group.
+		if cg := source.GetOptions()["ConsumerGroup"]; cg != "" {
+			return streamNameFor(cg)
+		}
+		// A stream source with no group has no coordination identity —
+		// Subscribe rejects it, like amqp091. A queue source falls back to
+		// the queue's own name: all instances of a single-active queue share
+		// it by definition (RabbitMQ's x-single-active-consumer is a queue
+		// property).
+		if source.GetType() == pb.Source_STREAM {
+			return ""
+		}
 		return streamNameFor(source.GetName())
 	}
 	switch source.GetType() {
