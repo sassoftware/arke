@@ -299,7 +299,7 @@ Legend: **Native** = NATS does it; **Proxy** = rebuilt in the connector;
 | RabbitMQ / Arke feature | Disposition | Notes |
 | --- | --- | --- |
 | Topic routing + wildcard bindings | Native | NATS subjects + `*`/`>`; `#`->`>`, `*`->`*`. |
-| Per-subscriber ephemeral queue | Native | Ephemeral consumer with inactivity threshold. |
+| Per-subscriber ephemeral queue | Native | Ephemeral consumer with inactivity threshold (per subscriber — see limitations). |
 | Durable work queue (reconnect resumes backlog) | Native | Durable consumer for non-transient / consumer-group / single-active sources. |
 | Publish confirms | Native | `js.PublishMsg` returns a `PubAck`. |
 | Message dedup (`publish_id` + `publisher_name`) | Native | `Nats-Msg-Id` + stream `Duplicates` window. |
@@ -374,6 +374,16 @@ amqp091 connector, so existing client sources validate unchanged:
   fed by the connector; there is no advisory-driven re-consumption. A failed
   DLQ publish fails the dead-letter call — the message stays in flight and is
   redelivered — rather than dropping the message.
+- **Transient sources are per-subscriber.** A transient (auto-delete /
+  exclusive / TEMPORARY) source maps to an ephemeral consumer created per
+  subscription, so two clients subscribing with the same transient source
+  name each receive every message. Consumers of one auto-delete AMQP queue
+  would instead compete for its messages, and an exclusive AMQP queue would
+  reject the second consumer outright. In practice clients generate unique
+  names for transient sources (the usual exclusive-queue idiom), which is
+  why this has not warranted the parity fix: a shared named consumer with an
+  inactivity threshold standing in for the queue's expiry, plus rejecting a
+  second subscriber when the source is exclusive.
 - **Connection authentication.** The connector supports user/password and TLS
   today; NKEYs / JWT auth are a natural follow-up for production deployments.
 
