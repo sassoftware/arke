@@ -1668,6 +1668,44 @@ func TestSourceStatsRatesIndependentPerSource(t *testing.T) {
 		"another source's poll must not reset this source's rate window")
 }
 
+// TestSourceStatsRatesIndependentPerGroup: consumer groups share one source
+// name and differ only by ConsumerGroup, so a name-keyed publish-rate sample
+// makes the groups reset each other's baseline window exactly like the
+// per-source case above — the sample key must carry the durable identity too.
+func TestSourceStatsRatesIndependentPerGroup(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.grpsplit", Subjects: []string{"e"}}
+	src := func(cg string) *pb.Source {
+		return &pb.Source{
+			Name:    "events.grpsplit.consumer",
+			Type:    pb.Source_STREAM,
+			Address: &pb.Address{Name: "events.grpsplit", Subjects: []string{"e"}},
+			Options: map[string]string{"ConsumerGroup": cg},
+		}
+	}
+	srcA, srcB := src("grp.a"), src("grp.b")
+
+	// Create the stream and baseline group A.
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("x")}))
+	require.Nil(t, p.SourceStats(ctx, srcA).GetError())
+
+	for i := 0; i < 5; i++ {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("y")}))
+	}
+
+	// Group B polls (its own baseline) between A's polls. A's next poll must
+	// still see the 5 publishes inside its own window.
+	require.Nil(t, p.SourceStats(ctx, srcB).GetError())
+	time.Sleep(20 * time.Millisecond)
+
+	stats := p.SourceStats(ctx, srcA)
+	require.Nil(t, stats.GetError())
+	assert.Positive(t, stats.GetPublishRate(),
+		"another group's poll must not reset this group's rate window")
+}
+
 func TestUnappliedSourceOptions(t *testing.T) {
 	src := func(opts map[string]string) *pb.Source { return &pb.Source{Options: opts} }
 

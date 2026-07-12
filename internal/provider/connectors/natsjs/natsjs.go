@@ -1131,15 +1131,18 @@ func (p *natsjsProvider) SourceStats(ctx context.Context, source *pb.Source) *pb
 	stats.MessageCount = int64(info.State.Msgs)       //nolint:gosec
 	stats.ConsumerCount = int32(info.State.Consumers) //nolint:gosec
 	stats.LastOffset = int64(info.State.LastSeq)      //nolint:gosec
+	durable := durableName(source)
 	// JetStream exposes no rates, only counters; sample them between calls
 	// (see rateTracker). The stream's LastSeq counts every publish to the
 	// address root, so the publish rate is per address, not per binding.
-	// The sample key includes the polling source: the counters are shared,
-	// but each source polls on its own cadence, and a shared key would make
-	// every observation window the gap since whichever source polled last —
-	// with several sources on one address the later polls of a cycle would
-	// report rates over milliseconds instead of the poll interval.
-	stats.PublishRate = bd.rates.observe("pub/"+streamName+"/"+source.GetName(), now, info.State.LastSeq)
+	// The sample key includes the polling identity — durable and source name,
+	// since consumer groups share a source name and differ only by their
+	// durable: the counters are shared, but each poller runs on its own
+	// cadence, and a shared key would make every observation window the gap
+	// since whichever poller came last — with several pollers on one address
+	// the later polls of a cycle would report rates over milliseconds instead
+	// of the poll interval.
+	stats.PublishRate = bd.rates.observe("pub/"+streamName+"/"+durable+"/"+source.GetName(), now, info.State.LastSeq)
 	// For a source with a durable consumer, report that consumer's actual
 	// backlog (undelivered + delivered-but-unacked) instead of the stream
 	// depth: the stream retains acked messages under its retention limits, so
@@ -1147,7 +1150,7 @@ func (p *natsjsProvider) SourceStats(ctx context.Context, source *pb.Source) *pb
 	// matches the amqp091 connector, which reports the queue's ready+unacked
 	// count — the number consumer-scaling logic wants. Without a durable
 	// consumer (or before it exists), fall back to the stream view.
-	if durable := durableName(source); durable != "" {
+	if durable != "" {
 		if cons, cerr := stream.Consumer(ctx, durable); cerr == nil {
 			// Consumer() fetched fresh info to return the handle; reuse it
 			// instead of paying a second round-trip on every stats poll.
