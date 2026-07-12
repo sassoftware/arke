@@ -123,7 +123,10 @@ The connector chooses the consumer kind from the source
   and any `SingleActiveConsumer`.
 - Ephemeral consumers auto-expire after an inactivity threshold. Used for
   auto-delete / exclusive / `TEMPORARY` sources, which clients commonly use
-  for per-instance, transient subscriptions. They are also deleted eagerly
+  for per-instance, transient subscriptions — and for `STREAM` sources
+  without a `ConsumerGroup`, whose subscribers are independent readers of
+  the shared log, each positioned by its own `Offset` (RabbitMQ stream
+  consumers do not compete). They are also deleted eagerly
   when their subscription ends (or never starts — a declare-only call, or a
   failure to begin consuming), so the threshold only has to cover unclean
   exits and churning transient clients cannot accumulate dead consumers

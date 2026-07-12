@@ -904,15 +904,59 @@ func TestSameSourceNameSubscriptionsTrackedSeparately(t *testing.T) {
 		"the sibling's teardown must not drop the survivor's entry")
 }
 
-// streamSource builds a stream-style source positioned at the given RabbitMQ
-// Streams offset ("first"/"next"/...). It is the offset-parameterized sibling
-// of queueSource.
+// streamSource builds a stream-typed source (Source_STREAM) positioned at the
+// given RabbitMQ Streams offset ("first"/"next"/...). It carries a
+// ConsumerGroup, derived from the source name, because the group is a stream
+// source's durable identity — each test consumer keeps its own durable. See
+// TestStreamSourceWithoutGroupReadsIndependently for the group-less
+// (ephemeral) form.
 func streamSource(name, addr, offset string, subjects ...string) *pb.Source {
 	return &pb.Source{
 		Name:    name,
-		Type:    pb.Source_QUEUE,
+		Type:    pb.Source_STREAM,
 		Address: &pb.Address{Name: addr, Subjects: subjects},
-		Options: map[string]string{"Offset": offset},
+		Options: map[string]string{"Offset": offset, "ConsumerGroup": name + ".grp"},
+	}
+}
+
+// TestStreamSourceWithoutGroupReadsIndependently: a STREAM source with no
+// ConsumerGroup has no durable identity, so every subscriber is an
+// independent ephemeral reader positioned by its own Offset and sees every
+// message. That is deliberate RabbitMQ parity — stream consumers read a
+// shared log and never compete (unlike queue consumers) — distinct from the
+// transient-source fan-out documented as a known limitation.
+func TestStreamSourceWithoutGroupReadsIndependently(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.reader", Subjects: []string{"e"}}
+	const n = 3
+	for i := 0; i < n; i++ {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte(fmt.Sprintf("m%d", i))}))
+	}
+
+	src := func() *pb.Source {
+		return &pb.Source{
+			Name:    "events.reader.consumer",
+			Type:    pb.Source_STREAM,
+			Address: &pb.Address{Name: "events.reader", Subjects: []string{"e"}},
+			Options: map[string]string{"Offset": "first"},
+		}
+	}
+
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	outA := make(chan *pb.Message, n)
+	outB := make(chan *pb.Message, n)
+	go p.Subscribe(subCtx, src(), outA)
+	go p.Subscribe(subCtx, src(), outB)
+	for _, out := range []<-chan *pb.Message{outA, outB} {
+		for i := 0; i < n; i++ {
+			m := recv(t, out)
+			assert.Equal(t, fmt.Sprintf("m%d", i), string(m.GetBody()),
+				"each reader replays the full log in order")
+			require.Nil(t, p.Ack(ctx, m.GetUuid()))
+		}
 	}
 }
 
