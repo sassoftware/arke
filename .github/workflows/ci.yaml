@@ -20,7 +20,7 @@ on:
       - main
       - release-*
 env:
-  GO_VERSION: 1.26
+  GO_VERSION: 1.26.5
   ARTIFACT_DIR: ./artifacts
   LINT_DIR: ./.github/linters
   COV_DIR: ./artifacts/cov
