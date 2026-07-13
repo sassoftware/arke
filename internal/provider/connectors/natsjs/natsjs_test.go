@@ -31,9 +31,17 @@ func init() {
 // backed by a temp store dir that is cleaned up with the test.
 func runJetStreamServer(t *testing.T) *natsserver.Server {
 	t.Helper()
+	return runJetStreamServerAt(t, -1) // choose a free port
+}
+
+// runJetStreamServerAt is runJetStreamServer on a caller-chosen port, so a
+// test can restart "the broker" at the address a client is connected to —
+// with a fresh store dir, i.e. a broker that lost its JetStream state.
+func runJetStreamServerAt(t *testing.T, port int) *natsserver.Server {
+	t.Helper()
 	opts := &natsserver.Options{
 		Host:      "127.0.0.1",
-		Port:      -1, // choose a free port
+		Port:      port,
 		JetStream: true,
 		StoreDir:  t.TempDir(),
 		NoLog:     true,
@@ -423,6 +431,107 @@ func TestDeadLetterRecoversDeletedDLQStream(t *testing.T) {
 	// re-creates the DLQ stream and succeeds.
 	require.Nil(t, p.DeadLetter(ctx, src, second.GetUuid()),
 		"the dead-letter retry must re-create the DLQ stream")
+}
+
+// TestSubscribeEndsWhenConsumerDeleted: deleting a subscription's server-side
+// consumer out from under it (an operator cleanup, a misdirected tool) used
+// to leave the subscription permanently deaf — the client library treats the
+// resulting consume error as terminal and silently stops delivering, while
+// Subscribe kept blocking on its context. Subscribe must instead end with a
+// non-fatal error so the client's re-subscribe recreates the consumer.
+func TestSubscribeEndsWhenConsumerDeleted(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.zap", Subjects: []string{"k"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m1")}))
+
+	src := queueSource("events.zap.consumer", "events.zap", "k")
+	out := make(chan *pb.Message, 2)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan *pb.Error, 1)
+	go func() { done <- p.Subscribe(subCtx, src, out) }()
+
+	m := recv(t, out)
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	stream, serr := bd.js.Stream(ctx, streamNameFor("events.zap"))
+	require.NoError(t, serr)
+	require.NoError(t, stream.DeleteConsumer(ctx, durableName(src)))
+
+	select {
+	case perr := <-done:
+		require.NotNil(t, perr, "Subscribe must end with an error, not block forever")
+		assert.False(t, perr.GetIsFatal(), "consumer loss must be retriable (non-fatal)")
+	case <-time.After(30 * time.Second):
+		t.Fatal("Subscribe kept blocking after its consumer was deleted")
+	}
+
+	// The re-subscribe — the client's reaction to the ended stream —
+	// recreates the durable and delivery resumes. (Offset "first" replays the
+	// retained backlog into the fresh durable, so drain until the new
+	// message arrives.)
+	out2 := make(chan *pb.Message, 4)
+	go p.Subscribe(subCtx, src, out2)
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m2")}))
+	for {
+		m2 := recv(t, out2)
+		require.Nil(t, p.Ack(ctx, m2.GetUuid()))
+		if string(m2.GetBody()) == "m2" {
+			break
+		}
+	}
+}
+
+// TestSubscribeRecoversAfterServerStateWipe: a broker restart that loses its
+// JetStream state (storage wipe, factory reset) does not sever a NATS client
+// the way it severs an AMQP client — the connection reconnects transparently
+// and the subscription keeps pulling a consumer that no longer exists. No
+// terminal error ever arrives on the consume path: pulls find no responder
+// and heartbeats go missing, indefinitely. The existence probe must notice
+// the consumer is gone and end the subscription (non-fatal), so the client's
+// re-subscribe rebuilds stream and consumer.
+func TestSubscribeRecoversAfterServerStateWipe(t *testing.T) {
+	s := runJetStreamServer(t)
+	port := s.Addr().(*net.TCPAddr).Port
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.wipe3", Subjects: []string{"k"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m1")}))
+
+	src := queueSource("events.wipe3.consumer", "events.wipe3", "k")
+	out := make(chan *pb.Message, 2)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan *pb.Error, 1)
+	go func() { done <- p.Subscribe(subCtx, src, out) }()
+	m := recv(t, out)
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+
+	// Restart the broker at the same address with an empty store. The client
+	// reconnects on its own; stream and consumer are gone server-side.
+	s.Shutdown()
+	s.WaitForShutdown()
+	runJetStreamServerAt(t, port)
+
+	select {
+	case perr := <-done:
+		require.NotNil(t, perr, "Subscribe must end with an error, not starve silently")
+		assert.False(t, perr.GetIsFatal(), "state loss must be retriable (non-fatal)")
+	case <-time.After(60 * time.Second):
+		t.Fatal("Subscribe kept blocking after the broker lost its JetStream state")
+	}
+
+	// The re-subscribe rebuilds the whole topology on the wiped broker and
+	// delivery resumes.
+	out2 := make(chan *pb.Message, 2)
+	go p.Subscribe(subCtx, src, out2)
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m2")}))
+	m2 := recv(t, out2)
+	assert.Equal(t, "m2", string(m2.GetBody()))
+	require.Nil(t, p.Ack(ctx, m2.GetUuid()))
 }
 
 func TestPrefetchMapsToMaxAckPending(t *testing.T) {

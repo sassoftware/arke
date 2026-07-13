@@ -411,6 +411,10 @@ func (p *natsjsProvider) Disconnect(ctx context.Context) {
 	if bd == nil {
 		return
 	}
+	// Mark the connection closed before stopping its consume contexts:
+	// stopping one wakes its Subscribe (Closed() fires), which reads the
+	// state to tell deliberate teardown from a consumer lost on the server.
+	bd.state.Store(provider.CLOSED)
 	for _, name := range bd.consumeContexts.GetList() {
 		if cc, ok := bd.consumeContexts.Get(name); ok {
 			cc.(jetstream.ConsumeContext).Stop()
@@ -419,7 +423,6 @@ func (p *natsjsProvider) Disconnect(ctx context.Context) {
 	if bd.nc != nil {
 		_ = bd.nc.Drain()
 	}
-	bd.state.Store(provider.CLOSED)
 	p.connections.Delete(clientID)
 	util.Logger.Debugf("natsjs: client %s disconnected", clientID)
 }
@@ -688,6 +691,46 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		return nil
 	}
 
+	// consumerLost carries the first authoritative sign that this
+	// subscription's server-side consumer no longer exists (deleted
+	// administratively, or expired after an outage longer than the ephemeral
+	// inactivity threshold). The final wait below turns it into a
+	// subscription-ending error so the client's re-subscribe recreates the
+	// consumer — without it the subscription would sit deaf forever, warning
+	// (or, after a terminal consume error, silently) while delivering
+	// nothing. RabbitMQ parity: a deleted queue closes its consumers'
+	// channel, and the re-subscribe re-declares it.
+	consumerName := cons.CachedInfo().Name
+	consumerLost := make(chan error, 1)
+	noteLost := func(err error) {
+		select {
+		case consumerLost <- err:
+		default:
+		}
+	}
+	// probeConsumer asks the server whether the consumer still exists. A
+	// consumer that vanished while no pull was pending (expiry during a long
+	// outage) never produces an authoritative error on the consume path —
+	// re-issued pulls just find no responder and heartbeats go missing,
+	// indefinitely — so those symptoms trigger this bounded, single-flight
+	// lookup instead. Only an explicit "not found" answer counts (for the
+	// consumer, or for the whole stream — a wiped store takes both): a
+	// timeout or network failure proves nothing about the consumer.
+	var probing atomic.Bool
+	probeConsumer := func() {
+		if bd.state.Load() != provider.CONNECTED || !probing.CompareAndSwap(false, true) {
+			return
+		}
+		go func() {
+			defer probing.Store(false)
+			pctx, pcancel := context.WithTimeout(context.WithoutCancel(ctx), ephemeralDeleteTimeout)
+			defer pcancel()
+			if _, perr := stream.Consumer(pctx, consumerName); errors.Is(perr, jetstream.ErrConsumerNotFound) ||
+				errors.Is(perr, jetstream.ErrStreamNotFound) {
+				noteLost(perr)
+			}
+		}()
+	}
 	consumeOpts := []jetstream.PullConsumeOpt{
 		// A short idle heartbeat plus an error handler keep a stalled delivery
 		// path from failing silently: if the server stops serving this
@@ -700,6 +743,14 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		jetstream.PullHeartbeat(defaultConsumeHeartbeat),
 		jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
 			util.Logger.Warn("natsjs: consume error on source {0}: {1}", source.GetName(), err.Error())
+			// The deleted/not-found errors are authoritative; anything else
+			// (missed heartbeats, pulls with no responder) is only a symptom
+			// that warrants checking.
+			if errors.Is(err, jetstream.ErrConsumerDeleted) || errors.Is(err, jetstream.ErrConsumerNotFound) {
+				noteLost(err)
+				return
+			}
+			probeConsumer()
 		}),
 	}
 	// Pull requests must carry the priority group exactly when the consumer
@@ -722,7 +773,7 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	}, consumeOpts...)
 	if cerr != nil {
 		if consCfg.Durable == "" {
-			deleteEphemeralConsumer(ctx, stream, cons.CachedInfo().Name)
+			deleteEphemeralConsumer(ctx, stream, consumerName)
 		}
 		return &pb.Error{Message: fmt.Sprintf("consume: %s", cerr.Error()), IsFatal: true}
 	}
@@ -741,14 +792,50 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		}
 		_ = bd.nc.FlushTimeout(ephemeralDeleteTimeout)
 		bd.consumeContexts.Delete(subKey)
-		releaseInFlight(bd, streamName, cons.CachedInfo().Name, consCfg.Durable != "")
+		releaseInFlight(bd, streamName, consumerName, consCfg.Durable != "")
 		if consCfg.Durable == "" {
-			deleteEphemeralConsumer(ctx, stream, cons.CachedInfo().Name)
+			deleteEphemeralConsumer(ctx, stream, consumerName)
 		}
 	}()
 
-	<-ctx.Done()
-	return nil
+	select {
+	case <-ctx.Done():
+		return nil
+	case lerr := <-consumerLost:
+		return consumerLostError(source, consumerName, lerr)
+	case <-cc.Closed():
+		// The consume machinery stopped on its own: the library treats a
+		// handful of consume errors as terminal ("consumer deleted" when the
+		// server removes the consumer under a pending pull) and silently
+		// stops the ConsumeContext. Blocking on ctx here regardless would
+		// leave a subscription that never delivers again. Closed() also
+		// fires for this connection's own teardown (Disconnect stops every
+		// consume context, Drain closes the subscriptions), which is not an
+		// error — the context or connection state says which case this is.
+		if ctx.Err() != nil || bd.state.Load() == provider.CLOSED {
+			return nil
+		}
+		select {
+		case lerr := <-consumerLost:
+			return consumerLostError(source, consumerName, lerr)
+		default:
+		}
+		return &pb.Error{Message: fmt.Sprintf(
+			"source %q: consuming stopped unexpectedly (consumer %s); re-subscribe to recreate the consumer",
+			source.GetName(), consumerName)}
+	}
+}
+
+// consumerLostError is the non-fatal error Subscribe ends with when the
+// server-side consumer disappeared: non-fatal so the client's re-subscribe
+// path runs Subscribe again, which recreates the consumer (and, after a
+// storage wipe, the stream). Matches the amqp091 connector, which ends a
+// subscription with a non-fatal error when the broker closes the channel of
+// a deleted queue.
+func consumerLostError(source *pb.Source, consumerName string, err error) *pb.Error {
+	return &pb.Error{Message: fmt.Sprintf(
+		"source %q: server-side consumer %s no longer exists (%s); re-subscribe to recreate it",
+		source.GetName(), consumerName, err.Error())}
 }
 
 // releaseInFlight drops a just-ended subscription's unresolved deliveries from

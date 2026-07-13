@@ -294,7 +294,7 @@ is intended as the primary disk guard.
 
 ## Operational resilience
 
-Four mechanisms harden the connector against a cold or busy broker. All are
+Five mechanisms harden the connector against a cold or busy broker. All are
 sized for a clustered (replicated) server, where creating topology also means
 forming a raft group per stream and per durable consumer:
 
@@ -325,6 +325,20 @@ forming a raft group per stream and per durable consumer:
   duplicate it), instead of failing every call until the client reconnects.
   A failed dead-letter publish likewise drops the entry so the retry that
   follows re-creates the DLQ stream.
+- **Consumer-loss recovery.** The same class of event can take a live
+  subscription's server-side consumer: deleted administratively, or expired
+  (ephemeral inactivity threshold) during an outage the client connection
+  survives. The client library either stops delivering silently — it treats
+  "consumer deleted" as terminal — or keeps pulling a consumer that no
+  longer answers, and RabbitMQ has no analogous state: a deleted queue
+  closes its consumers' channel. When the consume machinery stops on its
+  own, when an authoritative consumer-gone error arrives, or when a bounded
+  single-flight probe (triggered by consume errors such as missed
+  heartbeats or unanswered pulls, and trusted only for an explicit "not
+  found" answer) confirms the consumer is gone, `Subscribe` ends with a
+  non-fatal error. The client's re-subscribe then recreates the consumer —
+  and, after a storage wipe, the stream. A recreated durable starts from
+  its configured `Offset`, like a re-declared queue starts empty.
 
 ## Configuration
 
