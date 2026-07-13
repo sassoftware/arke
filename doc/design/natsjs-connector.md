@@ -307,8 +307,11 @@ forming a raft group per stream and per durable consumer:
   are collapsed provider-wide: when many clients (re)connect at once — a
   proxy restart, a mass reconnect after a broker outage — exactly one
   `CreateOrUpdateStream` per stream is in flight at a time, and concurrent
-  callers share its result. Failures are not cached, and success is still
-  memoized per connection, so a fresh connection re-asserts its topology.
+  callers share its result. Collapsing is scoped to the broker endpoint plus
+  the connection's credential identity, so distinct accounts on one server
+  (disjoint JetStream state and permissions) never share an outcome.
+  Failures are not cached, and success is still memoized per connection, so
+  a fresh connection re-asserts its topology.
 - **Consumer liveness.** Consumers run with a 5s idle heartbeat and a consume
   error handler. If the server stops serving a consumer's pulls (a broker
   restart, or a just-created consumer whose raft group is not yet serving),

@@ -815,6 +815,35 @@ func TestStreamRegistryFollowerHonorsContext(t *testing.T) {
 	close(release)
 }
 
+// TestStreamEnsureKeyScopedToCredentials: the registry must never coalesce
+// two connections that share a broker endpoint but authenticate as different
+// users — on a multi-account server those are different accounts with
+// disjoint JetStream state and permissions, so sharing one
+// CreateOrUpdateStream call would hand one account the other's outcome
+// (success in the wrong account, or a permission failure that is not its
+// own).
+func TestStreamEnsureKeyScopedToCredentials(t *testing.T) {
+	cfg := func(user string) *pb.ConnectionConfiguration {
+		c := &pb.ConnectionConfiguration{Host: "nats", Port: 4222}
+		if user != "" {
+			c.Credentials = &pb.Credentials{Username: user, Password: "s"}
+		}
+		return c
+	}
+	assert.Equal(t, streamEnsureKey(cfg("a"), "arke_x"), streamEnsureKey(cfg("a"), "arke_x"),
+		"same endpoint, account, and stream must coalesce")
+	assert.NotEqual(t, streamEnsureKey(cfg("a"), "arke_x"), streamEnsureKey(cfg("b"), "arke_x"),
+		"different accounts must not share an ensure result")
+	assert.NotEqual(t, streamEnsureKey(cfg(""), "arke_x"), streamEnsureKey(cfg("a"), "arke_x"),
+		"anonymous and authenticated connections must not share")
+	assert.NotEqual(t, streamEnsureKey(cfg("a"), "arke_x"), streamEnsureKey(cfg("a"), "arke_y"),
+		"different streams must not share")
+	other := cfg("a")
+	other.Port = 4223
+	assert.NotEqual(t, streamEnsureKey(cfg("a"), "arke_x"), streamEnsureKey(other, "arke_x"),
+		"different endpoints must not share")
+}
+
 func TestDeliverPolicyFor(t *testing.T) {
 	mk := func(off string) *pb.Source { return &pb.Source{Options: map[string]string{"Offset": off}} }
 	check := func(off string, wantPol jetstream.DeliverPolicy, wantSeq uint64) {

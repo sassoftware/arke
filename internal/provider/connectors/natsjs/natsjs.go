@@ -131,10 +131,11 @@ type natsjsProvider struct {
 // e.g. after a broker or proxy restart — every connection would otherwise
 // issue its own CreateOrUpdateStream for the same shared streams, piling
 // redundant load on the JetStream metadata leader exactly when it is busiest.
-// Entries are keyed by broker endpoint + stream name so distinct brokers never
-// share results. Only in-flight calls are tracked here; success is memoized
-// per connection (knownStreams), preserving the property that a fresh
-// connection re-asserts its topology.
+// Entries are keyed by broker endpoint + credential identity + stream name
+// (streamEnsureKey) so distinct brokers — or distinct accounts on one broker
+// — never share results. Only in-flight calls are tracked here; success is
+// memoized per connection (knownStreams), preserving the property that a
+// fresh connection re-asserts its topology.
 type streamRegistry struct {
 	mu       sync.Mutex
 	inflight map[string]*inflightEnsure
@@ -147,6 +148,21 @@ type inflightEnsure struct {
 
 func newStreamRegistry() *streamRegistry {
 	return &streamRegistry{inflight: make(map[string]*inflightEnsure)}
+}
+
+// streamEnsureKey identifies one stream-creation target for the registry:
+// broker endpoint, credential identity, stream name. The credential part is
+// what keeps two connections that share an endpoint but authenticate as
+// different users — on a multi-account server, different accounts with
+// disjoint JetStream state and permissions — from coalescing onto one
+// CreateOrUpdateStream, which would run under whichever account got there
+// first and hand its outcome (success in the wrong account, or that
+// account's permission failure) to the other. The stream name goes last and
+// can never contain '/' (see streamNameFor), so an embedded '/' in a
+// username cannot make two distinct targets read alike.
+func streamEnsureKey(cfg *pb.ConnectionConfiguration, streamName string) string {
+	return fmt.Sprintf("%s:%d/%s/%s",
+		cfg.GetHost(), cfg.GetPort(), cfg.GetCredentials().GetUsername(), streamName)
 }
 
 // ensure runs create once per key at a time; callers that arrive while a call
@@ -439,8 +455,7 @@ func (p *natsjsProvider) ensureStream(ctx context.Context, bd *natsBrokerDetails
 	if _, ok := bd.knownStreams.Get(streamName); ok {
 		return streamName, nil
 	}
-	key := fmt.Sprintf("%s:%d/%s", bd.connectionConfig.GetHost(), bd.connectionConfig.GetPort(), streamName)
-	err := p.streams.ensure(ctx, key, func() error {
+	err := p.streams.ensure(ctx, streamEnsureKey(bd.connectionConfig, streamName), func() error {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jsAPITimeout())
 		defer cancel()
 		_, err := bd.js.CreateOrUpdateStream(cctx, jetstream.StreamConfig{
