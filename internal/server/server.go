@@ -344,6 +344,9 @@ consumeLoop:
 						ackerr = &pb.Error{Message: "Uuid not set when acking/nacking"}
 					} else if ackmsg.GetNack() && ackmsg.GetRequeueDelay() > 0 { // delayed retry
 						ackerr = prov.Retry(ctx, source, ackmsg.GetUuid(), ackmsg.GetRequeueDelay())
+						if ackerr != nil {
+							ackerr = prov.Nack(ctx, ackmsg.GetUuid())
+						}
 					} else if ackmsg.GetNack() { // Nack
 						// dead letter if enabled, else Nack
 						opts := source.GetOptions()
