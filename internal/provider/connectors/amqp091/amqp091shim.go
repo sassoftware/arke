@@ -186,6 +186,8 @@ func (ch *amqp091Channel) Close() error {
 }
 
 func (ch *amqp091Channel) IsClosed() bool {
+	ch.channelLock.Lock()
+	defer ch.channelLock.Unlock()
 	return ch.channel.IsClosed()
 }
 
