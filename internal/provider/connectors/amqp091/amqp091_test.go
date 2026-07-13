@@ -3243,3 +3243,154 @@ func Test_QueueSubscribe_NotifyCloseChannelsAreBuffered(t *testing.T) {
 				"(AMQP library drops notifications on full or unbuffered channels;)")
 	}
 }
+
+// TestChannelNotifyCloseLoop_CancelError verifies that a message on cancelErrors
+// is forwarded to rec and the goroutine exits.
+func TestChannelNotifyCloseLoop_CancelError(t *testing.T) {
+	cancelErrors := make(chan string, 1)
+	closeErrors := make(chan *amqp.Error, 1)
+	rec := make(chan amqp091Error, 1)
+
+	cancelErrors <- "consumer-cancelled"
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		channelNotifyCloseLoop(cancelErrors, closeErrors, rec, func() bool { return false }, "test-client", 5*time.Second)
+	}()
+
+	select {
+	case err := <-rec:
+		assert.Equal(t, "consumer-cancelled", err.error.Reason)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for rec notification from cancelErrors")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("goroutine did not exit after forwarding cancel error")
+	}
+}
+
+// TestChannelNotifyCloseLoop_CloseError verifies that a message on closeErrors
+// is forwarded to rec and the goroutine exits.
+func TestChannelNotifyCloseLoop_CloseError(t *testing.T) {
+	cancelErrors := make(chan string, 1)
+	closeErrors := make(chan *amqp.Error, 1)
+	rec := make(chan amqp091Error, 1)
+
+	closeErrors <- &amqp.Error{Code: 404, Reason: "not-found"}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		channelNotifyCloseLoop(cancelErrors, closeErrors, rec, func() bool { return false }, "test-client", 5*time.Second)
+	}()
+
+	select {
+	case err := <-rec:
+		assert.Equal(t, 404, err.error.Code)
+		assert.Equal(t, "not-found", err.error.Reason)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for rec notification from closeErrors")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("goroutine did not exit after forwarding close error")
+	}
+}
+
+// TestChannelNotifyCloseLoop_RecSignal verifies that a send on rec (from the
+// subscribe side) causes the goroutine to exit.
+func TestChannelNotifyCloseLoop_RecSignal(t *testing.T) {
+	cancelErrors := make(chan string, 1)
+	closeErrors := make(chan *amqp.Error, 1)
+	rec := make(chan amqp091Error, 1)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		channelNotifyCloseLoop(cancelErrors, closeErrors, rec, func() bool { return false }, "test-client", 5*time.Second)
+	}()
+
+	// Simulate the subscribe function sending on rec.
+	rec <- amqp091Error{}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("goroutine did not exit after rec signal")
+	}
+}
+
+// TestChannelNotifyCloseLoop_TimerIsClosed verifies that when the fallback timer
+// fires and the channel is already closed, the goroutine exits without writing
+// to rec (the caller already knows the channel is gone).
+func TestChannelNotifyCloseLoop_TimerIsClosed(t *testing.T) {
+	cancelErrors := make(chan string, 1)
+	closeErrors := make(chan *amqp.Error, 1)
+	rec := make(chan amqp091Error, 1)
+
+	// isClosed returns true immediately, simulating a closed channel.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		channelNotifyCloseLoop(cancelErrors, closeErrors, rec, func() bool { return true }, "test-client", 20*time.Millisecond)
+	}()
+
+	select {
+	case <-done:
+		// goroutine exited — correct behaviour
+	case <-time.After(2 * time.Second):
+		t.Fatal("goroutine did not exit after timer fired with IsClosed=true")
+	}
+
+	// rec must remain empty: no spurious notification should have been sent.
+	assert.Empty(t, rec)
+}
+
+// TestChannelNotifyCloseLoop_TimerNotClosed verifies that when the fallback
+// timer fires but the channel is still open, the goroutine resets the timer and
+// continues waiting.  A subsequent close error should still be delivered.
+func TestChannelNotifyCloseLoop_TimerNotClosed(t *testing.T) {
+	cancelErrors := make(chan string, 1)
+	closeErrors := make(chan *amqp.Error, 1)
+	rec := make(chan amqp091Error, 1)
+
+	// First call to isClosed returns false (channel still open); second would
+	// return true, but in practice a closeError arrives first.
+	callCount := 0
+	isClosed := func() bool {
+		callCount++
+		return false
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		channelNotifyCloseLoop(cancelErrors, closeErrors, rec, isClosed, "test-client", 20*time.Millisecond)
+	}()
+
+	// Wait for at least one timer tick (isClosed returned false → loop
+	// continues), then inject a close error.
+	time.Sleep(60 * time.Millisecond)
+	closeErrors <- &amqp.Error{Code: 200, Reason: "normal-close"}
+
+	select {
+	case err := <-rec:
+		assert.Equal(t, 200, err.error.Code)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for close error after timer-not-closed path")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("goroutine did not exit after close error")
+	}
+
+	assert.GreaterOrEqual(t, callCount, 1, "isClosed should have been called at least once by the timer")
+}

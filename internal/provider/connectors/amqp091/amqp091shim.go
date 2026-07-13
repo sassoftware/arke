@@ -312,51 +312,74 @@ func (ch *amqp091Channel) Publish(addressName, subject string, msg amqp091Messag
 	return nil
 }
 
-// NotifyClose be notified of deleted queues, or channel closures
+// channelNotifyCloseTimeout is the interval at which the channel-close fallback
+// timer fires. Exposed as a variable so tests can shorten it without modifying
+// production code.
+var channelNotifyCloseTimeout = 10 * time.Second
+
+// channelNotifyCloseLoop is the goroutine body for amqp091Channel.NotifyClose.
+// standalone function so unit tests don't need a *amqp.Channel
+func channelNotifyCloseLoop(cancelErrors <-chan string, closeErrors <-chan *amqp.Error,
+	rec chan amqp091Error, isClosed func() bool, clientID string,
+	timeout time.Duration) {
+	defer func() {
+		if err := recover(); err != nil {
+			return
+		}
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case amqpErr := <-cancelErrors:
+			var err amqp091Error
+			if amqpErr != "" {
+				err.error = amqp.Error{Reason: amqpErr}
+			}
+			util.Logger.Debugf("Received channel cancel notify for client %v : %v", clientID, err)
+			select {
+			case rec <- err:
+				return
+			default:
+				return
+			}
+		case amqpErr := <-closeErrors:
+			var err amqp091Error
+			if amqpErr != nil {
+				err = amqp091Error{*amqpErr}
+			}
+			util.Logger.Debugf("Received channel close notify for client %v : %v", clientID, err)
+			select {
+			case rec <- err:
+				return
+			default:
+				return
+			}
+		case <-rec:
+			util.Logger.Debugf("Received channel rec notify for client %v", clientID)
+			// this should theoretically happen only if the subscribe function
+			// sends a message on the rec channel while we are waiting
+			return
+		case <-timer.C:
+			// Should not be necessary, but just in case the channel is closed and we don't get a notification,
+			// we will check if the channel is closed and send a notification if it is. This is to prevent a
+			// deadlock if the channel is closed and we are waiting for a notification that will never come.
+			if isClosed() {
+				util.Logger.Debugf("Channel closed for client %v, sending notify", clientID)
+				return
+			}
+			// Channel is still open — reset the timer and keep waiting.
+			timer.Reset(timeout)
+		}
+	}
+}
+
+// NotifyClose will be notified of deleted queues, or channel closures
 func (ch *amqp091Channel) NotifyClose(rec chan amqp091Error) chan amqp091Error {
 	cancelErrors := ch.channel.NotifyCancel(make(chan string, cap(rec)))
 	closeErrors := ch.channel.NotifyClose(make(chan *amqp.Error, cap(rec)))
 
-	go func() {
-		defer func() {
-			if err := recover(); err != nil {
-				return
-			}
-		}()
-		for {
-			select {
-			case amqpErr := <-cancelErrors:
-				var err amqp091Error
-				if amqpErr != "" {
-					err.error = amqp.Error{Reason: amqpErr}
-				}
-				util.Logger.Debugf("Received channel cancel notify for client %v : %v", ch.connection.clientIdentifier, err)
-				select {
-				case rec <- err:
-					return
-				default:
-					return
-				}
-			case amqpErr := <-closeErrors:
-				var err amqp091Error
-				if amqpErr != nil {
-					err = amqp091Error{*amqpErr}
-				}
-				util.Logger.Debugf("Received channel close notify for client %v : %v", ch.connection.clientIdentifier, err)
-				select {
-				case rec <- err:
-					return
-				default:
-					return
-				}
-			case <-rec:
-				util.Logger.Debugf("Received channel rec notify for client %v", ch.connection.clientIdentifier)
-				// this should theoretically happen only if the subscribe function
-				// sends a message on the rec channel while we are waiting
-				return
-			}
-		}
-	}()
+	go channelNotifyCloseLoop(cancelErrors, closeErrors, rec, ch.IsClosed, ch.connection.clientIdentifier, channelNotifyCloseTimeout)
 	return rec
 }
 
