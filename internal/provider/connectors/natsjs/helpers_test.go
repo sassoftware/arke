@@ -16,16 +16,16 @@ func TestStreamNameFor(t *testing.T) {
 	assert.Equal(t, "arke_events_audit", streamNameFor("events.audit"))
 	assert.Equal(t, "arke_", streamNameFor(""))
 
-	// Names whose tokens contain '_' (directly, or via sanitization of an
-	// illegal subject char) take the escaped "arke-" form so they cannot
-	// collide with a dotted sibling: under the plain dots-to-underscores
-	// replacement "a.b" and "a_b" would both read "arke_a_b" and clobber each
-	// other's stream.
+	// Names whose tokens contain '_' take the escaped "arke-" form so they
+	// cannot collide with a dotted sibling: under the plain
+	// dots-to-underscores replacement "a.b" and "a_b" would both read
+	// "arke_a_b" and clobber each other's stream.
 	assert.Equal(t, "arke_a_b", streamNameFor("a.b"))
 	assert.Equal(t, "arke-a_ub", streamNameFor("a_b"))
 	assert.Equal(t, "arke-a_ub_dc", streamNameFor("a_b.c"))
-	// sanitized chars ('*' -> '_') route through the escaped form too
-	assert.Equal(t, "arke-a_db_uc", streamNameFor("a.b*c"))
+	// subject-escaped chars ('*' -> "~a") stay in the plain name form — the
+	// escaped root contains '~', not '_', and '~' is JetStream-name-legal
+	assert.Equal(t, "arke_a_~b~ac", streamNameFor("a.b*c"))
 	// characters JetStream rejects in names but allows in subjects are escaped
 	assert.Equal(t, "arke-a_sb", streamNameFor("a/b"))
 	assert.Equal(t, "arke-a_bb", streamNameFor(`a\b`))
@@ -50,13 +50,74 @@ func TestStreamNameFor(t *testing.T) {
 func TestAddressRoot(t *testing.T) {
 	assert.Equal(t, "events.orders", addressRoot("events.orders"))
 	assert.Equal(t, "", addressRoot(""))
-	// empty tokens are kept as placeholders, not dropped, so "a..b" and "a.b"
-	// stay distinct roots
-	assert.Equal(t, "a._.b", addressRoot("a..b"))
-	// the reserved delimiter token is sanitized out of address names
-	assert.Equal(t, "a._.b", addressRoot("a.~.b"))
-	// illegal subject chars inside tokens are replaced
-	assert.Equal(t, "a.b_c", addressRoot("a.b*c"))
+	// empty tokens are kept as escaped placeholders, not dropped, so "a..b"
+	// and "a.b" stay distinct roots
+	assert.Equal(t, "a.~e.b", addressRoot("a..b"))
+	// the reserved delimiter token is escaped, never left bare
+	assert.Equal(t, "a.~~~.b", addressRoot("a.~.b"))
+	// illegal subject chars inside tokens are escaped
+	assert.Equal(t, "a.~b~ac", addressRoot("a.b*c"))
+	// tokens free of reserved characters — every conventional name — pass
+	// through unchanged, '_' included
+	assert.Equal(t, "a._.b-c", addressRoot("a._.b-c"))
+}
+
+// TestAddressRootInjective is the regression test for the root collapse: a
+// lossy replacement mapped "a.~.b", "a..b", "a. .b" and "a.*.b" all onto
+// "a._.b", so those distinct addresses shared one subject space and one
+// stream — cross-address message leakage plus mutual stream reconfiguration.
+func TestAddressRootInjective(t *testing.T) {
+	collisionProne := []string{
+		"a._.b", "a.~.b", "a..b", "a. .b", "a.\t.b", "a.*.b", "a.>.b",
+		"a.#.b", "a.~~.b", "a.~e.b", "a b", "a_b", "a*b", "a\rb",
+	}
+	seen := map[string]string{}
+	for _, addr := range collisionProne {
+		root := addressRoot(addr)
+		if prev, ok := seen[root]; ok {
+			t.Errorf("addressRoot collision: %q and %q both map to %q", prev, addr, root)
+		}
+		seen[root] = addr
+		for _, tok := range strings.Split(root, ".") {
+			assert.NotEqual(t, addressDelim, tok, "no root token may equal the delimiter (%q)", addr)
+			assert.NotContainsf(t, tok, " ", "root token must be subject-legal (%q)", addr)
+			assert.False(t, tok == "" || tok == "*" || tok == ">",
+				"root token must be a concrete subject token (%q -> %q)", addr, root)
+		}
+	}
+	// pairwise: distinct addresses -> disjoint stream subject spaces and
+	// distinct stream names (the composed guarantee the delimiter and the
+	// two escape layers exist to provide)
+	addrs := collisionProne
+	for i := range addrs {
+		for j := i + 1; j < len(addrs); j++ {
+			for _, p := range streamSubjectsFor(addrs[i]) {
+				for _, c := range streamSubjectsFor(addrs[j]) {
+					assert.False(t, subjectsOverlap(p, c),
+						"addresses %q and %q share subject space (%q vs %q)", addrs[i], addrs[j], p, c)
+				}
+			}
+			assert.NotEqual(t, streamNameFor(addrs[i]), streamNameFor(addrs[j]),
+				"addresses %q and %q share a stream name", addrs[i], addrs[j])
+		}
+	}
+}
+
+func TestEscapeTokenRoundTrip(t *testing.T) {
+	for _, tok := range []string{
+		"", "plain", "with_underscore", "~", "~~", "~e", "a b", "a\tb",
+		"a*b", "a>b", "a#b", "a~b", "#", "*", ">", " ", "mixed ~*># end",
+		"uni-cödé", "uni cödé",
+	} {
+		esc := escapeToken(tok)
+		assert.Equal(t, tok, unescapeToken(esc), "round trip of %q via %q", tok, esc)
+		assert.NotEqual(t, addressDelim, esc, "escaped token may not equal the delimiter")
+		assert.NotContainsf(t, esc, " ", "escaped token must be subject-legal (%q)", tok)
+	}
+	// tokens the connector never produced pass through the decoder unchanged
+	// (unknown escape codes are kept literally, best effort)
+	assert.Equal(t, "plain", unescapeToken("plain"))
+	assert.Equal(t, "x~q", unescapeToken("~x~q"))
 }
 
 func TestPublishSubjectFor(t *testing.T) {
@@ -70,16 +131,27 @@ func TestPublishSubjectFor(t *testing.T) {
 	assert.Equal(t, "~.a.b", publishSubjectFor("", "a.b"))
 	assert.Equal(t, "~", publishSubjectFor("", ""))
 	// wildcard chars are literal in a published routing key and NATS forbids
-	// them in publish subjects -> sanitized
-	assert.Equal(t, "events.orders.~.a._.b", publishSubjectFor("events.orders", "a.#.b"))
-	assert.Equal(t, "events.orders.~.a._", publishSubjectFor("events.orders", "a.*"))
+	// them in publish subjects -> escaped (injectively: "a.#.b" and "a._.b"
+	// must not merge onto one subject)
+	assert.Equal(t, "events.orders.~.a.~~h.b", publishSubjectFor("events.orders", "a.#.b"))
+	assert.Equal(t, "events.orders.~.a.~~a", publishSubjectFor("events.orders", "a.*"))
 	// empty tokens (double dot / trailing dot) are collapsed, not left invalid
 	assert.Equal(t, "events.orders.~.a.b", publishSubjectFor("events.orders", "a..b"))
 	assert.Equal(t, "events.orders.~.a.b", publishSubjectFor("events.orders", "a.b."))
 	assert.Equal(t, "events.orders.~", publishSubjectFor("events.orders", "."))
-	// illegal chars embedded in a literal token are replaced with '_'
-	assert.Equal(t, "events.orders.~.a_b.c_d", publishSubjectFor("events.orders", "a*b.c>d"))
-	assert.Equal(t, "events.orders.~.a_b", publishSubjectFor("events.orders", "a b"))
+	// illegal chars embedded in a literal token are escaped in place
+	assert.Equal(t, "events.orders.~.~a~ab.~c~gd", publishSubjectFor("events.orders", "a*b.c>d"))
+	assert.Equal(t, "events.orders.~.~a~wb", publishSubjectFor("events.orders", "a b"))
+	// distinct routing keys never merge: "a b" vs "a_b", "#" vs "_" vs "*"
+	distinct := []string{"a b", "a_b", "#", "_", "*", "~", "~e"}
+	seen := map[string]string{}
+	for _, rk := range distinct {
+		s := publishSubjectFor("events.orders", rk)
+		if prev, ok := seen[s]; ok {
+			t.Errorf("publish subject collision: %q and %q both map to %q", prev, rk, s)
+		}
+		seen[s] = rk
+	}
 }
 
 func TestRoutingKeyFromSubject(t *testing.T) {
@@ -92,6 +164,13 @@ func TestRoutingKeyFromSubject(t *testing.T) {
 	assert.Equal(t, "", routingKeyFromSubject("events.orders", "events.audit.~.x"))
 	// empty address: subjects live directly under the delimiter
 	assert.Equal(t, "a.b", routingKeyFromSubject("", "~.a.b"))
+	// escaped tokens decode back to the published key, so a dead-letter
+	// republish of the recovered key lands on the same tokens (round trip:
+	// rk -> subject -> rk for keys with reserved characters)
+	for _, rk := range []string{"a b.c", "x.~.y", "#", "a*b", "region.us"} {
+		subj := publishSubjectFor("events.orders", rk)
+		assert.Equal(t, rk, routingKeyFromSubject("events.orders", subj), "via %q", subj)
+	}
 }
 
 func TestStreamSubjectsFor(t *testing.T) {
@@ -206,9 +285,14 @@ func TestDirectFilterSubjectsAreExact(t *testing.T) {
 	}
 
 	assert.Equal(t,
-		[]string{"events.direct.~._"},
+		[]string{"events.direct.~.~~h"},
 		filterSubjectsFor(src("#")),
 		"direct bindings treat # as a literal routing key, not a wildcard")
+	// ...and the literal '#' binding must not also match published "_" or
+	// "*" (the lossy sanitizer merged all three onto "_")
+	assert.NotEqual(t, filterSubjectsFor(src("#"))[0], publishSubjectFor("events.direct", "_"))
+	assert.NotEqual(t, filterSubjectsFor(src("#"))[0], publishSubjectFor("events.direct", "*"))
+	assert.Equal(t, filterSubjectsFor(src("#"))[0], publishSubjectFor("events.direct", "#"))
 	assert.Equal(t,
 		[]string{"events.direct.~.created", "events.direct.~.region.us"},
 		filterSubjectsFor(src("created", "region.us", "created")))

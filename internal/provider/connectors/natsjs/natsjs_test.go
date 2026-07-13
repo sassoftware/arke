@@ -883,6 +883,70 @@ func TestUnderscoreAddressesCoexist(t *testing.T) {
 	}
 }
 
+// TestEscapedAddressesCoexist: address names "evt.~.b" and "evt._.b" are
+// distinct AMQP exchanges, but a lossy token sanitizer mapped both onto the
+// root "evt._.b" — one shared subject space and one shared stream, so each
+// address received the other's messages and each ensure reconfigured the
+// other's stream. Escaped tokens must keep them fully apart.
+func TestEscapedAddressesCoexist(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	tilde := &pb.Address{Name: "evt.~.b", Subjects: []string{"k"}}
+	scored := &pb.Address{Name: "evt._.b", Subjects: []string{"k"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: tilde, Body: []byte("to-tilde")}))
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: scored, Body: []byte("to-scored")}),
+		"publishing to evt._.b after evt.~.b must not land on its stream")
+
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	for addr, want := range map[string]string{"evt.~.b": "to-tilde", "evt._.b": "to-scored"} {
+		out := make(chan *pb.Message, 2)
+		go p.Subscribe(subCtx, queueSource(addr+".consumer", addr, "k"), out)
+		m := recv(t, out)
+		assert.Equal(t, want, string(m.GetBody()), "consumer on %q sees its own message", addr)
+		require.Nil(t, p.Ack(ctx, m.GetUuid()))
+		select {
+		case extra := <-out:
+			t.Fatalf("unexpected cross-address delivery on %q: %q", addr, extra.GetBody())
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+// TestEscapedRoutingKeysStayDistinct: routing keys "a b" and "a_b" are
+// distinct on a direct exchange, but the lossy sanitizer merged both onto
+// "a_b", so a queue bound to "a_b" also received every "a b" message.
+func TestEscapedRoutingKeysStayDistinct(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	pub := func(rk, body string) {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{
+			Address: &pb.Address{Name: "evt.direct", Subjects: []string{rk}},
+			Body:    []byte(body),
+		}))
+	}
+	pub("a b", "spaced")
+	pub("a_b", "scored")
+
+	src := queueSource("evt.direct.consumer", "evt.direct", "a_b")
+	src.Address.Type = pb.Address_QUEUE
+	out := make(chan *pb.Message, 2)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	m := recv(t, out)
+	assert.Equal(t, "scored", string(m.GetBody()), `binding "a_b" must match only routing key "a_b"`)
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	select {
+	case extra := <-out:
+		t.Fatalf("binding %q wrongly matched routing key %q message", "a_b", string(extra.GetBody()))
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
 // TestUnderscoreSourceNamesStayIndependent: two queues named "grp.a" and
 // "grp_a" bound to the same address are independent queues — each receives
 // every message — but a naive name mapping collapses them onto one durable,

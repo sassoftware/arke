@@ -62,30 +62,46 @@ relationship (`events.orders` and `events.orders.filtered`); without the
 delimiter their capture wildcards overlap, whichever stream is created first
 wins, and the other address fails every publish and subscribe with `subjects
 overlap with an existing stream` (err 10065). With it, the token after the
-shared prefix differs (`~` vs `filtered`) and sanitization guarantees no
-address token ever equals `~`, so any two distinct roots are disjoint. The
-delimiter also prevents cross-address message leakage — without it,
-publishing routing key `filtered.x` to `events.orders` is indistinguishable
-from publishing `x` to `events.orders.filtered`.
+shared prefix differs (`~` vs `filtered`) and token escaping (below)
+guarantees no address token ever equals `~`, so any two distinct roots are
+disjoint. The delimiter also prevents cross-address message leakage —
+without it, publishing routing key `filtered.x` to `events.orders` is
+indistinguishable from publishing `x` to `events.orders.filtered`.
 
-NATS subjects are stricter than AMQP routing keys, so each token is also
-sanitized. In binding patterns (`translateWildcards`): runs of consecutive
-`#` collapse into one first (they are equivalent in AMQP, and `#.#` must
-keep the zero-word match its trailing `#` provides), a non-terminal `#`
-becomes `*` (NATS `>` is tail-only), illegal characters (space, tab, `*`,
-`>`) inside a literal token become `_`, and empty tokens (from `a..b` or a
-trailing dot) are dropped. A pattern whose trailing `#` became `>` also gets
-the zero-word variant as a second filter subject (AMQP `#` matches zero or
-more words, NATS `>` one or more, so binding `a.#` must match routing key
-`a`). On the publish side routing keys are literal — AMQP gives `*`/`#`
-meaning only in bindings, and NATS forbids wildcard tokens in published
-subjects — so wildcard characters are sanitized to `_` like any other illegal
-character. In address names, empty tokens and tokens equal to `~` are
-replaced with `_` rather than dropped, so distinct names keep distinct roots.
-For `Address_QUEUE` (AMQP direct-exchange parity), binding subjects are exact
-routing keys rather than topic patterns: `#` and `*` are literals and are
-sanitized the same way a published routing key is sanitized, instead of
-matching as wildcards.
+NATS subjects are stricter than AMQP routing keys, so each address and
+routing-key token is escaped — injectively, so distinct AMQP names never
+merge onto one subject. A token free of reserved characters (`~`,
+whitespace, `*`, `>`, `#`) passes through unchanged; every conventional
+dotted name keeps its readable, historical form. Any other token takes an
+escaped form marked by a leading `~` — no plain token can start with `~`,
+since `~` is itself reserved — in which each reserved character becomes a
+two-character `~` code (`~~` for `~`, `~w` space, `~t` tab, `~a` `*`, `~g`
+`>`, `~h` `#`, plus codes for the remaining whitespace characters); an empty
+address token (from consecutive dots) becomes `~e`. The escaped form decodes
+unambiguously, which is what makes the mapping injective: a lossy
+replacement (`_` for every illegal character) would merge distinct addresses
+— `a.~.b`, `a..b`, `a.*.b` and `a._.b` — onto one root, and addresses that
+share a root share a stream: each receives the other's traffic and each
+ensure reconfigures the other's stream. The same escaping keeps distinct
+routing keys distinct, so a binding on `a_b` no longer also matches
+published keys `a b` or `a*b`.
+
+In binding patterns (`translateWildcards`): runs of consecutive `#` collapse
+into one first (they are equivalent in AMQP, and `#.#` must keep the
+zero-word match its trailing `#` provides), a non-terminal `#` becomes `*`
+(NATS `>` is tail-only), literal tokens are escaped exactly like published
+tokens (so a literal binding matches exactly the published keys it matches
+on RabbitMQ), and empty tokens (from `a..b` or a trailing dot) are dropped —
+on the publish side too, so both sides agree. A pattern whose trailing `#`
+became `>` also gets the zero-word variant as a second filter subject (AMQP
+`#` matches zero or more words, NATS `>` one or more, so binding `a.#` must
+match routing key `a`). On the publish side routing keys are literal — AMQP
+gives `*`/`#` meaning only in bindings, and NATS forbids wildcard tokens in
+published subjects — so wildcard characters are escaped like any other
+reserved character. For `Address_QUEUE` (AMQP direct-exchange parity),
+binding subjects are exact routing keys rather than topic patterns: `#` and
+`*` are escaped literals and match only themselves, instead of matching as
+wildcards.
 
 A redundant binding set — a wildcard binding alongside a specific key it
 already covers, such as `orders.#` with `orders.created` — is legal in AMQP,
@@ -108,7 +124,12 @@ that reads or writes JetStream subjects directly must use the same mapping,
 including the `~` delimiter. Deployments whose address or source names
 contain `_`, `/` or `\` predating the escaped name form had those names
 colliding or rejected outright, so the escaped form changes only names that
-were already broken.
+were already broken. Likewise, addresses and routing keys containing
+reserved subject characters (whitespace, `*`, `>`, `#`, `~`, consecutive
+dots) predating token escaping either collided with each other's `_`
+spellings or produced invalid subjects, so escaping changes the stored
+subjects only where the previous mapping was already wrong; names and keys
+made of conventional tokens map exactly as before.
 
 AMQP headers-exchange routing has no NATS subject equivalent. It is reproduced
 proxy-side in `evaluateFilters`: multiple `Filter`s are OR'd (each is a
