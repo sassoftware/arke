@@ -375,7 +375,10 @@ func (prov *amqp091provider) Retry(ctx context.Context, origSource *pb.Source, m
 
 			declareErr = prov.declareBinding(retrySource, bd, false)
 			if declareErr != nil {
-				util.Logger.Debugf("Failed to bind retry queue [%s] to exchange [%s]", retrySource.GetName(), retrySource.GetAddress().GetName())
+				msg := fmt.Sprintf("Failed to bind retry queue [%s] to exchange [%s]: %s", retrySource.GetName(), retrySource.GetAddress().GetName(), declareErr.Error())
+				util.Logger.Debug(msg)
+				retrySpan.RecordError(declareErr)
+				return &pb.Error{Message: msg}
 			}
 
 			retrySpan.AddEvent("retry binding created")
@@ -663,7 +666,15 @@ func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDeta
 		err = amqpChannel.ExchangeDeclare(address.GetName(), exchangeType, address.GetAutoDelete())
 		if err != nil {
 			util.Logger.Warn(i18n.ClientExchangeDeclareError, err.Error(), bd.ClientIdentifier)
-			return err
+			errMsg := err.Error()
+			// This code shouldn't be reached since we have already checked if
+			// the exchange exists, but if an exchange is already declared, but
+			// then redeclared with conflicting arguments, rabbit returns a
+			// precondition failed error (which we ignore)
+			if !(strings.Contains(errMsg, "PRECONDITION_FAILED") && strings.Contains(errMsg, "inequivalent arg")) {
+				fmt.Printf("Ignoring error declaring exchange %s: %s\n", address.GetName(), errMsg)
+				return err
+			}
 		}
 
 		bd.knownExchanges.Add(address.GetName(), true)

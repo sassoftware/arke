@@ -112,7 +112,6 @@ func ProduceMessagesUnaryWOConnect(ctx context.Context, c pb.ProducerClient, cnt
 		message.Body = []byte(fmt.Sprintf("%d of %d", i, cnt))
 		resp, err := c.PublishOne(ctx, message)
 		if err != nil {
-			// fmt.Printf("error calling pb.ProducerClient.PublishOne: %v\n", err)
 			return err
 		}
 		if resp != nil && !resp.GetSuccess() {

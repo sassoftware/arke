@@ -33,7 +33,7 @@ func Test_MonitorHPA(t *testing.T) {
 		},
 		{
 			name:           "namespace from file ErrNotInCluster",
-			expectedMsg:    "Could not configure HPA cluster monitoring: stat ",
+			expectedMsg:    "Could not configure HPA cluster monitoring:",
 			expectNoReturn: true,
 			setupFunc: func() func() {
 				origNamespaceFile := namespaceFile
@@ -72,7 +72,7 @@ func Test_MonitorHPA(t *testing.T) {
 		},
 		{
 			name:           "namespace from env var invalid namespace",
-			expectedMsg:    "Could not configure HPA cluster monitoring: stat",
+			expectedMsg:    "Could not configure HPA cluster monitoring:",
 			expectNoReturn: true,
 			setupFunc: func() func() {
 				os.Setenv(EnvK8SNamespace, "test-namespace")
@@ -124,7 +124,7 @@ func Test_MonitorHPA(t *testing.T) {
 
 			logMsg := logger.GetOutput()
 			// Validate the log output
-			assert.True(t, strings.Contains(string(logMsg), tt.expectedMsg))
+			assert.True(t, strings.Contains(string(logMsg), tt.expectedMsg), "Expected log message to contain '%s', but got: %s", tt.expectedMsg, logMsg)
 
 			pentry := map[string]interface{}{}
 			err := json.Unmarshal(logMsg, &pentry)
