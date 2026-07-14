@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -108,6 +109,45 @@ func TestConnectDisconnect(t *testing.T) {
 
 	p.Disconnect(ctx)
 	assert.False(t, p.ClientExists("test-client"))
+}
+
+// TestConcurrentConnectClosesRedundantLink: the gRPC server's "already
+// connected?" check is not atomic, so two Connect calls for one client
+// identifier can both reach the provider. Only one connection may survive; the
+// other's nats.Conn must be closed rather than orphaned to reconnect forever
+// (MaxReconnects(-1)). The proof is the server seeing exactly one live client.
+func TestConcurrentConnectClosesRedundantLink(t *testing.T) {
+	s := runJetStreamServer(t)
+	addr := s.Addr().(*net.TCPAddr)
+	p := NewNATSJetStreamProvider().(*natsjsProvider)
+	cfg := &pb.ConnectionConfiguration{
+		Host:       "127.0.0.1",
+		Port:       int32(addr.Port), //nolint:gosec // local server port fits int32
+		ClientName: "test",
+	}
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if perr := p.Connect(ctx, cfg, false); perr != nil {
+				t.Errorf("connect: %s", perr.GetMessage())
+			}
+		}()
+	}
+	wg.Wait()
+	require.True(t, p.WaitForConnect(ctx))
+
+	// Exactly one live server-side client connection: the redundant dial was
+	// closed. Drain can lag the close slightly, so let it settle.
+	require.Eventually(t, func() bool {
+		return s.NumClients() == 1
+	}, 5*time.Second, 50*time.Millisecond,
+		"a racing Connect must leave exactly one live NATS connection, not leak the loser")
+
+	p.Disconnect(ctx)
 }
 
 func TestSupportedSourceOptions(t *testing.T) {

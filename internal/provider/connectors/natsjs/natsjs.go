@@ -159,6 +159,12 @@ type natsjsProvider struct {
 	connections *util.ConcurrentMap
 	// streams collapses concurrent stream-creation calls across connections.
 	streams *streamRegistry
+	// connectMu serializes the check-then-insert in Connect. The gRPC server's
+	// own "already connected?" guard (brokerConnect) is not atomic, so two
+	// Connect calls for one client identifier can both reach the provider;
+	// without this, the second would overwrite the first's entry and orphan its
+	// nats.Conn, which reconnects forever (MaxReconnects(-1)).
+	connectMu sync.Mutex
 }
 
 // streamRegistry collapses concurrent ensureStream calls for the same stream
@@ -430,7 +436,20 @@ func (p *natsjsProvider) Connect(ctx context.Context, cfg *pb.ConnectionConfigur
 	if nc.IsConnected() {
 		bd.state.Store(provider.CONNECTED)
 	}
+	// Insert under connectMu so a racing Connect for the same client identifier
+	// cannot both install a connection: the loser closes its freshly-dialed
+	// nats.Conn instead of overwriting the winner's and leaking a background-
+	// reconnecting link. A client already has a working connection in that case,
+	// so this is a success (mirrors the server's "connected more than once").
+	p.connectMu.Lock()
+	if _, exists := p.connections.Get(clientID); exists {
+		p.connectMu.Unlock()
+		nc.Close()
+		util.Logger.Debugf("natsjs: client %s already connected; closing the redundant link", clientID)
+		return nil
+	}
 	p.connections.Add(clientID, bd)
+	p.connectMu.Unlock()
 	util.Logger.Debugf("natsjs: client %s connecting to %s", clientID, url)
 	return nil
 }
