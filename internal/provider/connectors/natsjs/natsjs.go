@@ -619,8 +619,9 @@ func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, 
 
 // Subscribe ensures topology, creates a consumer, and forwards deliveries to the
 // message channel until the context is cancelled. Blocks per the Provider
-// contract.
-func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out chan<- *pb.Message) *pb.Error {
+// contract. It mirrors amqp091's queueSubscribe: one linear setup path with
+// many small guards (hence the complexity nolint).
+func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out chan<- *pb.Message) *pb.Error { //nolint:gocognit,gocyclo
 	bd, err := p.getBrokerDetails(ctx)
 	if err != nil {
 		return &pb.Error{Message: err.Error(), IsFatal: true}
@@ -1158,21 +1159,21 @@ func (p *natsjsProvider) handleDelivery(ctx context.Context, bd *natsBrokerDetai
 	}
 }
 
-func (p *natsjsProvider) takeMessage(ctx context.Context, uuid string) (jetstream.Msg, *natsBrokerDetails, *pb.Error) {
+func (p *natsjsProvider) takeMessage(ctx context.Context, uuid string) (jetstream.Msg, *pb.Error) {
 	bd, err := p.getBrokerDetails(ctx)
 	if err != nil {
-		return nil, nil, &pb.Error{Message: err.Error()}
+		return nil, &pb.Error{Message: err.Error()}
 	}
 	mu, ok := bd.activeMessages.Get(uuid)
 	if !ok {
-		return nil, bd, &pb.Error{Message: fmt.Sprintf("no message with uuid %s", uuid)}
+		return nil, &pb.Error{Message: fmt.Sprintf("no message with uuid %s", uuid)}
 	}
 	bd.activeMessages.Delete(uuid)
-	return mu.(inflightMsg).msg, bd, nil
+	return mu.(inflightMsg).msg, nil
 }
 
 func (p *natsjsProvider) Ack(ctx context.Context, uuid string) *pb.Error {
-	m, _, perr := p.takeMessage(ctx, uuid)
+	m, perr := p.takeMessage(ctx, uuid)
 	if perr != nil {
 		return perr
 	}
@@ -1184,7 +1185,7 @@ func (p *natsjsProvider) Ack(ctx context.Context, uuid string) *pb.Error {
 
 // Nack negatively acknowledges for immediate redelivery (literal AMQP nack).
 func (p *natsjsProvider) Nack(ctx context.Context, uuid string) *pb.Error {
-	m, _, perr := p.takeMessage(ctx, uuid)
+	m, perr := p.takeMessage(ctx, uuid)
 	if perr != nil {
 		return perr
 	}
@@ -1199,7 +1200,7 @@ func (p *natsjsProvider) Nack(ctx context.Context, uuid string) *pb.Error {
 // retry-queue idiom; JetStream increments the delivery count for us, which
 // handleDelivery surfaces as x-retry-count.
 func (p *natsjsProvider) Retry(ctx context.Context, _ *pb.Source, uuid string, delay int32) *pb.Error {
-	m, _, perr := p.takeMessage(ctx, uuid)
+	m, perr := p.takeMessage(ctx, uuid)
 	if perr != nil {
 		return perr
 	}

@@ -79,7 +79,7 @@ var tokenUnescapes = map[byte]byte{
 
 // tokenEscapeTriggers are the characters that force a token into the escaped
 // form; a token free of them passes through literally.
-const tokenEscapeTriggers = "~ \t\r\n\f*>#"
+const tokenEscapeTriggers = "~ \t\r\n\f*>#" //nolint:gosec // G101 false positive: NATS subject reserved characters, not a credential
 
 // escapeToken maps one address or routing-key token onto a NATS-legal
 // subject token, injectively: distinct tokens never yield the same output. A

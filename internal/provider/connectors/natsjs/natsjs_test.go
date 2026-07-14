@@ -1142,7 +1142,7 @@ func TestPrefixAddressesCoexist(t *testing.T) {
 // both onto one JetStream stream, whose config each address's re-ensure then
 // flips to its own subjects — each breaking the other. The name mapping must
 // keep them on separate streams.
-func TestUnderscoreAddressesCoexist(t *testing.T) {
+func TestUnderscoreAddressesCoexist(t *testing.T) { //nolint:dupl // deliberately parallel to TestEscapedAddressesCoexist
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)
 
@@ -1173,7 +1173,7 @@ func TestUnderscoreAddressesCoexist(t *testing.T) {
 // root "evt._.b" — one shared subject space and one shared stream, so each
 // address received the other's messages and each ensure reconfigured the
 // other's stream. Escaped tokens must keep them fully apart.
-func TestEscapedAddressesCoexist(t *testing.T) {
+func TestEscapedAddressesCoexist(t *testing.T) { //nolint:dupl // deliberately parallel to TestUnderscoreAddressesCoexist
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)
 

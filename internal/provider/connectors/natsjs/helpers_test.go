@@ -302,7 +302,7 @@ func TestDirectFilterSubjectsAreExact(t *testing.T) {
 }
 
 func TestSubjectSubsumes(t *testing.T) {
-	cover := func(wide, narrow string) bool { return subjectSubsumes(wide, narrow) }
+	cover := subjectSubsumes
 
 	assert.True(t, cover("a.>", "a.b"))
 	assert.True(t, cover("a.>", "a.b.c"))
