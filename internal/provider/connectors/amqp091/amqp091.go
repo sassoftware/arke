@@ -642,6 +642,16 @@ func (bd *BrokerDetails) decrementStreamCount() {
 	bd.updateLastPubSubEvent()
 }
 
+func ignoreDeclareError(err error) bool {
+	if err == nil {
+		return true
+	}
+	if strings.Contains(err.Error(), "PRECONDITION_FAILED") && strings.Contains(err.Error(), "inequivalent arg") {
+		return true
+	}
+	return false
+}
+
 func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDetails) error {
 	// don't try to declare an exchange with amq. in the name
 	if strings.Contains(address.GetName(), "amq.") {
@@ -666,14 +676,9 @@ func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDeta
 		err = amqpChannel.ExchangeDeclare(address.GetName(), exchangeType, address.GetAutoDelete())
 		if err != nil {
 			util.Logger.Warn(i18n.ClientExchangeDeclareError, err.Error(), bd.ClientIdentifier)
-			errMsg := err.Error()
-			// This code shouldn't be reached since we have already checked if
-			// the exchange exists, but if an exchange is already declared, but
-			// then redeclared with conflicting arguments, rabbit returns a
-			// precondition failed error (which we ignore)
-			if !(strings.Contains(errMsg, "PRECONDITION_FAILED") && strings.Contains(errMsg, "inequivalent arg")) {
-				fmt.Printf("Ignoring error declaring exchange %s: %s\n", address.GetName(), errMsg)
-				return err
+			if ignoreDeclareError(err) {
+				util.Logger.Debugf("Ignoring error declaring exchange %s: %s", address.GetName(), err.Error())
+				return nil
 			}
 		}
 

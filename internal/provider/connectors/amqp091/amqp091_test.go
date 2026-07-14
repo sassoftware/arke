@@ -2251,6 +2251,24 @@ func Test_Publish_ErrorDeclareExchange(t *testing.T) {
 	sbmock.AssertExpectations(t)
 }
 
+func Test_IgnoreDeclareError(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{name: "nil error", err: nil, expected: true},
+		{name: "precondition failed error", err: errors.New("PRECONDITION_FAILED inequivalent arg"), expected: true},
+		{name: "other error", err: errors.New("some other error"), expected: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			result := ignoreDeclareError(c.err)
+			assert.Equal(t, c.expected, result)
+		})
+	}
+}
+
 func Test_PublishOne_ErrorDeclareExchange(t *testing.T) {
 	prov := NewAMQP091Provider()
 
