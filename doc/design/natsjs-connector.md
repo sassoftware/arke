@@ -436,7 +436,14 @@ amqp091 connector, so existing client sources validate unchanged:
   therefore scale with the subject-matched traffic, not the header-matched
   traffic. That is fine when header filters refine an already-narrow subject,
   but a high-volume address consumed almost entirely through header filters
-  should be remodeled onto routing keys (subjects) instead.
+  should be remodeled onto routing keys (subjects) instead. Because this
+  filtering is per consumer, competing subscribers of one durable must share
+  the same header filter: a RabbitMQ headers binding is queue-wide, but here
+  each consumer applies only its own filter, so a message the server hands to
+  the "wrong" subscriber would be dropped rather than reaching the one that
+  wanted it. A second live subscriber whose header filter differs from the
+  durable's is therefore rejected (subject filters, which the server enforces,
+  still update the shared consumer in place).
 - **Dead-letter is a proxy-side republish.** The DLQ is an ordinary stream
   fed by the connector; there is no advisory-driven re-consumption. A failed
   DLQ publish fails the dead-letter call — the message stays in flight and is
