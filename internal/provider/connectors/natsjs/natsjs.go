@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -117,9 +118,29 @@ type natsBrokerDetails struct {
 	// rates derives SourceStats publish/deliver rates from JetStream counters.
 	rates *rateTracker
 
+	// durableFilters guards competing consumers on one durable against applying
+	// different proxy-side header filters. Each consumer evaluates only its own
+	// Subscribe's filters (evaluateFilters in handleDelivery), so if two
+	// subscribers of one durable disagree, a message JetStream hands to the
+	// "wrong" one is filtered out and lost to the subscriber that wanted it.
+	// Keyed by durable name; the entry records the header-filter fingerprint the
+	// live subscribers share and how many hold it, so a conflicting declaration
+	// is rejected instead of silently dropping messages. Subject filters are
+	// excluded — they are the server's and update in place.
+	durableFilters  map[string]*durableFilterUse
+	durableFilterMu sync.Mutex
+
 	state    atomic.Uint32
 	consumed int64
 	produced int64
+}
+
+// durableFilterUse records the shared header-filter fingerprint of a durable's
+// live subscribers and a reference count so the entry lives exactly as long as
+// at least one subscriber holds it (see natsBrokerDetails.durableFilters).
+type durableFilterUse struct {
+	fingerprint string
+	refs        int
 }
 
 // inflightMsg is a delivered-but-unresolved message together with the
@@ -362,6 +383,7 @@ func (p *natsjsProvider) Connect(ctx context.Context, cfg *pb.ConnectionConfigur
 		knownStreams:     util.NewConcurrentMap(),
 		consumeContexts:  util.NewConcurrentMap(),
 		rates:            newRateTracker(),
+		durableFilters:   make(map[string]*durableFilterUse),
 	}
 	bd.state.Store(provider.CONNECTING)
 
@@ -680,6 +702,19 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		consCfg.InactiveThreshold = defaultInactiveThreshold
 	}
 
+	// Competing consumers on one durable each apply their own proxy-side header
+	// filter, so reject a second live subscriber whose header filter differs
+	// rather than silently dropping the messages JetStream routes to the
+	// "wrong" one (see natsBrokerDetails.durableFilters). Claimed before the
+	// consumer is touched and held for the life of this Subscribe; the defer
+	// covers every return path below.
+	if consCfg.Durable != "" {
+		if err := bd.claimDurableFilter(consCfg.Durable, headerFilterFingerprint(source.GetFilters())); err != nil {
+			return &pb.Error{Message: fmt.Sprintf("source %q: %s", source.GetName(), err.Error()), IsFatal: true}
+		}
+		defer bd.releaseDurableFilter(consCfg.Durable)
+	}
+
 	cons, cerr := stream.CreateOrUpdateConsumer(tctx, consCfg)
 	if cerr != nil && consCfg.Durable != "" && isStartPositionConflict(cerr) {
 		// A durable's start position (DeliverPolicy/OptStartSeq) is fixed at
@@ -907,6 +942,63 @@ func releaseInFlight(bd *natsBrokerDetails, subKey string, nak bool) {
 			util.Logger.Debugf("natsjs: nak of in-flight message %s at subscription end: %s", uuid, err.Error())
 		}
 	}
+}
+
+// claimDurableFilter registers this subscription's header-filter fingerprint
+// against a durable. The first subscriber sets the fingerprint; later
+// subscribers must match it (they share the server-side consumer, so their
+// proxy-side header filters must agree or one drops the other's messages —
+// see natsBrokerDetails.durableFilters). A mismatch is refused; a match takes
+// a reference. Every successful claim must be paired with releaseDurableFilter.
+func (bd *natsBrokerDetails) claimDurableFilter(durable, fingerprint string) error {
+	bd.durableFilterMu.Lock()
+	defer bd.durableFilterMu.Unlock()
+	if use, ok := bd.durableFilters[durable]; ok {
+		if use.fingerprint != fingerprint {
+			return fmt.Errorf(
+				"durable consumer %q already has a live subscriber with a different header filter; "+
+					"competing consumers on one durable must share their header filters", durable)
+		}
+		use.refs++
+		return nil
+	}
+	bd.durableFilters[durable] = &durableFilterUse{fingerprint: fingerprint, refs: 1}
+	return nil
+}
+
+// releaseDurableFilter drops one reference taken by claimDurableFilter,
+// forgetting the durable's fingerprint once the last live subscriber leaves so
+// a later re-subscribe may legitimately declare a new filter.
+func (bd *natsBrokerDetails) releaseDurableFilter(durable string) {
+	bd.durableFilterMu.Lock()
+	defer bd.durableFilterMu.Unlock()
+	if use, ok := bd.durableFilters[durable]; ok {
+		use.refs--
+		if use.refs <= 0 {
+			delete(bd.durableFilters, durable)
+		}
+	}
+}
+
+// headerFilterFingerprint canonically (order-independently) serializes a
+// source's proxy-side header filters so two subscriptions sharing a durable can
+// be compared. Only the header filters (evaluateFilters) are fingerprinted;
+// subject filters are the server's and update the shared consumer in place.
+func headerFilterFingerprint(filters []*pb.Filter) string {
+	if len(filters) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(filters))
+	for _, f := range filters {
+		matches := make([]string, 0, len(f.GetMatches()))
+		for _, m := range f.GetMatches() {
+			matches = append(matches, fmt.Sprintf("%q=%q", m.GetName(), m.GetValue()))
+		}
+		sort.Strings(matches)
+		parts = append(parts, fmt.Sprintf("t%d[%s]", f.GetType(), strings.Join(matches, ",")))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ";")
 }
 
 // deleteEphemeralConsumer removes an ephemeral consumer as soon as its

@@ -635,6 +635,70 @@ func TestHeaderFilterDropsNonMatching(t *testing.T) {
 	}
 }
 
+// TestConflictingHeaderFiltersOnDurableRejected: header filters are evaluated
+// proxy-side per consumer, so two competing subscribers of one durable that
+// disagree would each drop the other's messages (JetStream hands a message to
+// one of them, and if it does not match that one's filter it is acked and
+// lost). RabbitMQ header bindings are queue-wide and cannot diverge like this,
+// so reject the conflicting declaration instead of silently losing messages.
+// A second subscriber whose header filter matches is still allowed (competing
+// consumers with a shared filter are legitimate).
+func TestConflictingHeaderFiltersOnDurableRejected(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.hfconflict", Subjects: []string{"e"}}
+	mk := func(region string) *pb.Source {
+		src := queueSource("events.hfconflict.consumer", "events.hfconflict", "e")
+		src.Filters = []*pb.Filter{{
+			Type:    pb.Filter_ALL,
+			Matches: []*pb.Match{{Name: "region", Value: region}},
+		}}
+		return src
+	}
+
+	// Subscriber A (region=us) claims the durable and stays live; receiving a
+	// matching message proves it is past the claim.
+	outA := make(chan *pb.Message, 1)
+	ctxA, cancelA := context.WithCancel(ctx)
+	defer cancelA()
+	go p.Subscribe(ctxA, mk("us"), outA)
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: addr, Body: []byte("k"), Headers: map[string]string{"region": "us"}}))
+	require.Nil(t, p.Ack(ctx, recv(t, outA).GetUuid()))
+
+	// B tries to share the same durable with a different header filter: rejected.
+	perr := p.Subscribe(ctx, mk("eu"), make(chan *pb.Message, 1))
+	require.NotNil(t, perr, "a conflicting header filter on a shared durable must be rejected")
+	assert.True(t, perr.GetIsFatal(), "the rejection is a client misconfiguration, not retriable")
+	assert.Contains(t, perr.GetMessage(), "header filter")
+
+	// A matching second subscriber is accepted (does not reject).
+	outC := make(chan *pb.Message, 1)
+	ctxC, cancelC := context.WithCancel(ctx)
+	defer cancelC()
+	errC := make(chan *pb.Error, 1)
+	go func() { errC <- p.Subscribe(ctxC, mk("us"), outC) }()
+	select {
+	case perr := <-errC:
+		t.Fatalf("a matching header filter must not be rejected: %s", perr.GetMessage())
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// Once every subscriber of the durable ends, a fresh filter is allowed again
+	// (the fingerprint is forgotten when the last reference drops).
+	cancelA()
+	cancelC()
+	require.Eventually(t, func() bool {
+		return p.Subscribe(context.Background(), func() *pb.Source {
+			s := mk("eu")
+			s.DeclareOnly = true
+			return s
+		}(), nil) == nil
+	}, 5*time.Second, 50*time.Millisecond,
+		"a new filter must be accepted after the durable's subscribers all leave")
+}
+
 func TestDurableConsumerResumesBacklog(t *testing.T) {
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)
