@@ -3327,8 +3327,8 @@ func TestChannelNotifyCloseLoop_RecSignal(t *testing.T) {
 }
 
 // TestChannelNotifyCloseLoop_TimerIsClosed verifies that when the fallback timer
-// fires and the channel is already closed, the goroutine exits without writing
-// to rec (the caller already knows the channel is gone).
+// fires and the channel is already closed, the goroutine sends a notification on
+// rec so the caller is unblocked and knows the channel is gone.
 func TestChannelNotifyCloseLoop_TimerIsClosed(t *testing.T) {
 	cancelErrors := make(chan string, 1)
 	closeErrors := make(chan *amqp.Error, 1)
@@ -3348,8 +3348,11 @@ func TestChannelNotifyCloseLoop_TimerIsClosed(t *testing.T) {
 		t.Fatal("goroutine did not exit after timer fired with IsClosed=true")
 	}
 
-	// rec must remain empty: no spurious notification should have been sent.
-	assert.Empty(t, rec)
+	// rec must have received a notification so callers are not deadlocked.
+	if assert.Len(t, rec, 1, "expected a notification on rec when channel is detected closed via timer") {
+		err := <-rec
+		assert.Equal(t, "Channel closed for client test-client", err.error.Reason)
+	}
 }
 
 // TestChannelNotifyCloseLoop_TimerNotClosed verifies that when the fallback

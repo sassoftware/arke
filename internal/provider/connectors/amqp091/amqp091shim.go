@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -367,7 +368,12 @@ func channelNotifyCloseLoop(cancelErrors <-chan string, closeErrors <-chan *amqp
 			// we will check if the channel is closed and send a notification if it is. This is to prevent a
 			// deadlock if the channel is closed and we are waiting for a notification that will never come.
 			if isClosed() {
-				util.Logger.Debugf("Channel closed for client %v, sending notify", clientID)
+				msg := fmt.Sprintf("Channel closed for client %v", clientID)
+				util.Logger.Debugf("%v, sending notify", msg)
+				select {
+				case rec <- amqp091Error{error: amqp.Error{Reason: msg}}:
+				default:
+				}
 				return
 			}
 			// Channel is still open — reset the timer and keep waiting.
