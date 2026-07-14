@@ -1677,6 +1677,50 @@ func TestTeardownReleasesInFlightMessages(t *testing.T) {
 	}
 }
 
+// TestTeardownReleasesOnlyItsOwnInFlight: two subscriptions with the same
+// (durable) source name attach to one server-side consumer and compete, like
+// two service instances on a shared queue. When the idle sibling ends, teardown
+// must release only its own deliveries — not nak and drop the message the other
+// subscription is still holding, which would fail that subscription's ack and
+// redeliver the message as a duplicate.
+func TestTeardownReleasesOnlyItsOwnInFlight(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.siblings", Subjects: []string{"e"}}
+	src := queueSource("events.siblings.consumer", "events.siblings", "e")
+
+	// Subscription A takes one message and holds it unacked.
+	outA := make(chan *pb.Message, 1)
+	ctxA, cancelA := context.WithCancel(ctx)
+	defer cancelA()
+	errA := make(chan *pb.Error, 1)
+	go func() { errA <- p.Subscribe(ctxA, src, outA) }()
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("held")}))
+	held := recv(t, outA) // delivered to A, deliberately left unacked
+
+	// Subscription B joins the same durable as a competing sibling, then ends
+	// without ever receiving anything of its own.
+	outB := make(chan *pb.Message, 1)
+	ctxB, cancelB := context.WithCancel(ctx)
+	errB := make(chan *pb.Error, 1)
+	go func() { errB <- p.Subscribe(ctxB, src, outB) }()
+	time.Sleep(400 * time.Millisecond) // let B's pull reach the server
+	cancelB()
+	require.Nil(t, <-errB)
+
+	// A's held message must still resolve — the sibling teardown owned none of it.
+	require.Nil(t, p.Ack(ctx, held.GetUuid()),
+		"a sibling subscription's teardown must not release this subscription's in-flight message")
+
+	// And it must not have been redelivered (which a wrongful nak would cause).
+	select {
+	case dup := <-outA:
+		t.Fatalf("message redelivered after a sibling teardown: %q", dup.GetBody())
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 // TestRedundantBindingsCoexist: an AMQP binding set may be redundant — a
 // wildcard binding alongside a specific key it already covers — and RabbitMQ
 // routes each message to the queue once no matter how many bindings match.

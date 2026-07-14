@@ -97,8 +97,10 @@ type natsBrokerDetails struct {
 	clientIdentifier string
 	connectionConfig *pb.ConnectionConfiguration
 
-	// activeMessages maps an Arke message UUID -> the in-flight jetstream.Msg
-	// so a later Ack/Nack/Retry/DeadLetter RPC can resolve it.
+	// activeMessages maps an Arke message UUID -> an inflightMsg (the in-flight
+	// jetstream.Msg plus the subscription that delivered it) so a later
+	// Ack/Nack/Retry/DeadLetter RPC can resolve it and teardown can release
+	// only the closing subscription's own deliveries.
 	activeMessages *util.ConcurrentMap
 	// knownStreams memoizes streams we have already ensured.
 	knownStreams *util.ConcurrentMap
@@ -118,6 +120,18 @@ type natsBrokerDetails struct {
 	state    atomic.Uint32
 	consumed int64
 	produced int64
+}
+
+// inflightMsg is a delivered-but-unresolved message together with the
+// subscription (subKey) that delivered it. Recording the owner lets teardown
+// release only the closing subscription's deliveries even when several
+// subscriptions share one server-side consumer (competing consumers on a
+// durable, single-active standbys) — otherwise closing one subscription would
+// nak and drop a sibling's in-flight messages, failing the sibling's later
+// ack and duplicating the message.
+type inflightMsg struct {
+	msg    jetstream.Msg
+	subKey string
 }
 
 type natsjsProvider struct {
@@ -783,8 +797,13 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 				"(broker predates them, or an existing durable could not be updated); consumers will compete",
 			source.GetName())
 	}
+	// subKey tags this subscription: it keys its consume context and stamps the
+	// messages it delivers (inflightMsg), so teardown releases only its own
+	// deliveries even when it shares a server-side consumer with siblings.
+	// Generated before Consume so the delivery callback can capture it.
+	subKey := fmt.Sprintf("%s#%d", source.GetName(), bd.subscriptionSeq.Add(1))
 	cc, cerr := cons.Consume(func(m jetstream.Msg) {
-		p.handleDelivery(ctx, bd, source, m, out)
+		p.handleDelivery(ctx, bd, source, subKey, m, out)
 	}, consumeOpts...)
 	if cerr != nil {
 		if consCfg.Durable == "" {
@@ -792,7 +811,6 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		}
 		return &pb.Error{Message: fmt.Sprintf("consume: %s", cerr.Error()), IsFatal: true}
 	}
-	subKey := fmt.Sprintf("%s#%d", source.GetName(), bd.subscriptionSeq.Add(1))
 	bd.consumeContexts.Add(subKey, cc)
 	defer func() {
 		cc.Stop()
@@ -807,7 +825,7 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		}
 		_ = bd.nc.FlushTimeout(ephemeralDeleteTimeout)
 		bd.consumeContexts.Delete(subKey)
-		releaseInFlight(bd, streamName, consumerName, consCfg.Durable != "")
+		releaseInFlight(bd, subKey, consCfg.Durable != "")
 		if consCfg.Durable == "" {
 			deleteEphemeralConsumer(ctx, stream, consumerName)
 		}
@@ -854,33 +872,38 @@ func consumerLostError(source *pb.Source, consumerName string, err error) *pb.Er
 }
 
 // releaseInFlight drops a just-ended subscription's unresolved deliveries from
-// activeMessages. Acks travel on the consume stream that closed, so nothing
-// can resolve these uuids anymore; left alone they would sit in the map for
-// the life of the connection (a leak that also inflates the active-message
-// stat). Durable consumers additionally get a best-effort Nak so the messages
-// redeliver promptly — RabbitMQ requeues a closed channel's unacked deliveries
-// immediately, whereas an untouched JetStream delivery waits out the full
-// AckWait. Ephemeral consumers skip the Nak: the consumer is deleted on this
-// same teardown path, which discards its delivery state anyway. A message the
-// client resolves concurrently with teardown is deleted by whichever side gets
-// there first; the loser's ack/nak fails and is ignored (at-least-once either
-// way).
-func releaseInFlight(bd *natsBrokerDetails, streamName, consumerName string, nak bool) {
+// activeMessages, identified by the owning subKey. Acks travel on the consume
+// stream that closed, so nothing can resolve these uuids anymore; left alone
+// they would sit in the map for the life of the connection (a leak that also
+// inflates the active-message stat). Durable consumers additionally get a
+// best-effort Nak so the messages redeliver promptly — RabbitMQ requeues a
+// closed channel's unacked deliveries immediately, whereas an untouched
+// JetStream delivery waits out the full AckWait. Ephemeral consumers skip the
+// Nak: the consumer is deleted on this same teardown path, which discards its
+// delivery state anyway.
+//
+// Ownership is by subKey, not by the (stream, consumer) pair the delivery
+// carries: several subscriptions can share one server-side consumer (competing
+// consumers on a durable, single-active standbys), so filtering on the
+// consumer would release a sibling's still-in-flight messages — failing the
+// sibling's later ack and duplicating the message. A message the owner
+// resolves concurrently with teardown is deleted by whichever side gets there
+// first; the loser's ack/nak fails and is ignored (at-least-once either way).
+func releaseInFlight(bd *natsBrokerDetails, subKey string, nak bool) {
 	for _, uuid := range bd.activeMessages.GetList() {
 		mu, ok := bd.activeMessages.Get(uuid)
 		if !ok {
 			continue
 		}
-		m := mu.(jetstream.Msg)
-		md, err := m.Metadata()
-		if err != nil || md.Stream != streamName || md.Consumer != consumerName {
+		im := mu.(inflightMsg)
+		if im.subKey != subKey {
 			continue
 		}
 		bd.activeMessages.Delete(uuid)
 		if !nak {
 			continue
 		}
-		if err := m.Nak(); err != nil {
+		if err := im.msg.Nak(); err != nil {
 			util.Logger.Debugf("natsjs: nak of in-flight message %s at subscription end: %s", uuid, err.Error())
 		}
 	}
@@ -985,7 +1008,7 @@ func isStartPositionConflict(err error) bool {
 	return false
 }
 
-func (p *natsjsProvider) handleDelivery(ctx context.Context, bd *natsBrokerDetails, source *pb.Source, m jetstream.Msg, out chan<- *pb.Message) {
+func (p *natsjsProvider) handleDelivery(ctx context.Context, bd *natsBrokerDetails, source *pb.Source, subKey string, m jetstream.Msg, out chan<- *pb.Message) {
 	defer util.RecoverPanic()
 
 	headers := natsToPbHeader(m.Headers())
@@ -1008,7 +1031,7 @@ func (p *natsjsProvider) handleDelivery(ctx context.Context, bd *natsBrokerDetai
 	}
 
 	uuid := util.GenUUID()
-	bd.activeMessages.Add(uuid, m)
+	bd.activeMessages.Add(uuid, inflightMsg{msg: m, subKey: subKey})
 	pbmsg := &pb.Message{Uuid: uuid, Headers: headers, Body: m.Data()}
 
 	select {
@@ -1034,7 +1057,7 @@ func (p *natsjsProvider) takeMessage(ctx context.Context, uuid string) (jetstrea
 		return nil, bd, &pb.Error{Message: fmt.Sprintf("no message with uuid %s", uuid)}
 	}
 	bd.activeMessages.Delete(uuid)
-	return mu.(jetstream.Msg), bd, nil
+	return mu.(inflightMsg).msg, bd, nil
 }
 
 func (p *natsjsProvider) Ack(ctx context.Context, uuid string) *pb.Error {
@@ -1100,7 +1123,7 @@ func (p *natsjsProvider) DeadLetter(ctx context.Context, source *pb.Source, uuid
 	if !ok {
 		return &pb.Error{Message: fmt.Sprintf("no message with uuid %s", uuid)}
 	}
-	m := mu.(jetstream.Msg)
+	m := mu.(inflightMsg).msg
 	opts := source.GetOptions()
 	dla, hasDLA := opts["DeadLetterAddress"]
 	if !hasDLA {
