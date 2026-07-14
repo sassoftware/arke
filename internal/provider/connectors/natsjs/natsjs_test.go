@@ -346,6 +346,49 @@ func TestDeadLetterEmptyAddressKeepsMessage(t *testing.T) {
 	require.Nil(t, p.Ack(ctx, again.GetUuid()))
 }
 
+// TestDeadLetterFailedTermKeepsMessageResolvable: if the DLQ copy is stored but
+// Term fails, DeadLetter must leave the active-message entry in place. The
+// server resolves its fallback nack (server.go, on a DeadLetter error) by
+// uuid, so deleting the entry before Term succeeds would make that nack a
+// no-op and strand the original ack-pending until AckWait, instead of
+// redelivering it promptly.
+func TestDeadLetterFailedTermKeepsMessageResolvable(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.dlterm", Subjects: []string{"job"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("poison")}))
+
+	out := make(chan *pb.Message, 1)
+	src := queueSource("events.dlterm.consumer", "events.dlterm", "job")
+	src.Options["DeadLetterAddress"] = "events.dlterm.dlq"
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	m := recv(t, out)
+
+	// Force Term to fail without breaking the DLQ publish: ack the underlying
+	// message directly (marking it already-acked), so DeadLetter's DLQ publish
+	// still lands but its subsequent Term returns ErrMsgAlreadyAckd.
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	mu, ok := bd.activeMessages.Get(m.GetUuid())
+	require.True(t, ok)
+	require.NoError(t, mu.(inflightMsg).msg.Ack())
+
+	perr := p.DeadLetter(ctx, src, m.GetUuid())
+	require.NotNil(t, perr, "DeadLetter must surface the Term failure")
+
+	// The DLQ copy was stored...
+	dlqStats := p.SourceStats(ctx, &pb.Source{Name: "x", Address: &pb.Address{Name: "events.dlterm.dlq"}})
+	assert.Equal(t, int64(1), dlqStats.GetMessageCount(), "the DLQ copy must still have been published")
+
+	// ...but the original stays resolvable so the server's fallback nack lands.
+	_, stillThere := bd.activeMessages.Get(m.GetUuid())
+	assert.True(t, stillThere,
+		"a failed Term must not remove the active-message entry the fallback nack needs")
+}
+
 // TestPrefetchMapsToMaxAckPending: a positive PrefetchCount becomes the
 // consumer's MaxAckPending. A prefetch of 0 is the AMQP "unlimited"
 // convention — the amqp091 connector honors it by leaving the channel

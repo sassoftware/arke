@@ -1277,10 +1277,15 @@ func (p *natsjsProvider) DeadLetter(ctx context.Context, source *pb.Source, uuid
 			uuid, dlqMsg.Subject, perr.Error())
 		return &pb.Error{Message: fmt.Sprintf("dead-letter publish: %s", perr.Error())}
 	}
-	bd.activeMessages.Delete(uuid)
+	// Term only after the DLQ copy is safely stored, and drop the active-message
+	// entry only after Term succeeds: if Term fails, DeadLetter returns an error
+	// and the server falls back to nacking this uuid (server.go), which can only
+	// resolve while the entry is still present. Deleting first would strand the
+	// original ack-pending until AckWait instead of redelivering promptly.
 	if err := m.Term(); err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
+	bd.activeMessages.Delete(uuid)
 	return nil
 }
 
