@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,6 +41,18 @@ const providerName = "natsjs"
 // the connector synthesizes it from JetStream's delivery count — JetStream has no
 // x-death equivalent.
 const retryCountHeaderName = "x-retry-count"
+
+// Error strings a client may match on, so they have to read identically
+// whichever connector answers. Both take amqp091's wording: noMessageError is
+// what it returns for an ack, nack, or dead-letter naming a message it does
+// not hold, and offsetNotFoundError is the RabbitMQ stream client's answer
+// when a stream has no offset to report, which its SourceStats passes through.
+const (
+	noMessageError          = "No message with uuid %s"
+	offsetNotFoundError     = "Offset not found"
+	unsupportedConfirmError = "Unsupported: Publish does not support publish confirmation"
+	queueDedupError         = "Message deduplication is not supported by Queue types"
+)
 
 const (
 	// defaultAckWait is how long the server waits for an ack before
@@ -153,6 +166,11 @@ type durableFilterUse struct {
 type inflightMsg struct {
 	msg    jetstream.Msg
 	subKey string
+	// redeliverOnNack inverts Nack's terminate-by-default behaviour for this
+	// message. It is set only by a failed DeadLetter, whose caller answers the
+	// error with a nack that has to put the message back for another
+	// dead-letter attempt rather than destroy it. See Nack.
+	redeliverOnNack bool
 }
 
 type natsjsProvider struct {
@@ -165,6 +183,9 @@ type natsjsProvider struct {
 	// without this, the second would overwrite the first's entry and orphan its
 	// nats.Conn, which reconnects forever (MaxReconnects(-1)).
 	connectMu sync.Mutex
+	// bindMu serializes the read-modify-write of an address's
+	// address-to-address binding set. See ensureStreamFor.
+	bindMu sync.Mutex
 }
 
 // streamRegistry collapses concurrent ensureStream calls for the same stream
@@ -505,17 +526,41 @@ func (p *natsjsProvider) Disconnect(ctx context.Context) {
 // (jsAPITimeout) and is detached from the triggering caller's cancellation:
 // the stream is shared topology and other callers may be waiting on the same
 // result.
+// ensureStream asserts the stream for a bare address name — one with no
+// address-to-address binding to declare. See ensureStreamFor.
 func (p *natsjsProvider) ensureStream(ctx context.Context, bd *natsBrokerDetails, addressName string) (string, error) {
-	streamName := streamNameFor(addressName)
-	if _, ok := bd.knownStreams.Get(streamName); ok {
-		return streamName, nil
+	return p.ensureStreamFor(ctx, bd, &pb.Address{Name: addressName})
+}
+
+// ensureStreamFor asserts the stream backing an address, including the
+// address-to-address binding its ParentAddress declares, if any.
+//
+// A binding from a parent address is a routing rule on a broker that routes;
+// here, where the stream *is* the storage, the equivalent is to source the
+// bound subjects out of the parent's stream into this one. The sourced copies
+// keep the subject they were published under (no subject transform), so a
+// message routed in from the parent is indistinguishable to a consumer from
+// one published to this address directly, and only the parent's stream listens
+// on the parent's subjects — no two streams ever claim the same subject space.
+func (p *natsjsProvider) ensureStreamFor(ctx context.Context, bd *natsBrokerDetails, addr *pb.Address) (string, error) {
+	streamName := streamNameFor(addr.GetName())
+	bindings := parentBindingSubjects(addr)
+	// The per-connection memo only remembers that the stream exists, which is
+	// all an unbound address needs. A binding set is per-address state that
+	// another subscriber may have extended since, so an address with a parent
+	// re-asserts it every time; the assertion is idempotent, and addresses
+	// with parents are rare enough for the extra round-trip not to matter.
+	if len(bindings) == 0 {
+		if _, ok := bd.knownStreams.Get(streamName); ok {
+			return streamName, nil
+		}
 	}
-	err := p.streams.ensure(ctx, streamEnsureKey(bd.connectionConfig, streamName), func() error {
+	build := func() error {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jsAPITimeout())
 		defer cancel()
-		_, err := bd.js.CreateOrUpdateStream(cctx, jetstream.StreamConfig{
+		cfg := jetstream.StreamConfig{
 			Name:       streamName,
-			Subjects:   streamSubjectsFor(addressName),
+			Subjects:   streamSubjectsFor(addr.GetName()),
 			Storage:    jetstream.FileStorage,
 			Retention:  jetstream.LimitsPolicy,
 			Duplicates: defaultDedupWindow,
@@ -529,14 +574,82 @@ func (p *natsjsProvider) ensureStream(ctx context.Context, bd *natsBrokerDetails
 			// streams created before the limits existed. See natsjs-connector.md.
 			MaxAge:   streamMaxAge(),
 			MaxBytes: streamMaxBytes(),
-		})
+		}
+		if len(bindings) > 0 {
+			parentStream, perr := p.ensureStream(cctx, bd, addr.GetParentAddress().GetName())
+			if perr != nil {
+				return fmt.Errorf("ensure parent address stream: %w", perr)
+			}
+			sources, serr := p.boundSources(cctx, bd, streamName, parentStream, bindings)
+			if serr != nil {
+				return serr
+			}
+			cfg.Sources = sources
+		}
+		_, err := bd.js.CreateOrUpdateStream(cctx, cfg)
 		return err
-	})
+	}
+	var err error
+	if len(bindings) > 0 {
+		// boundSources reads the current binding set to add to it, so the
+		// read-modify-write has to be serialized or a concurrent subscriber
+		// declaring a different binding would be overwritten. The streams
+		// registry cannot do this job: it *collapses* concurrent callers, which
+		// is right when they all want the same stream but would silently drop
+		// one of two different binding sets.
+		p.bindMu.Lock()
+		err = build()
+		p.bindMu.Unlock()
+	} else {
+		err = p.streams.ensure(ctx, streamEnsureKey(bd.connectionConfig, streamName), build)
+	}
 	if err != nil {
 		return "", err
 	}
 	bd.knownStreams.Add(streamName, true)
 	return streamName, nil
+}
+
+// boundSources merges bindings into the stream's existing source set, so a
+// second address-to-address binding adds to the first rather than replacing
+// it. Bindings accumulate the same way on RabbitMQ, where declaring one never
+// removes another; nothing here unbinds, so a binding outlives the
+// subscription that declared it, exactly as an AMQP exchange-to-exchange
+// binding outlives the client that bound it.
+func (p *natsjsProvider) boundSources(ctx context.Context, bd *natsBrokerDetails,
+	streamName, parentStream string, bindings []string) ([]*jetstream.StreamSource, error) {
+	sources := []*jetstream.StreamSource{}
+	if st, err := bd.js.Stream(ctx, streamName); err == nil {
+		if info, ierr := st.Info(ctx); ierr == nil {
+			sources = info.Config.Sources
+		}
+	} else if !errors.Is(err, jetstream.ErrStreamNotFound) {
+		return nil, fmt.Errorf("read existing bindings: %w", err)
+	}
+	var from *jetstream.StreamSource
+	for _, s := range sources {
+		if s.Name == parentStream {
+			from = s
+			break
+		}
+	}
+	if from == nil {
+		from = &jetstream.StreamSource{Name: parentStream}
+		sources = append(sources, from)
+	}
+	for _, subject := range bindings {
+		if slices.ContainsFunc(from.SubjectTransforms, func(t jetstream.SubjectTransformConfig) bool {
+			return t.Source == subject
+		}) {
+			continue
+		}
+		// Destination == Source: the copy keeps the subject it was published
+		// under, which is what lets one consumer filter select both the
+		// messages routed in from the parent and those published here directly.
+		from.SubjectTransforms = append(from.SubjectTransforms,
+			jetstream.SubjectTransformConfig{Source: subject, Destination: subject})
+	}
+	return sources, nil
 }
 
 func firstSubject(addr *pb.Address) string {
@@ -563,6 +676,17 @@ func (p *natsjsProvider) Publish(ctx context.Context, in <-chan *pb.Message, err
 			// The server blocks on <-errChan for every message it hands the
 			// provider (server.go: `mc <- msg` then `pubErr := <-ec`), so we
 			// must always reply exactly once — nil on success.
+			if msg.GetConfirm() {
+				// The streaming publish is the fire-and-forget path; a client
+				// that wants a broker confirmation calls PublishOne, which
+				// returns one. amqp091 refuses the combination and so does
+				// this: a JetStream publish is acknowledged either way, so
+				// quietly accepting Confirm here would leave a client believing
+				// the option means the same thing on both brokers when only one
+				// of them honours it.
+				errChan <- &pb.Error{Message: unsupportedConfirmError}
+				continue
+			}
 			errChan <- p.publishMsg(ctx, bd, msg)
 		}
 	}
@@ -578,7 +702,7 @@ func (p *natsjsProvider) PublishOne(ctx context.Context, msg *pb.Message) *pb.Er
 
 func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, msg *pb.Message) *pb.Error {
 	addr := msg.GetAddress()
-	streamName, err := p.ensureStream(ctx, bd, addr.GetName())
+	streamName, err := p.ensureStreamFor(ctx, bd, addr)
 	if err != nil {
 		return &pb.Error{Message: fmt.Sprintf("ensure stream: %s", err.Error())}
 	}
@@ -589,6 +713,15 @@ func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, 
 	}
 	var pubOpts []jetstream.PublishOpt
 	// publish_id + publisher_name -> Nats-Msg-Id (dedup within the stream window).
+	if msg.GetPublishId() > 0 && addr.GetType() == pb.Address_QUEUE {
+		// JetStream would happily deduplicate this, since dedup here is a
+		// property of the stream rather than of the address type. Refusing it
+		// anyway keeps the option meaning one thing across brokers: amqp091
+		// cannot offer dedup on a queue address (RabbitMQ dedup comes from
+		// streams), so a client allowed to set it here would be writing code
+		// that silently loses its deduplication on RabbitMQ.
+		return &pb.Error{Message: queueDedupError}
+	}
 	if msg.GetPublishId() > 0 && msg.GetPublisherName() == "" {
 		return &pb.Error{Message: "PublisherName not set on message, PublisherName is required when PublishID is set"}
 	}
@@ -606,7 +739,7 @@ func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, 
 		// retry once; the first attempt was not stored (no stream answered),
 		// so the retry cannot duplicate it.
 		bd.knownStreams.Delete(streamName)
-		if _, rerr := p.ensureStream(ctx, bd, addr.GetName()); rerr == nil {
+		if _, rerr := p.ensureStreamFor(ctx, bd, addr); rerr == nil {
 			_, perr = bd.js.PublishMsg(ctx, nmsg, pubOpts...)
 		}
 	}
@@ -646,8 +779,8 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 			IsFatal: true,
 		}
 	}
-	addr := source.GetAddress().GetName()
-	streamName, serr := p.ensureStream(ctx, bd, addr)
+	addr := source.GetAddress()
+	streamName, serr := p.ensureStreamFor(ctx, bd, addr)
 	if serr != nil {
 		return &pb.Error{Message: fmt.Sprintf("ensure stream: %s", serr.Error()), IsFatal: true}
 	}
@@ -664,7 +797,7 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		// entry and re-assert the stream instead of failing the subscribe until
 		// the client reconnects.
 		bd.knownStreams.Delete(streamName)
-		if _, rerr := p.ensureStream(ctx, bd, addr); rerr == nil {
+		if _, rerr := p.ensureStreamFor(ctx, bd, addr); rerr == nil {
 			stream, serr = bd.js.Stream(tctx, streamName)
 		}
 	}
@@ -1064,12 +1197,14 @@ func unappliedSourceOptions(source *pb.Source) []string {
 // messages published after the consumer is created; an absolute number ->
 // start at that stream sequence.
 //
-// NOTE: numeric offsets are JetStream stream sequence numbers (as reported by
-// SourceStats), which are 1-based and not portable across brokers. Sequence 0
-// therefore means "from the beginning" and maps to DeliverAll rather than an
-// invalid start sequence. An unrecognized offset is an error, like
-// toStreamOffset: starting a consumer at a silently different position than
-// the one it asked for loses or replays data.
+// NOTE: a numeric offset is an offset in the Arke/RabbitMQ-Streams sense —
+// 0 names the first message in the log — not a raw JetStream sequence, so it
+// round-trips through SourceStats (see offsetOf/seqOf). It still is not
+// portable *across* brokers: offset 7 names the eighth message of whichever
+// log is being read, and two brokers' logs hold different messages. An
+// unrecognized offset is an error, like toStreamOffset: starting a consumer at
+// a silently different position than the one it asked for loses or replays
+// data.
 func deliverPolicyFor(source *pb.Source) (jetstream.DeliverPolicy, uint64, error) {
 	off := source.GetOptions()["Offset"]
 	switch strings.ToLower(off) {
@@ -1080,11 +1215,11 @@ func deliverPolicyFor(source *pb.Source) (jetstream.DeliverPolicy, uint64, error
 	case "next", "":
 		return jetstream.DeliverNewPolicy, 0, nil
 	default:
-		if seq, err := strconv.ParseUint(strings.TrimSpace(off), 10, 64); err == nil {
-			if seq == 0 {
+		if offset, err := strconv.ParseUint(strings.TrimSpace(off), 10, 64); err == nil {
+			if offset == 0 {
 				return jetstream.DeliverAllPolicy, 0, nil
 			}
-			return jetstream.DeliverByStartSequencePolicy, seq, nil
+			return jetstream.DeliverByStartSequencePolicy, seqOf(offset), nil
 		}
 		return jetstream.DeliverNewPolicy, 0, fmt.Errorf(
 			"invalid offset: %q (expected first, continue, last, next, or a numeric stream sequence)", off)
@@ -1166,10 +1301,40 @@ func (p *natsjsProvider) takeMessage(ctx context.Context, uuid string) (jetstrea
 	}
 	mu, ok := bd.activeMessages.Get(uuid)
 	if !ok {
-		return nil, &pb.Error{Message: fmt.Sprintf("no message with uuid %s", uuid)}
+		return nil, &pb.Error{Message: fmt.Sprintf(noMessageError, uuid)}
 	}
 	bd.activeMessages.Delete(uuid)
 	return mu.(inflightMsg).msg, nil
+}
+
+// takeMessageForNack is takeMessage plus the message's redeliverOnNack flag,
+// which only Nack needs.
+func (p *natsjsProvider) takeMessageForNack(ctx context.Context, uuid string) (jetstream.Msg, bool, *pb.Error) {
+	bd, err := p.getBrokerDetails(ctx)
+	if err != nil {
+		return nil, false, &pb.Error{Message: err.Error()}
+	}
+	mu, ok := bd.activeMessages.Get(uuid)
+	if !ok {
+		return nil, false, &pb.Error{Message: fmt.Sprintf(noMessageError, uuid)}
+	}
+	bd.activeMessages.Delete(uuid)
+	im := mu.(inflightMsg)
+	return im.msg, im.redeliverOnNack, nil
+}
+
+// markForRedelivery records that a nack of this message must put it back
+// rather than terminate it. Called on every path where DeadLetter gives up
+// with the message still in flight: the error it returns makes the server nack
+// the same uuid, and that nack is the retry, not a rejection.
+func markForRedelivery(bd *natsBrokerDetails, uuid string) {
+	mu, ok := bd.activeMessages.Get(uuid)
+	if !ok {
+		return
+	}
+	im := mu.(inflightMsg)
+	im.redeliverOnNack = true
+	bd.activeMessages.Add(uuid, im)
 }
 
 func (p *natsjsProvider) Ack(ctx context.Context, uuid string) *pb.Error {
@@ -1183,13 +1348,31 @@ func (p *natsjsProvider) Ack(ctx context.Context, uuid string) *pb.Error {
 	return nil
 }
 
-// Nack negatively acknowledges for immediate redelivery (literal AMQP nack).
+// Nack rejects a message without putting it back, which is what a nack means
+// on the Arke contract: amqp091 answers the same call with
+// Delivery.Nack(requeue=false), so RabbitMQ drops the message (or moves it to
+// the queue's dead-letter exchange, which the server instead asks for
+// explicitly through DeadLetter). JetStream's Nak means the opposite —
+// redeliver immediately — so naking here turns one nacked message into an
+// unbounded redelivery loop between server and client, at thousands of
+// deliveries a second, for as long as the subscription lives. Term is the
+// primitive that carries the intended meaning: stop redelivering.
+//
+// The exception is the server's fallback nack after a failed DeadLetter, which
+// exists to put the message back so dead-lettering can be retried. DeadLetter
+// marks the message for redelivery before returning that error.
 func (p *natsjsProvider) Nack(ctx context.Context, uuid string) *pb.Error {
-	m, perr := p.takeMessage(ctx, uuid)
+	m, redeliver, perr := p.takeMessageForNack(ctx, uuid)
 	if perr != nil {
 		return perr
 	}
-	if err := m.Nak(); err != nil {
+	if redeliver {
+		if err := m.Nak(); err != nil {
+			return &pb.Error{Message: err.Error()}
+		}
+		return nil
+	}
+	if err := m.Term(); err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
 	return nil
@@ -1233,9 +1416,15 @@ func (p *natsjsProvider) DeadLetter(ctx context.Context, source *pb.Source, uuid
 	}
 	mu, ok := bd.activeMessages.Get(uuid)
 	if !ok {
-		return &pb.Error{Message: fmt.Sprintf("no message with uuid %s", uuid)}
+		return &pb.Error{Message: fmt.Sprintf(noMessageError, uuid)}
 	}
 	m := mu.(inflightMsg).msg
+	// Every way out of this function short of a stored DLQ copy leaves the
+	// message in flight for the caller's fallback nack to retry, so make that
+	// nack mean "put it back" for as long as the attempt is unresolved. The
+	// success path removes the message from activeMessages outright, so the
+	// flag cannot outlive a dead-letter that worked.
+	markForRedelivery(bd, uuid)
 	opts := source.GetOptions()
 	dla, hasDLA := opts["DeadLetterAddress"]
 	if !hasDLA {
@@ -1364,6 +1553,25 @@ func (rt *rateTracker) observe(key string, now time.Time, count uint64) float32 
 	return float32(float64(count-prev.count) / now.Sub(prev.when).Seconds())
 }
 
+// offsetOf converts a JetStream stream sequence to the Offset vocabulary Arke
+// reports and accepts. The two do not share an origin: JetStream numbers the
+// first message in a stream 1, while a RabbitMQ Stream — the vocabulary
+// amqp091 established and clients read SourceStats through — numbers it 0. A
+// sequence of 0 is JetStream for "no message", which has no offset, and stays
+// 0 rather than going negative; callers distinguish it by LastSeq or by the
+// "Offset not found" error. seqOf inverts this.
+func offsetOf(seq uint64) int64 {
+	if seq == 0 {
+		return 0
+	}
+	return int64(seq - 1) //nolint:gosec // a stream sequence cannot exceed int64
+}
+
+// seqOf converts an Arke Offset back to the JetStream stream sequence to start
+// a consumer at. It inverts offsetOf, so an offset read from SourceStats and
+// handed back as a source's Offset resumes at exactly the message it named.
+func seqOf(offset uint64) uint64 { return offset + 1 }
+
 func (p *natsjsProvider) SourceStats(ctx context.Context, source *pb.Source) *pb.SourceStats {
 	stats := &pb.SourceStats{Name: source.GetName()}
 	bd, err := p.getBrokerDetails(ctx)
@@ -1385,7 +1593,7 @@ func (p *natsjsProvider) SourceStats(ctx context.Context, source *pb.Source) *pb
 	now := time.Now()
 	stats.MessageCount = int64(info.State.Msgs)       //nolint:gosec
 	stats.ConsumerCount = int32(info.State.Consumers) //nolint:gosec
-	stats.LastOffset = int64(info.State.LastSeq)      //nolint:gosec
+	stats.LastOffset = offsetOf(info.State.LastSeq)
 	durable := durableName(source)
 	// JetStream exposes no rates, only counters; sample them between calls
 	// (see rateTracker). The stream's LastSeq counts every publish to the
@@ -1411,7 +1619,7 @@ func (p *natsjsProvider) SourceStats(ctx context.Context, source *pb.Source) *pb
 			// instead of paying a second round-trip on every stats poll.
 			ci := cons.CachedInfo()
 			stats.MessageCount = int64(ci.NumPending) + int64(ci.NumAckPending) //nolint:gosec
-			stats.CurrentOffset = int64(ci.AckFloor.Stream)                     //nolint:gosec
+			stats.CurrentOffset = offsetOf(ci.AckFloor.Stream)
 			// The stream-wide consumer count set above spans every source on
 			// the address (streams are shared per address root), so it says
 			// nothing about THIS source — it cannot even distinguish zero
@@ -1426,6 +1634,20 @@ func (p *natsjsProvider) SourceStats(ctx context.Context, source *pb.Source) *pb
 			// Keyed per polling source like the publish rate above (sources
 			// can share a durable through a common ConsumerGroup).
 			stats.DeliverRate = bd.rates.observe("del/"+streamName+"/"+durable+"/"+source.GetName(), now, ci.Delivered.Consumer)
+		}
+	}
+	// A stream source reports on a log, not on a queue, and amqp091 says so in
+	// two ways this has to match. It fills a message count only for
+	// Source_QUEUE (getStreamOrQueueStats): a stream's readers each hold their
+	// own position in one retained log, so there is no single backlog that
+	// belongs to the source — the position is the reading, and it is already
+	// in LastOffset/CurrentOffset. And when the log has no offset to report it
+	// answers with RabbitMQ's own "Offset not found" (updateStatsForStream)
+	// rather than a silent zero.
+	if source.GetType() == pb.Source_STREAM {
+		stats.MessageCount = 0
+		if info.State.LastSeq == 0 {
+			stats.Error = &pb.Error{Message: offsetNotFoundError}
 		}
 	}
 	return stats

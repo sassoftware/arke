@@ -227,10 +227,17 @@ func TestFilterSubjectsFor(t *testing.T) {
 		return &pb.Source{Address: &pb.Address{Name: "events.orders", Subjects: subjects}}
 	}
 
-	// no patterns -> everything under the address, including the empty key
+	// No patterns -> no bindings -> nothing selected, like amqp091 declaring
+	// no binding at all. The consumer still needs one filter subject, so it
+	// gets an unmatchable one.
 	assert.Equal(t,
-		[]string{"events.orders.~", "events.orders.~.>"},
+		[]string{"events.orders.~." + unmatchableToken},
 		filterSubjectsFor(src()))
+	// An empty pattern is a literal empty routing key on a topic address, not
+	// a catch-all.
+	assert.Equal(t,
+		[]string{"events.orders.~"},
+		filterSubjectsFor(src("")))
 	// plain patterns map one to one
 	assert.Equal(t,
 		[]string{"events.orders.~.created", "events.orders.~.region.*.updated"},
@@ -296,9 +303,14 @@ func TestDirectFilterSubjectsAreExact(t *testing.T) {
 	assert.Equal(t,
 		[]string{"events.direct.~.created", "events.direct.~.region.us"},
 		filterSubjectsFor(src("created", "region.us", "created")))
+	// No subjects binds nothing, exactly as on a direct exchange.
+	assert.Equal(t,
+		[]string{"events.direct.~." + unmatchableToken},
+		filterSubjectsFor(src()))
+	// An explicit empty binding key selects the empty routing key only.
 	assert.Equal(t,
 		[]string{"events.direct.~"},
-		filterSubjectsFor(src()))
+		filterSubjectsFor(src("")))
 }
 
 func TestSubjectSubsumes(t *testing.T) {

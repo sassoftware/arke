@@ -336,20 +336,63 @@ func streamSubjectsFor(addressName string) []string {
 }
 
 // filterSubjectsFor maps a source's routing-key patterns to NATS consumer
-// filter subjects. An empty pattern set means everything under the address.
-// A pattern whose AMQP '#' tail became '>' also gets the zero-word variant:
-// AMQP '#' matches zero or more words while NATS '>' matches one or more, so
-// binding "a.#" must match routing key "a" too.
+// filter subjects.
+//
+// A source whose address has a parent also selects the subjects its address is
+// bound to in the *parent's* space: messages routed in from the parent are
+// sourced into this address's stream keeping the subject they were published
+// under (see parentBindingSubjects and ensureStreamFor).
 func filterSubjectsFor(source *pb.Source) []string {
+	own := ownFilterSubjectsFor(source)
+	parents := parentBindingSubjects(source.GetAddress())
+	if len(parents) == 0 {
+		return own
+	}
+	return pruneSubsumed(append(own, parents...))
+}
+
+// parentBindingSubjects gives the subjects an address's bindings select in its
+// parent address's subject space, or nil if it has no parent.
+//
+// An address-to-address binding uses the child's own subjects as the binding
+// keys (amqp091's declareExchange binds each of them from the child exchange
+// to the parent), and those keys are matched by the *parent* exchange's type —
+// so the mapping is exactly the ordinary binding translation, run against the
+// parent's name and type. With no subjects there are no bindings and so
+// nothing is routed in, which is why this returns nil rather than asking
+// ownFilterSubjectsFor for an unmatchable subject.
+func parentBindingSubjects(addr *pb.Address) []string {
+	parent := addr.GetParentAddress()
+	if parent.GetName() == "" || len(addr.GetSubjects()) == 0 {
+		return nil
+	}
+	return ownFilterSubjectsFor(&pb.Source{
+		Address: &pb.Address{
+			Name:     parent.GetName(),
+			Type:     parent.GetType(),
+			Subjects: addr.GetSubjects(),
+		},
+	})
+}
+
+// ownFilterSubjectsFor maps a source's routing-key patterns to the filter
+// subjects of its own address. A pattern whose AMQP '#' tail became '>' also
+// gets the zero-word variant: AMQP '#' matches zero or more words while NATS
+// '>' matches one or more, so binding "a.#" must match routing key "a" too.
+//
+// A source with no patterns declares no bindings and so receives nothing —
+// see boundNothingSubjects for the exceptions and for how "nothing" is
+// expressed to a consumer that must carry at least one filter.
+func ownFilterSubjectsFor(source *pb.Source) []string {
+	if len(source.GetAddress().GetSubjects()) == 0 {
+		return boundNothingSubjects(source)
+	}
 	if source.GetAddress().GetType() == pb.Address_QUEUE {
 		return directFilterSubjectsFor(source)
 	}
 
 	prefix := subjectPrefix(source.GetAddress().GetName())
 	pats := source.GetAddress().GetSubjects()
-	if len(pats) == 0 {
-		pats = []string{""}
-	}
 	out := make([]string, 0, len(pats)+1)
 	seen := make(map[string]bool, len(pats)+1)
 	add := func(s string) {
@@ -362,8 +405,9 @@ func filterSubjectsFor(source *pb.Source) []string {
 		pat := translateWildcards(p)
 		switch {
 		case pat == "":
+			// An empty binding key is a literal, not a wildcard: on a topic
+			// exchange it matches the empty routing key and nothing else.
 			add(prefix)
-			add(prefix + ".>")
 		case strings.HasSuffix(pat, ">"):
 			base := strings.TrimSuffix(strings.TrimSuffix(pat, ">"), ".")
 			if base == "" {
@@ -376,16 +420,29 @@ func filterSubjectsFor(source *pb.Source) []string {
 			add(prefix + "." + pat)
 		}
 	}
-	// An AMQP binding set may be redundant — "orders.#" alongside
-	// "orders.created" — which is harmless on a broker that routes a message
-	// to a queue once no matter how many of its bindings match. JetStream
-	// instead rejects a consumer whose filter subjects overlap (one being a
-	// subset of another), so drop every filter another filter already covers.
-	// The surviving wider filter matches everything the dropped one did.
-	kept := make([]string, 0, len(out))
-	for _, s := range out {
+	return pruneSubsumed(out)
+}
+
+// pruneSubsumed drops every subject another subject in the set already covers.
+// An AMQP binding set may be redundant — "orders.#" alongside "orders.created"
+// — which is harmless on a broker that routes a message to a queue once no
+// matter how many of its bindings match. JetStream instead rejects a consumer
+// whose filter subjects overlap (one being a subset of another). The surviving
+// wider filter matches everything the dropped one did. Duplicates are dropped
+// too, since a subject trivially covers itself.
+func pruneSubsumed(subjects []string) []string {
+	uniq := make([]string, 0, len(subjects))
+	seen := make(map[string]bool, len(subjects))
+	for _, s := range subjects {
+		if !seen[s] {
+			seen[s] = true
+			uniq = append(uniq, s)
+		}
+	}
+	kept := make([]string, 0, len(uniq))
+	for _, s := range uniq {
 		subsumed := false
-		for _, t := range out {
+		for _, t := range uniq {
 			if t != s && subjectSubsumes(t, s) {
 				subsumed = true
 				break
@@ -398,12 +455,49 @@ func filterSubjectsFor(source *pb.Source) []string {
 	return kept
 }
 
-func directFilterSubjectsFor(source *pb.Source) []string {
+// unmatchableToken is a subject token no published subject can contain, so a
+// filter subject ending in it selects nothing while still being a legal subset
+// of the address's stream — which is how a consumer, obliged to carry at least
+// one filter, expresses "bound to nothing".
+//
+// It is unreachable by construction: escapeToken emits either a token free of
+// reserved characters (never starting with '~', since '~' is itself reserved),
+// or "~e" for the empty token, or '~' followed by one or more *two*-character
+// escape codes — three characters at minimum. No output is ever a '~' plus a
+// single character other than "~e".
+const unmatchableToken = "~x"
+
+// boundNothingSubjects gives the filter subjects for a source whose address
+// carries no routing-key patterns. amqp091 declares no binding at all in that
+// case (declareBinding iterates an empty subject list), so the source receives
+// nothing — with two exceptions that both mean "the whole address".
+func boundNothingSubjects(source *pb.Source) []string {
 	prefix := subjectPrefix(source.GetAddress().GetName())
-	pats := source.GetAddress().GetSubjects()
-	if len(pats) == 0 {
-		return []string{prefix}
+	whole := []string{prefix, prefix + ".>"}
+	// A stream source is not bound to its address at all. amqp091 reads a
+	// RabbitMQ stream by name — streamSubscribe goes straight to the stream
+	// connection and never declares an exchange or a binding — so its reader
+	// sees the whole log. Selecting everything the address's stream captures
+	// is the equivalent. This is not a corner case: a Source_STREAM on an
+	// Address_STREAM with no subjects is the ordinary way to read a stream,
+	// so reading it as "no bindings" would silently deliver nothing.
+	if source.GetType() == pb.Source_STREAM {
+		return whole
 	}
+	// A headers address with filters: amqp091 binds a single "" key purely to
+	// have a binding to hang the header arguments on (declareBinding fakes the
+	// subject in when the address carries none). A headers exchange ignores
+	// routing keys, so that binding matches every message and the header match
+	// decides. evaluateFilters is this connector's stand-in for those
+	// arguments, so select the whole address and let it do the deciding.
+	if source.GetAddress().GetType() == pb.Address_FILTER && len(source.GetFilters()) > 0 {
+		return whole
+	}
+	return []string{prefix + "." + unmatchableToken}
+}
+
+func directFilterSubjectsFor(source *pb.Source) []string {
+	pats := source.GetAddress().GetSubjects()
 	out := make([]string, 0, len(pats))
 	seen := make(map[string]bool, len(pats))
 	for _, p := range pats {
@@ -489,10 +583,28 @@ func durableName(source *pb.Source) string {
 		if cg := source.GetOptions()["ConsumerGroup"]; cg != "" {
 			return streamNameFor(cg)
 		}
+		// A group-less stream source is ordinarily an independent ephemeral
+		// reader, but "continue" asks to resume where this source left off,
+		// which only a position the broker kept between subscriptions can
+		// answer. amqp091 reads one from RabbitMQ Streams' server-side offset
+		// tracking, keyed by the consumer name; JetStream keeps a position per
+		// durable consumer, so name a durable after the source. Every other
+		// offset positions the reader from the log itself and stays ephemeral,
+		// so same-named readers still read independently.
+		if wantsStoredPosition(source) {
+			return streamNameFor(source.GetName())
+		}
 	case pb.Source_TEMPORARY:
 		// Transient; already returned above via the TEMPORARY guard.
 	}
 	return ""
+}
+
+// wantsStoredPosition reports whether a source's Offset asks to resume from a
+// position the broker remembers, rather than one derived from the log itself.
+// Only "continue" does.
+func wantsStoredPosition(source *pb.Source) bool {
+	return strings.EqualFold(strings.TrimSpace(source.GetOptions()["Offset"]), "continue")
 }
 
 // pbToNatsHeader converts Arke's flat string headers to a NATS header.

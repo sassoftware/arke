@@ -112,6 +112,45 @@ filters to the widest set before creating the consumer; the surviving
 wildcard filter matches everything the dropped filters did. Intersecting
 patterns where neither contains the other are kept as-is.
 
+A source whose address carries *no* subjects declares no bindings and so
+receives nothing, matching amqp091 (which binds nothing at all in that case).
+A JetStream consumer must carry at least one filter subject, so "nothing" is
+expressed as a filter on a subject no published subject can contain — a token
+the escaping above can never emit. Three cases are deliberately not that:
+
+- an empty binding key (`""`, as distinct from no keys) is a literal, and
+  selects the empty routing key only, exactly as it matches on a topic or
+  direct exchange;
+- a `STREAM` source is not bound to its address at all — amqp091 reads a
+  RabbitMQ stream by name and never declares a binding — so it reads the
+  whole log;
+- a headers address with filters selects the whole address, because a headers
+  exchange ignores routing keys and the header match decides. amqp091 binds a
+  single `""` key there purely to have somewhere to hang the header
+  arguments; `evaluateFilters` is this connector's stand-in for those.
+
+### Address-to-address binding
+
+An address may name a `ParentAddress`, binding it to that parent: what is
+published to the parent under the child's binding keys is routed on to the
+child, and reaches the child's own consumers. On a broker that routes, this is
+a routing rule. Here the stream *is* the storage, so the equivalent is to
+source the bound subjects out of the parent's stream into the child's
+(`ensureStreamFor`), keeping the subject each message was published under
+rather than transforming it. That means only the parent's stream ever listens
+on the parent's subjects — no two streams claim one subject space — while a
+message routed in from the parent is indistinguishable, to a consumer, from
+one published to the child directly. The child's consumers filter on both
+their address's subjects and the bound parent subjects.
+
+The binding keys are the child's own subjects, matched by the *parent*
+exchange's type, so they translate exactly like any other binding. Bindings
+accumulate: declaring one never removes another, as on RabbitMQ, so a second
+subscriber binding a different key on the same address adds to the set rather
+than replacing it. Nothing unbinds — a binding outlives the subscription that
+declared it, as an AMQP exchange-to-exchange binding outlives the client that
+bound it.
+
 This subject scheme — and the stream/durable name encoding above — is part
 of the connector's persistence contract: retained messages are stored under
 these subjects for the life of the stream's retention limits, so any future
@@ -151,7 +190,13 @@ The connector chooses the consumer kind from the source
   for per-instance, transient subscriptions — and for `STREAM` sources
   without a `ConsumerGroup`, whose subscribers are independent readers of
   the shared log, each positioned by its own `Offset` (RabbitMQ stream
-  consumers do not compete). They are also deleted eagerly
+  consumers do not compete). The exception is a group-less `STREAM` source
+  asking for `Offset: continue`, which is a request to resume where that
+  source last stopped and so needs a position the broker keeps between
+  subscriptions: it gets a durable named after the source, the way amqp091
+  answers `continue` from RabbitMQ Streams' server-side offset tracking
+  (keyed by consumer name). Every other offset positions the reader from the
+  log itself and stays ephemeral. They are also deleted eagerly
   when their subscription ends (or never starts — a declare-only call, or a
   failure to begin consuming), so the threshold only has to cover unclean
   exits and churning transient clients cannot accumulate dead consumers
@@ -191,20 +236,29 @@ channel's unacked deliveries immediately; without the nak they would only
 redeliver after the full ack wait.
 
 The `DeliverPolicy` is taken from the `Offset` option, mirroring the amqp091
-connector's offset vocabulary so both accept the same values: `first`/`continue`
--> deliver all, `last` -> the final message, `next` (or unset) -> deliver new,
-and an absolute number -> start at that stream sequence. Any other value fails
-the subscribe (as in amqp091's offset parsing) rather than silently starting
-the consumer at a different position than it asked for. The offset only
-applies on first creation: JetStream fixes a durable's start position when the
-consumer is created, so a re-subscribe that requests a different offset logs a
-warning and resumes from the durable's stored ack position — use a new durable
-(source or `ConsumerGroup` name) to reposition. Only that start-position
-conflict is absorbed; any other error creating or updating the consumer fails
-the subscribe, since resuming a consumer whose configuration silently differs
-from the requested one would consume the wrong way with no signal. Numeric
-offsets are JetStream stream sequence numbers (as surfaced by `SourceStats`)
-and are not portable across brokers.
+connector's offset vocabulary so both accept the same values: `first` ->
+deliver all, `last` -> the final message, `next` (or unset) -> deliver new,
+`continue` -> resume from the position the source's durable holds (deliver all
+on its first creation, when there is no position yet — RabbitMQ answers a
+`continue` with no stored offset the same way), and an absolute number ->
+start at that offset. Any other value fails the subscribe (as in amqp091's
+offset parsing) rather than silently starting the consumer at a different
+position than it asked for. The offset only applies on first creation:
+JetStream fixes a durable's start position when the consumer is created, so a
+re-subscribe that requests a different offset logs a warning and resumes from
+the durable's stored ack position — use a new durable (source or
+`ConsumerGroup` name) to reposition. Only that start-position conflict is
+absorbed; any other error creating or updating the consumer fails the
+subscribe, since resuming a consumer whose configuration silently differs from
+the requested one would consume the wrong way with no signal.
+
+A numeric offset counts from 0, naming a message's position in the log the way
+a RabbitMQ Stream offset does — not the raw JetStream sequence, which counts
+from 1. The connector converts in both directions, so an offset read from
+`SourceStats` and handed back as a source's `Offset` names the same message it
+did on either broker. The value is still not portable *across* brokers: offset
+7 is the eighth message of whichever log is being read, and two brokers' logs
+hold different messages.
 
 ## Ack, retry, and dead-letter mapping
 
@@ -216,7 +270,21 @@ connector maps those onto JetStream primitives:
 | ack | `Ack` | `msg.Ack()` |
 | nack, `requeue_delay > 0` | `Retry(delay)` | `msg.NakWithDelay(delay)` |
 | nack, `requeue_delay == 0`, DLA set | `DeadLetter` | publish to DLQ + `Term()` |
-| nack, `requeue_delay == 0`, no DLA | `Nack` | `msg.Nak()` |
+| nack, `requeue_delay == 0`, no DLA | `Nack` | `msg.Term()` |
+
+Note which primitive a plain nack maps to. A nack on this contract is a
+rejection, not a requeue: amqp091 answers the same call with
+`Delivery.Nack(requeue=false)`, so RabbitMQ drops the message, or moves it to
+the queue's dead-letter exchange — which the server here asks for explicitly
+through `DeadLetter` instead. JetStream's `Nak` means the opposite, redeliver
+now, so using it for a nack turns a single nacked message into an unbounded
+delivery loop: a client that rejected a message rejects each redelivery
+straight back, at thousands of deliveries a second for as long as the
+subscription lives. `Term` carries the intended meaning — stop redelivering —
+and `Retry` remains the way to ask for redelivery. The one exception is the
+server's fallback nack after a failed `DeadLetter` (below), whose purpose is
+to put the message back so dead-lettering can be retried; `DeadLetter` marks
+the message before returning that error, and a nack of a marked message naks.
 
 A delivered message that is neither acked nor nacked redelivers after the
 consumer's ack wait (`NATSJS_ACK_WAIT`, default 30s). That value sets one
@@ -378,8 +446,11 @@ Legend: **Native** = NATS does it; **Proxy** = rebuilt in the connector;
 | Retry-count header (`x-retry-count`) | Proxy | Synthesized from JetStream `NumDelivered`. |
 | Dead-letter (DLX) | Proxy | No native DLX; republish to DLQ subject then `Term()`. |
 | Header-filter exchange (`Filter` / `Match`) | Proxy | NATS routes on subject; evaluated in `evaluateFilters` (see limitations). |
+| Address-to-address binding (`ParentAddress`) | Native | The child's stream sources the bound subjects from the parent's, keeping each message's subject. |
 | `MessageTTL` / `Expires` | Partial | Mapped onto stream-level `MaxAge` (see limitations). |
+| Dead-letter on message expiry | Drop | RabbitMQ expires a message off a queue into its DLX; per-source TTL is not applied here, so nothing expires per source to dead-letter (see limitations). |
 | Source stats (depth / consumers) | Native | JetStream stream / consumer `Info`. |
+| Max message size | Partial | NATS caps a payload at the server's `max_payload` (1MB default) where RabbitMQ's `max_message_size` default is 16MB (see limitations). |
 | Publish / deliver rates in stats | Proxy | Sampled: counter deltas between `SourceStats` calls (see limitations). |
 | RabbitMQ management HTTP API | Drop | Replaced by the JetStream API over NATS itself. |
 
@@ -395,23 +466,41 @@ amqp091 connector, so existing client sources validate unchanged:
 | `Expires` | string (ms) | Accepted for compatibility; not applied — streams are shared per address root and are not deleted when a source goes unused. A warning is logged at subscribe time. |
 | `DeadLetterAddress` | string | Address whose stream receives dead-lettered messages. |
 | `DeadLetterSubject` | string | Routing-key override for dead-lettered messages; when unset, the copy keeps the message's original routing key (RabbitMQ's default dead-letter behavior). |
-| `Offset` | string | Stream starting offset (`first`, `continue`, `last`, `next`, or a numeric sequence). |
+| `Offset` | string | Stream starting offset (`first`, `continue`, `last`, `next`, or a number counting from 0, as reported by `SourceStats`). |
 | `ConsumerGroup` | string | Durable consumer group name (stream sources; also names the durable that single-active instances coordinate through, and is required for a single-active stream source). |
 
 ## Known limitations
 
-- **Per-source TTL fidelity.** The connector uses one stream per address
-  root, so a per-source `MessageTTL` / `Expires` cannot be mapped onto the
-  shared stream without one source's value flapping another's retention.
-  Both options are therefore accepted but not applied, and a subscribe that
-  sets either logs a warning naming the source — silent divergence in data
-  retention is the one place a client must not have to read a design doc to
-  notice. Retention comes from the stream-wide `NATSJS_STREAM_MAX_AGE` /
-  `NATSJS_STREAM_MAX_BYTES` configuration. True per-source TTL (or switching
-  queue sources to a delete-on-ack policy such as `WorkQueuePolicy` /
-  `InterestPolicy`) needs a
+- **Per-source TTL fidelity, and expiry-driven dead-lettering.** The
+  connector uses one stream per address root, so a per-source `MessageTTL` /
+  `Expires` cannot be mapped onto the shared stream without one source's
+  value flapping another's retention. Both options are therefore accepted but
+  not applied, and a subscribe that sets either logs a warning naming the
+  source — silent divergence in data retention is the one place a client must
+  not have to read a design doc to notice. Retention comes from the
+  stream-wide `NATSJS_STREAM_MAX_AGE` / `NATSJS_STREAM_MAX_BYTES`
+  configuration. True per-source TTL (or switching queue sources to a
+  delete-on-ack policy such as `WorkQueuePolicy` / `InterestPolicy`) needs a
   per-source stream topology, and `Retention` is immutable, so that is a
   stream-recreate migration rather than an in-place change.
+
+  A consequence worth stating on its own: RabbitMQ's per-queue TTL doubles as
+  a routing mechanism, expiring a message off its queue and *into* the
+  queue's dead-letter exchange, which is the classic "unprocessed after N
+  seconds, send it to the DLQ" idiom. Since no per-source TTL is applied
+  here, nothing expires per source and so nothing is dead-lettered by expiry;
+  a message is dead-lettered only when a client nacks it with a dead-letter
+  address set. Retention limits do eventually evict a message, but eviction
+  deletes it — there is no expiry hook to route from. Clients relying on
+  expiry-to-DLQ need an explicit nack, or the per-source topology above.
+- **Payloads above the server's `max_payload`.** NATS enforces a maximum
+  message size server-side (`max_payload`, 1MB by default, 64MB hard
+  ceiling), where RabbitMQ's `max_message_size` defaults to 16MB. A message
+  in between publishes on RabbitMQ and is rejected here with `maximum payload
+  exceeded`. This is a server setting the connector cannot negotiate around,
+  so a deployment carrying large messages has to raise `max_payload` to cover
+  them (NATS advises staying at or below 8MB, since a large message is held
+  whole in memory on every hop) or move the payload out of the message.
 - **Publish / deliver rates are sampled, not native.** JetStream exposes
   absolute counters, not rates, so `SourceStats` differences them between
   successive calls: the first call after a (re)connect returns zero, the
@@ -423,7 +512,10 @@ amqp091 connector, so existing client sources validate unchanged:
   limits, so its depth keeps growing after consumers catch up, which would
   mislead anything using message count as queue length (e.g. consumer
   autoscaling). Sources without a durable consumer fall back to the stream
-  view. A durable source's consumer count is likewise per source: the number
+  view. A `STREAM` source reports no message count at all, as on amqp091:
+  the readers of one retained log have no common backlog, and their reading
+  is the offset pair instead. A stream with no offset to report answers with
+  RabbitMQ's own `Offset not found` error rather than a silent zero. A durable source's consumer count is likewise per source: the number
   of clients with an open pull request on its consumer — a client working
   through a full pull buffer can briefly read as zero — while sources
   without a durable consumer report the stream-wide consumer count, which

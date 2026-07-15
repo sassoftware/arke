@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -225,14 +226,18 @@ func TestRetrySynthesizesRetryCount(t *testing.T) {
 	require.Nil(t, p.Ack(ctx, second.GetUuid()))
 }
 
-func TestNackRedelivers(t *testing.T) {
+// TestNackDoesNotRedeliver pins Nack to amqp091's Delivery.Nack(requeue=false):
+// a nacked message is rejected, not put back. Naking it instead (JetStream's
+// Nak, which means redeliver now) turns one nacked message into an unbounded
+// delivery loop, because the client nacks each redelivery straight back.
+func TestNackDoesNotRedeliver(t *testing.T) {
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)
 
 	addr := &pb.Address{Name: "events.nack", Subjects: []string{"job"}}
 	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("work")}))
 
-	out := make(chan *pb.Message, 2)
+	out := make(chan *pb.Message, 8)
 	src := queueSource("events.nack.consumer", "events.nack", "job")
 	subCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -241,8 +246,17 @@ func TestNackRedelivers(t *testing.T) {
 	first := recv(t, out)
 	require.Nil(t, p.Nack(ctx, first.GetUuid()))
 
-	second := recv(t, out)
-	require.Nil(t, p.Ack(ctx, second.GetUuid()))
+	select {
+	case m := <-out:
+		t.Fatalf("nacked message was redelivered (uuid %s); Nack must not requeue", m.GetUuid())
+	case <-time.After(2 * time.Second):
+	}
+
+	// Resolved server-side, not merely undelivered: nothing is left ack-pending
+	// to come back once AckWait expires.
+	stats := p.SourceStats(ctx, src)
+	require.Nil(t, stats.GetError())
+	require.EqualValues(t, 0, stats.GetMessageCount(), "nacked message still pending")
 }
 
 func TestDeadLetter(t *testing.T) {
@@ -261,9 +275,10 @@ func TestDeadLetter(t *testing.T) {
 	go p.Subscribe(subCtx, src, out)
 
 	// Fail the first delivery, then dead-letter the redelivery, so the copy
-	// has a retry trail to carry.
+	// has a retry trail to carry. Retry (not Nack) is what asks for a
+	// redelivery — Nack rejects the message outright.
 	first := recv(t, out)
-	require.Nil(t, p.Nack(ctx, first.GetUuid()))
+	require.Nil(t, p.Retry(ctx, src, first.GetUuid(), 0))
 	m := recv(t, out)
 	require.Equal(t, "1", m.GetHeaders()[retryCountHeaderName], "redelivery precondition")
 	require.Nil(t, p.DeadLetter(ctx, src, m.GetUuid()))
@@ -842,7 +857,9 @@ func TestAckUnknownUUID(t *testing.T) {
 
 	perr := p.Ack(ctx, "does-not-exist")
 	require.NotNil(t, perr)
-	assert.Contains(t, perr.GetMessage(), "no message with uuid")
+	// Worded exactly as amqp091 words it: a client matching on the text must
+	// not have to know which connector answered.
+	assert.Equal(t, "No message with uuid does-not-exist", perr.GetMessage())
 }
 
 func TestStreamConfigFromEnv(t *testing.T) {
@@ -1006,7 +1023,9 @@ func TestDeliverPolicyFor(t *testing.T) {
 	check("last", jetstream.DeliverLastPolicy, 0)
 	check("next", jetstream.DeliverNewPolicy, 0)
 	check("", jetstream.DeliverNewPolicy, 0)
-	check("100", jetstream.DeliverByStartSequencePolicy, 100)
+	// A numeric offset counts from 0 like a RabbitMQ Stream's, so it is one
+	// less than the JetStream sequence it starts the consumer at.
+	check("100", jetstream.DeliverByStartSequencePolicy, 101)
 	check("0", jetstream.DeliverAllPolicy, 0) // offset 0 == from the beginning
 
 	pol, seq, err := deliverPolicyFor(&pb.Source{})
@@ -1406,6 +1425,66 @@ func TestStreamOffsetReplay(t *testing.T) {
 	})
 }
 
+// TestStreamOffsetContinueResumes: offset "continue" resumes a group-less
+// stream source where its last subscription stopped, instead of replaying the
+// log from the start like "first". amqp091 answers "continue" from RabbitMQ
+// Streams' server-side offset tracking (QueryOffset by consumer name, +1);
+// here the source's durable holds the position, so a re-subscribe under the
+// same name picks up after the messages it already acked.
+func TestStreamOffsetContinueResumes(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.cont", Subjects: []string{"e"}}
+	publish := func(t *testing.T, n int, tag string) {
+		t.Helper()
+		for i := 0; i < n; i++ {
+			require.Nil(t, p.PublishOne(ctx,
+				&pb.Message{Address: addr, Body: []byte(fmt.Sprintf("%s%d", tag, i))}))
+		}
+	}
+	src := func() *pb.Source {
+		return &pb.Source{
+			Name:    "events.cont.consumer",
+			Type:    pb.Source_STREAM,
+			Address: &pb.Address{Name: "events.cont", Subjects: []string{"e"}},
+			Options: map[string]string{"Offset": "continue"},
+		}
+	}
+
+	// With nothing read yet there is no stored position, so "continue" starts
+	// at the beginning — RabbitMQ's QueryOffset finds no offset and falls back
+	// to offset 0 the same way.
+	publish(t, 2, "first")
+	drain := func(t *testing.T, want int) []string {
+		t.Helper()
+		out := make(chan *pb.Message, want+4)
+		subCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go p.Subscribe(subCtx, src(), out)
+		got := make([]string, 0, want)
+		for i := 0; i < want; i++ {
+			m := recv(t, out)
+			require.Nil(t, p.Ack(ctx, m.GetUuid()))
+			got = append(got, string(m.GetBody()))
+		}
+		// Nothing beyond what was asked for: a replay would show up here.
+		select {
+		case m := <-out:
+			t.Fatalf("unexpected extra message %q; continue replayed the log", m.GetBody())
+		case <-time.After(time.Second):
+		}
+		return got
+	}
+	require.Equal(t, []string{"first0", "first1"}, drain(t, 2))
+
+	// The second subscription must see only what was published after the
+	// first one stopped.
+	publish(t, 3, "second")
+	require.Equal(t, []string{"second0", "second1", "second2"}, drain(t, 3),
+		"continue replayed already-acked messages instead of resuming")
+}
+
 // TestStreamOffsetNextSkipsBacklog: offset "next" (and the default) positions a
 // new consumer at the tail — it sees only messages published after it was
 // created, matching RabbitMQ Streams "next".
@@ -1467,12 +1546,13 @@ func TestStreamOffsetLastAndNumeric(t *testing.T) {
 		}
 	})
 
-	t.Run("numeric_offset_starts_at_sequence", func(t *testing.T) {
+	t.Run("numeric_offset_starts_at_offset", func(t *testing.T) {
 		out := make(chan *pb.Message, n)
 		subCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		// JetStream sequence 3 == m2 (1-based); expect m2 then m3.
-		go p.Subscribe(subCtx, streamSource("events.offset.num", "events.offset", "3", "e"), out)
+		// Offsets count from 0 like a RabbitMQ Stream's, so offset 2 is the
+		// third message, m2 — not JetStream's sequence 2, which is m1.
+		go p.Subscribe(subCtx, streamSource("events.offset.num", "events.offset", "2", "e"), out)
 
 		got := []string{}
 		for i := 0; i < 2; i++ {
@@ -1480,7 +1560,27 @@ func TestStreamOffsetLastAndNumeric(t *testing.T) {
 			got = append(got, string(m.GetBody()))
 			require.Nil(t, p.Ack(ctx, m.GetUuid()))
 		}
-		assert.Equal(t, []string{"m2", "m3"}, got, "numeric offset starts at the given stream sequence")
+		assert.Equal(t, []string{"m2", "m3"}, got, "numeric offset starts at the named message")
+	})
+
+	// The offset vocabulary has to round-trip: an offset read from SourceStats
+	// and handed back as a source's Offset must name the same message. A
+	// connector reporting JetStream's 1-based sequence but accepting it back
+	// as a 0-based offset would quietly skip one message per hop.
+	t.Run("offset_from_stats_round_trips", func(t *testing.T) {
+		stats := p.SourceStats(ctx, streamSource("events.offset.rt", "events.offset", "first", "e"))
+		require.Nil(t, stats.GetError())
+		require.EqualValues(t, n-1, stats.GetLastOffset(), "last offset names the final message")
+
+		out := make(chan *pb.Message, n)
+		subCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		last := strconv.FormatInt(stats.GetLastOffset(), 10)
+		go p.Subscribe(subCtx, streamSource("events.offset.rt2", "events.offset", last, "e"), out)
+
+		m := recv(t, out)
+		assert.Equal(t, "m3", string(m.GetBody()), "LastOffset fed back must start at the last message")
+		require.Nil(t, p.Ack(ctx, m.GetUuid()))
 	})
 }
 
@@ -1608,9 +1708,154 @@ func TestDurableConflictBeyondStartPositionStaysFatal(t *testing.T) {
 	assert.Contains(t, perr.GetMessage(), "create consumer")
 }
 
+// TestPublishContractRefusals pins the two publish combinations amqp091
+// refuses, so a client cannot write code against natsjs that silently means
+// something else on RabbitMQ. Both error strings are amqp091's, verbatim.
+func TestPublishContractRefusals(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	// Deduplication on a queue address: RabbitMQ gets dedup from streams, so
+	// amqp091 cannot offer it on a queue at all.
+	perr := p.PublishOne(ctx, &pb.Message{
+		Address:       &pb.Address{Name: "events.q", Type: pb.Address_QUEUE, Subjects: []string{"k"}},
+		PublisherName: "pub", PublishId: 1, Body: []byte("x")})
+	require.NotNil(t, perr)
+	assert.Equal(t, queueDedupError, perr.GetMessage())
+
+	// ...but the same publish to a non-queue address is fine.
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address:       &pb.Address{Name: "events.t", Type: pb.Address_TOPIC, Subjects: []string{"k"}},
+		PublisherName: "pub", PublishId: 1, Body: []byte("x")}))
+
+	// Confirm on the fire-and-forget streaming publish.
+	in := make(chan *pb.Message, 1)
+	errChan := make(chan *pb.Error, 2)
+	pubCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Publish(pubCtx, in, errChan)
+	in <- &pb.Message{Address: &pb.Address{Name: "events.t", Subjects: []string{"k"}},
+		Body: []byte("x"), Confirm: true}
+	select {
+	case e := <-errChan:
+		require.NotNil(t, e)
+		assert.Equal(t, unsupportedConfirmError, e.GetMessage())
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the publish error")
+	}
+	// Exactly one reply per message: the server does an unconditional receive
+	// after each send, so a second value here would answer the *next* message.
+	select {
+	case e := <-errChan:
+		t.Fatalf("second reply for one message: %v", e)
+	case <-time.After(time.Second):
+	}
+}
+
+// TestParentAddressBindingRoutes covers address-to-address binding: a child
+// address bound to a parent receives what is published to the parent under the
+// bound keys, still receives what is published to it directly, and does not
+// receive what the parent routes elsewhere.
+func TestParentAddressBindingRoutes(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	parent := &pb.Address{Name: "events.parent", Type: pb.Address_TOPIC}
+	child := &pb.Address{
+		Name:          "events.child",
+		Type:          pb.Address_FILTER,
+		Subjects:      []string{"bound.one", "bound.two"},
+		ParentAddress: parent,
+	}
+
+	out := make(chan *pb.Message, 8)
+	src := &pb.Source{Name: "events.child.consumer", Type: pb.Source_QUEUE, Address: child,
+		Options: map[string]string{"Offset": "first"}}
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+	time.Sleep(500 * time.Millisecond)
+
+	pub := func(t *testing.T, addrName, key, body string) {
+		t.Helper()
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{
+			Address: &pb.Address{Name: addrName, Subjects: []string{key}},
+			Body:    []byte(body)}))
+	}
+	// Routed in from the parent under a bound key...
+	pub(t, "events.parent", "bound.one", "routed")
+	// ...not routed: the parent has no binding to the child for this key.
+	pub(t, "events.parent", "unbound.key", "not-routed")
+	// ...and published straight to the child.
+	pub(t, "events.child", "bound.two", "direct")
+
+	got := map[string]bool{}
+	deadline := time.After(6 * time.Second)
+	for len(got) < 2 {
+		select {
+		case m := <-out:
+			got[string(m.GetBody())] = true
+			require.Nil(t, p.Ack(ctx, m.GetUuid()))
+		case <-deadline:
+			t.Fatalf("timed out; received %v", got)
+		}
+	}
+	assert.True(t, got["routed"], "a message published to the parent under a bound key must reach the child")
+	assert.True(t, got["direct"], "a direct publish to the child must still arrive")
+
+	select {
+	case m := <-out:
+		t.Fatalf("child received %q, which the parent does not route to it", m.GetBody())
+	case <-time.After(2 * time.Second):
+	}
+}
+
+// TestParentAddressBindingsAccumulate: a second address-to-address binding on
+// the same address adds to the first rather than replacing it, the way
+// declaring a binding on RabbitMQ never removes another.
+func TestParentAddressBindingsAccumulate(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	parent := &pb.Address{Name: "events.acc.parent", Type: pb.Address_TOPIC}
+	childWith := func(subjects ...string) *pb.Address {
+		return &pb.Address{Name: "events.acc.child", Type: pb.Address_TOPIC,
+			Subjects: subjects, ParentAddress: parent}
+	}
+	sub := func(t *testing.T, name string, addr *pb.Address) chan *pb.Message {
+		t.Helper()
+		out := make(chan *pb.Message, 8)
+		subCtx, cancel := context.WithCancel(ctx)
+		t.Cleanup(cancel)
+		go p.Subscribe(subCtx, &pb.Source{Name: name, Type: pb.Source_QUEUE, Address: addr,
+			Options: map[string]string{"Offset": "first"}}, out)
+		time.Sleep(500 * time.Millisecond)
+		return out
+	}
+
+	first := sub(t, "events.acc.first", childWith("key.one"))
+	// The second subscriber declares a different binding on the same address.
+	second := sub(t, "events.acc.second", childWith("key.two"))
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: &pb.Address{Name: "events.acc.parent", Subjects: []string{"key.one"}},
+		Body:    []byte("one")}))
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: &pb.Address{Name: "events.acc.parent", Subjects: []string{"key.two"}},
+		Body:    []byte("two")}))
+
+	// The first subscriber's binding must have survived the second's declare.
+	m := recv(t, first)
+	assert.Equal(t, "one", string(m.GetBody()), "the earlier binding was dropped by a later one")
+	m = recv(t, second)
+	assert.Equal(t, "two", string(m.GetBody()))
+}
+
 // TestEmptyRoutingKeyDelivers covers fanout-style publishes that carry no
-// routing key: they map to the bare "<root>.~" subject, which both the stream
-// and a pattern-less consumer capture.
+// routing key: they map to the bare "<root>.~" subject, which the stream
+// captures and a consumer selects by binding the empty routing key. The
+// binding has to be declared — a source with no bindings receives nothing,
+// whatever the routing key (see TestNoBindingsReceiveNothing).
 func TestEmptyRoutingKeyDelivers(t *testing.T) {
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)
@@ -1621,11 +1866,43 @@ func TestEmptyRoutingKeyDelivers(t *testing.T) {
 	out := make(chan *pb.Message, 1)
 	subCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go p.Subscribe(subCtx, queueSource("events.fanout.consumer", "events.fanout"), out)
+	go p.Subscribe(subCtx, queueSource("events.fanout.consumer", "events.fanout", ""), out)
 
 	m := recv(t, out)
 	assert.Equal(t, "no-key", string(m.GetBody()))
 	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+}
+
+// TestNoBindingsReceiveNothing pins the AMQP rule that a source with no
+// routing-key bindings receives nothing. amqp091 declares no binding at all
+// for such a source (declareBinding iterates an empty subject list), so
+// selecting the whole address instead — which a pattern-less consumer used to
+// do — hands the source every message published to it.
+func TestNoBindingsReceiveNothing(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	out := make(chan *pb.Message, 4)
+	src := queueSource("events.unbound.consumer", "events.unbound")
+	src.Address.Subjects = nil
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+	// Let the consumer establish before publishing, so a delivery would race
+	// in rather than be missed.
+	time.Sleep(500 * time.Millisecond)
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: &pb.Address{Name: "events.unbound"}, Body: []byte("no-key")}))
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: &pb.Address{Name: "events.unbound", Subjects: []string{"some.key"}},
+		Body:    []byte("keyed")}))
+
+	select {
+	case m := <-out:
+		t.Fatalf("source with no bindings received %q", m.GetBody())
+	case <-time.After(2 * time.Second):
+	}
 }
 
 func TestDirectAddressBindingIsExact(t *testing.T) {
@@ -2125,6 +2402,42 @@ func TestRateTracker(t *testing.T) {
 	assert.Zero(t, rt.observe("k", t0.Add(4*time.Second), 20))
 	// Keys are independent.
 	assert.Zero(t, rt.observe("other", t0, 1))
+}
+
+// TestSourceStatsStreamSourceReportsOffsetsNotDepth pins the two ways a
+// Source_STREAM's stats differ from a queue's on amqp091: no message count
+// (the readers of a shared log have no common backlog — the offsets are the
+// reading), and RabbitMQ's "Offset not found" when the log holds no offset
+// yet, rather than a silent zero.
+func TestSourceStatsStreamSourceReportsOffsetsNotDepth(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	src := &pb.Source{
+		Name:    "events.log.consumer",
+		Type:    pb.Source_STREAM,
+		Address: &pb.Address{Name: "events.log", Type: pb.Address_STREAM, Subjects: []string{"e"}},
+	}
+
+	// An empty log has no offset to report.
+	bd, bderr := p.getBrokerDetails(ctx)
+	require.NoError(t, bderr)
+	_, serr := p.ensureStream(ctx, bd, "events.log")
+	require.Nil(t, serr)
+	empty := p.SourceStats(ctx, src)
+	require.NotNil(t, empty.GetError())
+	assert.Equal(t, offsetNotFoundError, empty.GetError().GetMessage())
+
+	addr := &pb.Address{Name: "events.log", Subjects: []string{"e"}}
+	const n = 5
+	for i := 0; i < n; i++ {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m")}))
+	}
+
+	stats := p.SourceStats(ctx, src)
+	require.Nil(t, stats.GetError())
+	assert.EqualValues(t, n-1, stats.GetLastOffset(), "offsets count from 0, so the fifth message is offset 4")
+	assert.Zero(t, stats.GetMessageCount(), "a stream source reports no backlog, like amqp091")
 }
 
 // TestSourceStatsRates verifies publish/deliver rates are sampled between
