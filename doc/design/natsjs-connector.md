@@ -360,6 +360,92 @@ would silently delete a down consumer's backlog and regress the durable-queue
 behavior. The default therefore exceeds any realistic outage, and `MaxBytes`
 is intended as the primary disk guard.
 
+## Design decision: storage at the address, not the source
+
+The connector maps an address to a stream and a source to a consumer, so
+message storage sits one level higher than AMQP puts it. In AMQP an exchange
+is a stateless routing function and the queue owns storage *and* per-queue
+policy — `MessageTTL`, max-length, dead-lettering, delete-on-ack. In
+JetStream the stream owns storage and policy, and a consumer is only a
+cursor over it. Mapping address to stream therefore trades per-source policy
+away, and this section records why that trade is deliberate, because the
+obvious alternative is more attractive in outline than in fact.
+
+The consequences accepted are: per-source `MessageTTL` and max-length cannot
+be honored (a shared stream cannot carry one source's duration without
+flapping it for every other source on the same address); acked messages stay
+in the log until a limit evicts them rather than being deleted on ack; and
+publish-rate statistics are per address rather than per source.
+
+A fourth consequence is subtler and has no clean answer: a transient source
+becomes an ephemeral consumer, and no start position for it is faithful. In
+AMQP the existence of a queue defines what is retained *for that queue* — a
+transient queue holds nothing from before it was declared, and is deleted
+when its last consumer leaves. A stream instead retains everything the
+address received, regardless of who is listening. `DeliverNew` is therefore
+wrong whenever a transient source stands in for a queue that ought to have
+existed already and accumulated: a dead-letter target consumed only after
+the fact is the clearest case, where the messages are in the stream and the
+ephemeral consumer starts past them. `DeliverAll` is wrong in the opposite
+direction, replaying history a freshly declared transient queue could never
+have held, bounded only by `MaxAge`. The connector picks `DeliverNew`
+because replaying a busy address's whole retained log into a temporary
+consumer is the more damaging error, but this is a trade rather than a
+mapping. A source that must not miss earlier messages should be durable —
+non-auto-delete, or carrying a consumer group — which is the AMQP-faithful
+way to say the queue exists independently of its consumers.
+
+The alternative is a stream per source. Because two streams may not listen
+on overlapping subjects, each source stream cannot simply capture its bound
+subjects — sources binding `orders.*` and `orders.created` would collide.
+It would instead have to *source* from a per-address origin stream with a
+subject filter, the same mechanism address-to-address binding uses above.
+That buys per-source `MaxAge` and max-length, delete-on-ack via
+`WorkQueuePolicy`, and per-source statistics. It was rejected for five
+reasons, the first of which is decisive:
+
+- **It does not buy the feature that motivates it.** The usual reason to
+  want per-source TTL is AMQP's expire-into-the-dead-letter-exchange idiom,
+  and JetStream cannot express it at any topology. There is no advisory for
+  expiry: the advisory set covers consumer max-deliveries, nak, term,
+  lifecycle and leader elections, but nothing fires when a limit evicts a
+  message. Subject delete markers are not a substitute — they are a
+  key-value feature, carrying no message body, emitted only for the last
+  message on a subject, and stamped `Nats-Rollup: sub`, which purges the
+  subject. Per-source streams would give TTL *deletion*, never TTL *routing*.
+- **Publish confirmation would weaken.** Sourcing is asynchronous, so a
+  confirmed publish would mean "durable in the origin stream", not "durable
+  in the bound source" — a real regression against AMQP, where a publisher
+  confirm covers every bound queue.
+- **It multiplies cost per message and per source.** Every message is stored
+  once more (origin plus each source), every source adds a replication group,
+  and on a replicated stream with synchronous flushing the sourcing hop is an
+  additional synchronous write per message per source, on the path that
+  already bounds throughput.
+- **`WorkQueuePolicy` is narrower than a queue.** It rejects multiple
+  unfiltered consumers (err 10099), non-unique filtered consumers (10100),
+  and any consumer that is not deliver-all (10101), so the delete-on-ack prize
+  comes with constraints a queue does not have.
+- **Origin retention becomes a correctness dependency.** If the origin's
+  `MaxAge` elapses before a lagging source stream has sourced a message, the
+  message is lost silently — a failure mode the current topology does not have.
+
+Switching the shared stream to `InterestPolicy` was also considered, as a
+cheaper route to delete-on-ack that keeps one stream per address. It is
+wrong here: interest is evaluated at publish time, so a message published
+before any consumer exists is discarded immediately. That would break
+`Offset: first` replay and any stream-typed source, which exist precisely to
+read a retained log. Queue-like and log-like sources share an address
+stream and want opposite retention; `LimitsPolicy` is the only policy correct
+for both, and over-retention is a storage cost rather than a correctness one.
+
+Revisit this decision if a deployment needs per-source expiry or max-length,
+or if delete-on-ack becomes a storage problem that `MaxAge` and `MaxBytes`
+cannot contain — and only if the weaker publish-confirm guarantee is
+acceptable there. Note that `Retention` cannot be changed into or out of
+`WorkQueuePolicy` on a live stream, so any such move is a stream-recreate
+migration, not a configuration change.
+
 ## Operational resilience
 
 Five mechanisms harden the connector against a cold or busy broker. All are
@@ -515,7 +601,8 @@ amqp091 connector, so existing client sources validate unchanged:
   view. A `STREAM` source reports no message count at all, as on amqp091:
   the readers of one retained log have no common backlog, and their reading
   is the offset pair instead. A stream with no offset to report answers with
-  RabbitMQ's own `Offset not found` error rather than a silent zero. A durable source's consumer count is likewise per source: the number
+  RabbitMQ's own `Offset not found` error rather than a silent zero. A
+  durable source's consumer count is likewise per source: the number
   of clients with an open pull request on its consumer — a client working
   through a full pull buffer can briefly read as zero — while sources
   without a durable consumer report the stream-wide consumer count, which
