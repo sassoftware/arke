@@ -675,11 +675,11 @@ func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDeta
 
 		err = amqpChannel.ExchangeDeclare(address.GetName(), exchangeType, address.GetAutoDelete())
 		if err != nil {
-			util.Logger.Warn(i18n.ClientExchangeDeclareError, err.Error(), bd.ClientIdentifier)
-			if ignoreDeclareError(err) {
-				util.Logger.Debugf("Ignoring error declaring exchange %s: %s", address.GetName(), err.Error())
-				return nil
+			if !ignoreDeclareError(err) {
+				util.Logger.Warn(i18n.ClientExchangeDeclareError, err.Error(), bd.ClientIdentifier)
+				return err
 			}
+			util.Logger.Debugf("Ignoring error declaring exchange %s: %s", address.GetName(), err.Error())
 		}
 
 		bd.knownExchanges.Add(address.GetName(), true)
