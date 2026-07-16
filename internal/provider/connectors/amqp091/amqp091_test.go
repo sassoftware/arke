@@ -2251,6 +2251,75 @@ func Test_Publish_ErrorDeclareExchange(t *testing.T) {
 	sbmock.AssertExpectations(t)
 }
 
+func Test_IgnoreDeclareError(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{name: "nil error", err: nil, expected: true},
+		{name: "precondition failed error", err: errors.New("PRECONDITION_FAILED inequivalent arg"), expected: true},
+		{name: "other error", err: errors.New("some other error"), expected: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			result := ignoreDeclareError(c.err)
+			assert.Equal(t, c.expected, result)
+		})
+	}
+}
+
+func Test_PublishOne_ErrorDeclareExchange(t *testing.T) {
+	prov := NewAMQP091Provider()
+
+	oldGetClientIdentifier := GetClientIdentifier
+	GetClientIdentifier = func(context.Context) (string, error) {
+		return "1234", nil
+	}
+
+	address := stockAddress()
+	msg := stockMessage(address)
+	expectedMsg := stockAmqpMessage(msg)
+
+	cmock := &amqpChannelMock{}
+	sbmock := &amqpChannelMock{}
+	cmock.On("IsClosed").Return(false)
+	cmock.On("Publish", address.GetName(), address.GetSubjects()[0], expectedMsg).Return(nil).Once()
+	sbmock.On("ExchangeDeclare", address.GetName(), "headers", address.GetAutoDelete()).Return(errors.New("declareerr")).Once()
+
+	amock := &amqpConnectionMock{}
+	amock.On("Connect").Return(nil)
+	amock.On("IsClosed").Return(false)
+
+	errChan := make(chan amqp091Error)
+	amock.On("NotifyClose").Return(errChan)
+	amock.On("NewChannel", false).Return(cmock, nil)
+	amock.On("StandbyChannel").Return(sbmock, nil)
+
+	oldNewAmqpConn091 := NewAmqpConn091
+	NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
+		return amock
+	}
+
+	defer func() {
+		GetClientIdentifier = oldGetClientIdentifier
+		NewAmqpConn091 = oldNewAmqpConn091
+	}()
+
+	ctx := context.Background()
+	cc := &pb.ConnectionConfiguration{}
+	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(ctx, prov)
+	assert.Nil(t, err)
+
+	err = prov.PublishOne(ctx, msg)
+	assert.Nil(t, err)
+
+	cmock.AssertExpectations(t)
+	amock.AssertExpectations(t)
+	sbmock.AssertExpectations(t)
+}
+
 func Test_newAmqp091Error(t *testing.T) {
 	e := "myError"
 	code := 123

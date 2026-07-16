@@ -375,7 +375,10 @@ func (prov *amqp091provider) Retry(ctx context.Context, origSource *pb.Source, m
 
 			declareErr = prov.declareBinding(retrySource, bd, false)
 			if declareErr != nil {
-				util.Logger.Debugf("Failed to bind retry queue [%s] to exchange [%s]", retrySource.GetName(), retrySource.GetAddress().GetName())
+				msg := fmt.Sprintf("Failed to bind retry queue [%s] to exchange [%s]: %s", retrySource.GetName(), retrySource.GetAddress().GetName(), declareErr.Error())
+				util.Logger.Debug(msg)
+				retrySpan.RecordError(declareErr)
+				return &pb.Error{Message: msg}
 			}
 
 			retrySpan.AddEvent("retry binding created")
@@ -639,6 +642,16 @@ func (bd *BrokerDetails) decrementStreamCount() {
 	bd.updateLastPubSubEvent()
 }
 
+func ignoreDeclareError(err error) bool {
+	if err == nil {
+		return true
+	}
+	if strings.Contains(err.Error(), "PRECONDITION_FAILED") && strings.Contains(err.Error(), "inequivalent arg") {
+		return true
+	}
+	return false
+}
+
 func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDetails) error {
 	// don't try to declare an exchange with amq. in the name
 	if strings.Contains(address.GetName(), "amq.") {
@@ -662,8 +675,11 @@ func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDeta
 
 		err = amqpChannel.ExchangeDeclare(address.GetName(), exchangeType, address.GetAutoDelete())
 		if err != nil {
-			util.Logger.Warn(i18n.ClientExchangeDeclareError, err.Error(), bd.ClientIdentifier)
-			return err
+			if !ignoreDeclareError(err) {
+				util.Logger.Warn(i18n.ClientExchangeDeclareError, err.Error(), bd.ClientIdentifier)
+				return err
+			}
+			util.Logger.Debugf("Ignoring error declaring exchange %s: %s", address.GetName(), err.Error())
 		}
 
 		bd.knownExchanges.Add(address.GetName(), true)
