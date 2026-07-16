@@ -347,8 +347,9 @@ an acked message stays in the log and is only evicted when a configured limit
 To stop a stream growing without bound, `ensureStream` sets:
 
 - `MaxAge` (default 72h, override with `NATSJS_STREAM_MAX_AGE`) — the time
-  guard. It is the natural map for AMQP `MessageTTL` / `Expires` (both
-  durations). It is mutable, so it also reins in streams created before a limit
+  guard. It is the natural map for AMQP `MessageTTL` (a message-age duration;
+  `Expires` is queue disuse and maps to the consumer instead — see Source
+  options). It is mutable, so it also reins in streams created before a limit
   existed.
 - `MaxBytes` (default unlimited, override with `NATSJS_STREAM_MAX_BYTES`) — an
   optional hard storage cap. With `discard=old` it only evicts near the cap, so
@@ -533,7 +534,8 @@ Legend: **Native** = NATS does it; **Proxy** = rebuilt in the connector;
 | Dead-letter (DLX) | Proxy | No native DLX; republish to DLQ subject then `Term()`. |
 | Header-filter exchange (`Filter` / `Match`) | Proxy | NATS routes on subject; evaluated in `evaluateFilters` (see limitations). |
 | Address-to-address binding (`ParentAddress`) | Native | The child's stream sources the bound subjects from the parent's, keeping each message's subject. |
-| `MessageTTL` / `Expires` | Partial | Mapped onto stream-level `MaxAge` (see limitations). |
+| `MessageTTL` (per-queue message TTL) | Drop | Accepted but not applied; retention is the stream-level `MaxAge` (see limitations). |
+| `Expires` (queue disuse expiry) | Native | Consumer `InactiveThreshold`; the consumer is deleted after that long without an attached client. |
 | Dead-letter on message expiry | Drop | RabbitMQ expires a message off a queue into its DLX; per-source TTL is not applied here, so nothing expires per source to dead-letter (see limitations). |
 | Source stats (depth / consumers) | Native | JetStream stream / consumer `Info`. |
 | Max message size | Partial | NATS caps a payload at the server's `max_payload` (1MB default) where RabbitMQ's `max_message_size` default is 16MB (see limitations). |
@@ -549,7 +551,7 @@ amqp091 connector, so existing client sources validate unchanged:
 | Key | Type | Description |
 | --- | --- | --- |
 | `MessageTTL` | string (ms) | Accepted for compatibility; not applied per source — retention is the stream-wide `NATSJS_STREAM_MAX_AGE` (see Known limitations). A warning is logged at subscribe time. |
-| `Expires` | string (ms) | Accepted for compatibility; not applied — streams are shared per address root and are not deleted when a source goes unused. A warning is logged at subscribe time. |
+| `Expires` | string (ms) | How long the source may go without an attached consumer before the broker deletes it (AMQP `x-expires`), mapped to the consumer's `InactiveThreshold`. Unset keeps the defaults: transient sources expire after 5 minutes (the same default amqp091 applies to auto-delete/exclusive queues), durable sources never expire. Deletion removes the consumer and its ack state only; the messages stay in the shared stream under its own retention. A non-integer or non-positive value fails the subscribe. |
 | `DeadLetterAddress` | string | Address whose stream receives dead-lettered messages. |
 | `DeadLetterSubject` | string | Routing-key override for dead-lettered messages; when unset, the copy keeps the message's original routing key (RabbitMQ's default dead-letter behavior). |
 | `Offset` | string | Stream starting offset (`first`, `continue`, `last`, `next`, or a number counting from 0, as reported by `SourceStats`). |
@@ -558,17 +560,20 @@ amqp091 connector, so existing client sources validate unchanged:
 ## Known limitations
 
 - **Per-source TTL fidelity, and expiry-driven dead-lettering.** The
-  connector uses one stream per address root, so a per-source `MessageTTL` /
-  `Expires` cannot be mapped onto the shared stream without one source's
-  value flapping another's retention. Both options are therefore accepted but
-  not applied, and a subscribe that sets either logs a warning naming the
-  source — silent divergence in data retention is the one place a client must
-  not have to read a design doc to notice. Retention comes from the
-  stream-wide `NATSJS_STREAM_MAX_AGE` / `NATSJS_STREAM_MAX_BYTES`
-  configuration. True per-source TTL (or switching queue sources to a
-  delete-on-ack policy such as `WorkQueuePolicy` / `InterestPolicy`) needs a
-  per-source stream topology, and `Retention` is immutable, so that is a
-  stream-recreate migration rather than an in-place change.
+  connector uses one stream per address root, so a per-source `MessageTTL`
+  cannot be mapped onto the shared stream without one source's value
+  flapping another's retention. That option is therefore accepted but not
+  applied, and a subscribe that sets it logs a warning naming the source —
+  silent divergence in data retention is the one place a client must not
+  have to read a design doc to notice. (`Expires` is different: it governs
+  the *source's* lifetime, not its messages', and consumers are per-source,
+  so it maps cleanly onto the consumer's `InactiveThreshold` and IS
+  applied — see Source options.) Retention comes from the stream-wide
+  `NATSJS_STREAM_MAX_AGE` / `NATSJS_STREAM_MAX_BYTES` configuration. True
+  per-source TTL (or switching queue sources to a delete-on-ack policy such
+  as `WorkQueuePolicy` / `InterestPolicy`) needs a per-source stream
+  topology, and `Retention` is immutable, so that is a stream-recreate
+  migration rather than an in-place change.
 
   A consequence worth stating on its own: RabbitMQ's per-queue TTL doubles as
   a routing mechanism, expiring a message off its queue and *into* the

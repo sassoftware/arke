@@ -654,6 +654,93 @@ func TestPrefetchMapsToMaxAckPending(t *testing.T) {
 	assert.Equal(t, -1, maxAckPending("events.prefetch.unlimited", 0))
 }
 
+// TestExpiresSetsInactiveThreshold: the Expires option (AMQP x-expires —
+// delete the queue after this many ms without consumers) must become the
+// consumer's InactiveThreshold, for durables and ephemerals alike; unset
+// keeps the defaults (durables never expire, transients get
+// defaultInactiveThreshold). Pre-fix the value was accepted, warned about,
+// and silently ignored: durables got no threshold and ephemerals always got
+// the 5-minute default, so a client shortening or lengthening its queue's
+// disuse lifetime diverged from amqp091 without any signal.
+func TestExpiresSetsInactiveThreshold(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+
+	durableThreshold := func(name string, opts map[string]string) time.Duration {
+		t.Helper()
+		src := queueSource(name, "events.expires", "e")
+		for k, v := range opts {
+			src.Options[k] = v
+		}
+		src.DeclareOnly = true
+		require.Nil(t, p.Subscribe(ctx, src, nil))
+		stream, serr := bd.js.Stream(ctx, streamNameFor("events.expires"))
+		require.NoError(t, serr)
+		cons, cerr := stream.Consumer(ctx, durableName(src))
+		require.NoError(t, cerr)
+		return cons.CachedInfo().Config.InactiveThreshold
+	}
+
+	assert.Equal(t, 2*time.Minute,
+		durableThreshold("events.expires.set", map[string]string{"Expires": "120000"}),
+		"a durable's Expires must become its InactiveThreshold")
+	assert.Zero(t, durableThreshold("events.expires.unset", nil),
+		"a durable without Expires never expires")
+
+	// Ephemeral consumers are deleted eagerly when their subscription ends,
+	// so inspect the config while the subscription is live.
+	ephemeralThreshold := func(name string, opts map[string]string) time.Duration {
+		t.Helper()
+		src := &pb.Source{
+			Name:       name,
+			Type:       pb.Source_QUEUE,
+			AutoDelete: true, // transient -> ephemeral consumer
+			Address:    &pb.Address{Name: "events.expires.tmp." + name, Subjects: []string{"e"}},
+			Options:    opts,
+		}
+		require.Empty(t, durableName(src), "test source must map to an ephemeral consumer")
+		subCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go p.Subscribe(subCtx, src, make(chan *pb.Message, 1))
+		var threshold time.Duration
+		require.Eventually(t, func() bool {
+			stream, serr := bd.js.Stream(ctx, streamNameFor(src.GetAddress().GetName()))
+			if serr != nil {
+				return false
+			}
+			infos := stream.ListConsumers(ctx)
+			for info := range infos.Info() {
+				threshold = info.Config.InactiveThreshold
+				return true
+			}
+			return false
+		}, 10*time.Second, 20*time.Millisecond, "ephemeral consumer never appeared")
+		return threshold
+	}
+
+	assert.Equal(t, time.Minute,
+		ephemeralThreshold("eph.set", map[string]string{"Expires": "60000"}),
+		"a transient source's Expires must become its InactiveThreshold")
+	assert.Equal(t, defaultInactiveThreshold, ephemeralThreshold("eph.unset", nil),
+		"a transient source without Expires keeps the default threshold")
+}
+
+func TestSubscribeInvalidExpiresRejected(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	for _, bad := range []string{"10m", "0", "-5"} {
+		src := queueSource("events.expires.bad", "events.expires.bad", "e")
+		src.Options["Expires"] = bad
+		src.DeclareOnly = true // the reject must come before any topology work
+		serr := p.Subscribe(ctx, src, nil)
+		require.NotNil(t, serr, "Expires=%q must be rejected", bad)
+		assert.True(t, serr.GetIsFatal())
+		assert.Contains(t, serr.GetMessage(), "value for Expires option must be")
+	}
+}
+
 func TestDeduplication(t *testing.T) {
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)
@@ -2553,6 +2640,28 @@ func TestUnappliedSourceOptions(t *testing.T) {
 	assert.Empty(t, unappliedSourceOptions(src(nil)))
 	assert.Empty(t, unappliedSourceOptions(src(map[string]string{"Offset": "first", "MessageTTL": ""})))
 	assert.Equal(t, []string{"MessageTTL"}, unappliedSourceOptions(src(map[string]string{"MessageTTL": "300000"})))
-	assert.Equal(t, []string{"MessageTTL", "Expires"},
+	// Expires is applied (consumer InactiveThreshold), so it must not be
+	// reported — and warned about — as unapplied.
+	assert.Equal(t, []string{"MessageTTL"},
 		unappliedSourceOptions(src(map[string]string{"MessageTTL": "300000", "Expires": "600000"})))
+}
+
+func TestExpiresThreshold(t *testing.T) {
+	src := func(opts map[string]string) *pb.Source { return &pb.Source{Options: opts} }
+
+	d, err := expiresThreshold(src(nil))
+	require.NoError(t, err)
+	assert.Zero(t, d, "unset means the kind's default applies")
+
+	d, err = expiresThreshold(src(map[string]string{"Expires": "600000"}))
+	require.NoError(t, err)
+	assert.Equal(t, 10*time.Minute, d)
+
+	_, err = expiresThreshold(src(map[string]string{"Expires": "10m"}))
+	require.EqualError(t, err, "value for Expires option must be a quoted integer",
+		"error string mirrors the amqp091 connector")
+	_, err = expiresThreshold(src(map[string]string{"Expires": "0"}))
+	require.EqualError(t, err, "value for Expires option must be a positive integer")
+	_, err = expiresThreshold(src(map[string]string{"Expires": "-5"}))
+	require.EqualError(t, err, "value for Expires option must be a positive integer")
 }

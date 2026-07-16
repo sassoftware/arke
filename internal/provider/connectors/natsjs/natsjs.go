@@ -759,14 +759,24 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	if err != nil {
 		return &pb.Error{Message: err.Error(), IsFatal: true}
 	}
-	// MessageTTL/Expires are accepted so existing client sources validate
-	// against SupportedSourceOptions, but retention here is stream-wide: warn
-	// instead of silently ignoring them, so a source owner asking for a short
+	// MessageTTL is accepted so existing client sources validate against
+	// SupportedSourceOptions, but retention here is stream-wide: warn
+	// instead of silently ignoring it, so a source owner asking for a short
 	// TTL learns their data outlives it without reading the design doc.
 	if unapplied := unappliedSourceOptions(source); len(unapplied) > 0 {
 		util.Logger.Warn(
 			"natsjs: source {0} sets {1}, which natsjs accepts but does not apply; retention is stream-wide (NATSJS_STREAM_MAX_AGE / NATSJS_STREAM_MAX_BYTES)",
 			source.GetName(), strings.Join(unapplied, ", "))
+	}
+	// Expires, by contrast, IS applied: it becomes the consumer's
+	// InactiveThreshold (see below), so validate it up front before any
+	// topology is created.
+	expires, xerr := expiresThreshold(source)
+	if xerr != nil {
+		return &pb.Error{
+			Message: fmt.Sprintf("source %q: %s", source.GetName(), xerr.Error()),
+			IsFatal: true,
+		}
 	}
 	// A single-active stream source must name the ConsumerGroup its instances
 	// coordinate through (see durableName); amqp091 rejects this combination
@@ -836,6 +846,17 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	// DeliverPolicy only applies on first creation; reconnects resume from the
 	// durable's stored ack position. Transient (auto-delete/exclusive/TEMPORARY)
 	// sources stay ephemeral and auto-expire after InactiveThreshold.
+	//
+	// The Expires option (AMQP x-expires: delete the queue after this many ms
+	// without consumers) maps onto InactiveThreshold for BOTH kinds — the
+	// broker deletes the consumer once nothing has pulled from it for the
+	// threshold, exactly the disuse-deletion x-expires asks for. Only the
+	// consumer is deleted; the messages stay in the shared per-address stream
+	// under its own retention (see Known limitations in the design doc).
+	// Unset keeps the amqp091 defaults: transient sources expire after
+	// defaultInactiveThreshold (amqp091 defaults auto-delete/exclusive queues
+	// to the same 5 minutes), durables never expire.
+	consCfg.InactiveThreshold = expires
 	if durable := durableName(source); durable != "" {
 		consCfg.Durable = durable
 		if source.GetSingleActiveConsumer() {
@@ -851,7 +872,7 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 			consCfg.PriorityGroups = []string{sacPriorityGroup}
 			consCfg.PinnedTTL = sacPinnedTTL()
 		}
-	} else {
+	} else if expires == 0 {
 		consCfg.InactiveThreshold = defaultInactiveThreshold
 	}
 
@@ -1175,15 +1196,41 @@ func deleteEphemeralConsumer(ctx context.Context, stream jetstream.Stream, name 
 // unappliedSourceOptions returns the retention options the source sets that
 // natsjs accepts (so sources written for the amqp091 connector still validate)
 // but does not apply — retention on natsjs is stream-wide (see streamMaxAge
-// and the design doc's Known limitations).
+// and the design doc's Known limitations). Expires is NOT in this list: it
+// maps onto the consumer's InactiveThreshold (see expiresThreshold).
 func unappliedSourceOptions(source *pb.Source) []string {
 	var unapplied []string
-	for _, opt := range []string{"MessageTTL", "Expires"} {
+	for _, opt := range []string{"MessageTTL"} {
 		if source.GetOptions()[opt] != "" {
 			unapplied = append(unapplied, opt)
 		}
 	}
 	return unapplied
+}
+
+// expiresThreshold parses the Expires source option — AMQP x-expires, the
+// number of milliseconds a queue may go unused before the broker deletes it —
+// into the consumer InactiveThreshold that implements the same disuse
+// deletion here. Zero (with nil error) means the option is unset and the
+// caller applies its kind's default. The error strings mirror the amqp091
+// connector, which validates the same option the same way; the broker itself
+// rejects a non-positive x-expires, so that case is refused here too rather
+// than passed through (a zero threshold would mean "never expire" for a
+// durable but "server default" for an ephemeral — neither is what the client
+// asked for).
+func expiresThreshold(source *pb.Source) (time.Duration, error) {
+	raw := source.GetOptions()["Expires"]
+	if raw == "" {
+		return 0, nil
+	}
+	val, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, errors.New("value for Expires option must be a quoted integer")
+	}
+	if val <= 0 {
+		return 0, errors.New("value for Expires option must be a positive integer")
+	}
+	return time.Duration(val) * time.Millisecond, nil
 }
 
 // deliverPolicyFor maps the RabbitMQ-Streams `Offset` option onto a JetStream
