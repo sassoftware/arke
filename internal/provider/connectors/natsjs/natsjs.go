@@ -146,6 +146,14 @@ type natsBrokerDetails struct {
 	state    atomic.Uint32
 	consumed int64
 	produced int64
+
+	// clientDisconnect distinguishes a client-initiated Disconnect from the
+	// NATS library closing the connection terminally (both read state CLOSED):
+	// a disconnected client's Subscribe parks until its stream ends instead of
+	// ending the stream. Set before the consume contexts are stopped, so any
+	// Subscribe woken by that teardown observes it. Mirrors amqp091's flag of
+	// the same name.
+	clientDisconnect atomic.Bool
 }
 
 // durableFilterUse records the shared header-filter fingerprint of a durable's
@@ -376,7 +384,9 @@ func (p *natsjsProvider) getBrokerDetails(ctx context.Context) (*natsBrokerDetai
 	if bd := p.getBrokerDetailsByIdentifier(clientID); bd != nil {
 		return bd, nil
 	}
-	return nil, fmt.Errorf("could not retrieve broker details for connection: %s", clientID)
+	// Error string matches the amqp091 connector: clients (and the
+	// integration suite) observe it through the ack path after a disconnect.
+	return nil, fmt.Errorf("could not retrieve broker details for this connection: %s", clientID)
 }
 
 func (p *natsjsProvider) getBrokerDetailsByIdentifier(id string) *natsBrokerDetails {
@@ -505,7 +515,9 @@ func (p *natsjsProvider) Disconnect(ctx context.Context) {
 	}
 	// Mark the connection closed before stopping its consume contexts:
 	// stopping one wakes its Subscribe (Closed() fires), which reads the
-	// state to tell deliberate teardown from a consumer lost on the server.
+	// state to tell deliberate teardown from a consumer lost on the server —
+	// and the flag to tell a client's own Disconnect from a terminal close.
+	bd.clientDisconnect.Store(true)
 	bd.state.Store(provider.CLOSED)
 	for _, name := range bd.consumeContexts.GetList() {
 		if cc, ok := bd.consumeContexts.Get(name); ok {
@@ -1054,6 +1066,22 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		// fires for this connection's own teardown (Disconnect stops every
 		// consume context, Drain closes the subscriptions), which is not an
 		// error — the context or connection state says which case this is.
+		if bd.clientDisconnect.Load() && ctx.Err() == nil {
+			// Client-initiated Disconnect with the consume stream still
+			// open: do not end the subscription — returning here would end
+			// the caller's whole consume stream, but the amqp091 connector
+			// leaves it open (its subscribe loop just goes quiet once the
+			// AMQP connection closes), so a client that disconnects and
+			// then acks its in-flight messages gets each ack answered with
+			// a "could not retrieve broker details" failure rather than
+			// end-of-stream. Delivery cannot resume — the consume context
+			// is stopped and the connection is draining — so just wait for
+			// the client to close its stream. Scoped to the client's own
+			// Disconnect (not any CLOSED state): a connection the library
+			// closed terminally still ends the subscription.
+			<-ctx.Done()
+			return nil
+		}
 		if ctx.Err() != nil || bd.state.Load() == provider.CLOSED {
 			return nil
 		}

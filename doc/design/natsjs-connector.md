@@ -498,6 +498,16 @@ forming a raft group per stream and per durable consumer:
   and, after a storage wipe, the stream. A recreated durable starts from
   its configured `Offset`, like a re-declared queue starts empty.
 
+One teardown case deliberately does NOT end `Subscribe`: a client-initiated
+`Disconnect` while its consume stream is still open. Ending the subscription
+would end the caller's whole consume stream, but the amqp091 connector
+leaves that stream open — its subscribe loop just goes quiet once the AMQP
+connection closes — so a client that disconnects and then acks straggler
+in-flight messages gets each ack answered with a "could not retrieve broker
+details" failure rather than end-of-stream. `Subscribe` blocks until the
+stream's own context ends; delivery cannot resume either way, because the
+disconnect already stopped the consume machinery and drained the connection.
+
 ## Configuration
 
 | Environment variable | Default | Meaning |

@@ -112,6 +112,49 @@ func TestConnectDisconnect(t *testing.T) {
 	assert.False(t, p.ClientExists("test-client"))
 }
 
+// TestSubscribeOutlivesDisconnect: a client-initiated Disconnect must not end
+// a live Subscribe — ending it ends the caller's whole consume stream, but
+// the amqp091 connector leaves that stream open (its subscribe loop goes
+// quiet when the AMQP connection closes), so a client that disconnects and
+// then acks straggler messages gets per-ack failures, not end-of-stream.
+// Subscribe may only return once the subscription's own context ends.
+func TestSubscribeOutlivesDisconnect(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+
+	src := queueSource("events.disc.q", "events.disc", "e")
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan *pb.Error, 1)
+	go func() { done <- p.Subscribe(subCtx, src, make(chan *pb.Message, 1)) }()
+
+	require.Eventually(t, func() bool {
+		stream, serr := bd.js.Stream(ctx, streamNameFor("events.disc"))
+		if serr != nil {
+			return false
+		}
+		info, ierr := stream.Info(ctx)
+		return ierr == nil && info.State.Consumers == 1
+	}, 10*time.Second, 20*time.Millisecond, "subscription never established")
+
+	p.Disconnect(ctx)
+
+	select {
+	case serr := <-done:
+		t.Fatalf("Subscribe ended on Disconnect (%v); it must stay open until the stream context ends", serr)
+	case <-time.After(2 * time.Second):
+	}
+
+	cancel()
+	select {
+	case serr := <-done:
+		assert.Nil(t, serr, "a disconnected subscription ends cleanly with its context")
+	case <-time.After(10 * time.Second):
+		t.Fatal("Subscribe did not return after its context ended")
+	}
+}
+
 // TestConcurrentConnectClosesRedundantLink: the gRPC server's "already
 // connected?" check is not atomic, so two Connect calls for one client
 // identifier can both reach the provider. Only one connection may survive; the
