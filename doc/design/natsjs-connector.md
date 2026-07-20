@@ -328,6 +328,34 @@ same message deduplicates in the DLQ within its dedup window, and the
 broker-side move preserves the death trail in `x-death`, and the retry count
 is this connector's equivalent (a plain republish would lose it).
 
+### Rejected alternative: advisory-driven dead-lettering
+
+JetStream publishes advisories when a consumer exhausts `MaxDeliver`
+(`$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.<stream>.<consumer>`) or when a
+message is terminated (`…MSG_TERMINATED.…`), and a common NATS idiom builds a
+"dead-letter queue" as an ordinary stream capturing those subjects. That
+idiom was considered and rejected for this connector.
+
+An advisory carries metadata, not the message: its payload names the origin
+`stream_seq`, so a reader has to fetch the original out of the primary stream
+to see the body or headers. A dead-letter consumer would then have to speak
+two protocols — advisory JSON, then a stream fetch — where its AMQP
+counterpart just consumes the dead-lettered message off a queue. It also
+inherits the primary stream's retention: once `MaxAge` evicts the original,
+the advisory still resolves to nothing, so the dead-letter record decays into
+a dangling pointer exactly when it is most likely to be read.
+
+Republishing the message itself keeps the DLQ a normal address that an
+unmodified AMQP client can consume, preserves the body, headers and
+`x-retry-count`, and gives the dead-letter copy retention independent of the
+original. The cost is that the move is two proxy-side steps rather than one
+broker-side one, which the ordering above is designed to make safe.
+
+The advisory subjects would become relevant only if this connector set
+`MaxDeliver`, as the hook for routing a delivery-exhausted message into the
+same republish path instead of letting the consumer silently skip it. It does
+not set `MaxDeliver` — see the redelivery limitation below.
+
 ## Retry-count header
 
 Clients that count retries via an `x-retry-count` header (rather than
@@ -648,9 +676,28 @@ amqp091 connector, so existing client sources validate unchanged:
   durable's is therefore rejected (subject filters, which the server enforces,
   still update the shared consumer in place).
 - **Dead-letter is a proxy-side republish.** The DLQ is an ordinary stream
-  fed by the connector; there is no advisory-driven re-consumption. A failed
-  DLQ publish fails the dead-letter call — the message stays in flight and is
+  fed by the connector; there is no advisory-driven re-consumption (see
+  "Rejected alternative: advisory-driven dead-lettering"). A failed DLQ
+  publish fails the dead-letter call — the message stays in flight and is
   redelivered — rather than dropping the message.
+- **Redelivery is unbounded.** The connector does not set `MaxDeliver`, so a
+  message that is delivered and then neither acked nor nacked — a consumer
+  that wedges, or crashes mid-handler in a loop — is redelivered every
+  `NATSJS_ACK_WAIT` for as long as the subscription lives. RabbitMQ quorum
+  queues apply a delivery limit (20 by default on 4.x) and, on reaching it,
+  dead-letter the message if the queue has a dead-letter exchange or drop it
+  if it does not. The difference is deliberate: the two brokers count
+  deliveries differently, because RabbitMQ's delayed-retry idiom republishes
+  the message through a TTL queue and a dead-letter exchange, which resets its
+  delivery count, while `Retry` here is a `NakWithDelay` that increments the
+  same `NumDelivered` a delivery limit would cap. A `MaxDeliver` chosen to
+  match RabbitMQ's limit would therefore cut off *retries* that RabbitMQ
+  allows without bound — breaking clients whose retry policy deliberately
+  retries far more than 20 times — and separating the two cases would need
+  per-message state the broker does not keep. Retaining the message is also
+  the safer divergence: nothing is lost, and the stall is visible as the
+  consumer's `num_pending`. Deployments that want a ceiling should alert on
+  redelivery rate rather than ask the broker to discard.
 - **Transient sources are per-subscriber.** A transient (auto-delete /
   exclusive / TEMPORARY) source maps to an ephemeral consumer created per
   subscription, so two clients subscribing with the same transient source
