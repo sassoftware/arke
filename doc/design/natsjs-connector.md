@@ -42,6 +42,15 @@ an empty routing key maps to the bare prefix `events.orders.~`. A JetStream
 stream named `arke_<address>` captures `<address>.~` and `<address>.~.>`, and
 each consumer filters on the mapped source subjects.
 
+The stream for an address is asserted on use: a subscribe (or declare-only
+call) creates it, and so does a publish — with one exception. A unary publish
+to a `STREAM` address requires the stream to exist already, exactly as
+amqp091's stream publisher refuses a stream nobody declared: declaring a
+stream is its readers' job, and auto-creating it would turn a typo'd address
+name into a junk stream storing messages no reader will ever see. The
+streaming publish path does not check, matching amqp091, which sends every
+address type over an auto-declared exchange without error.
+
 Stream names (and durable consumer names, which JetStream validates the same
 way) may not contain `.`, whitespace, `*`, `>`, `/` or `\`, so they are
 derived from the address (or source / consumer-group) name by swapping dots

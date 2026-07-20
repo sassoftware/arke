@@ -54,6 +54,13 @@ const (
 	queueDedupError         = "Message deduplication is not supported by Queue types"
 )
 
+// streamMissingError answers a unary publish to a STREAM address whose stream
+// was never declared. amqp091's wording there is stream-client plumbing
+// ("failed to create a stream publisher"), so instead of copying it this takes
+// the RabbitMQ stream client's canonical phrase; the contract a client relies
+// on is that the publish errors rather than creating the stream.
+const streamMissingError = "publish: stream %q does not exist"
+
 const (
 	// defaultAckWait is how long the server waits for an ack before
 	// redelivering a message. See ackWait for the trade-off it sets;
@@ -622,6 +629,26 @@ func (p *natsjsProvider) ensureStreamFor(ctx context.Context, bd *natsBrokerDeta
 	return streamName, nil
 }
 
+// lookupStream answers the stream name backing an address only if the stream
+// already exists on the server; it never creates one. The unary publish path
+// uses it for STREAM addresses, where declaring the stream is the reader's job
+// (see PublishOne). A hit is memoized alongside ensureStreamFor's entries:
+// either way the connection has established that the stream exists, which is
+// all the memo records.
+func (p *natsjsProvider) lookupStream(ctx context.Context, bd *natsBrokerDetails, addr *pb.Address) (string, error) {
+	streamName := streamNameFor(addr.GetName())
+	if _, ok := bd.knownStreams.Get(streamName); ok {
+		return streamName, nil
+	}
+	lctx, cancel := context.WithTimeout(ctx, jsAPITimeout())
+	defer cancel()
+	if _, err := bd.js.Stream(lctx, streamName); err != nil {
+		return "", err
+	}
+	bd.knownStreams.Add(streamName, true)
+	return streamName, nil
+}
+
 // boundSources merges bindings into the stream's existing source set, so a
 // second address-to-address binding adds to the first rather than replacing
 // it. Bindings accumulate the same way on RabbitMQ, where declaring one never
@@ -699,7 +726,7 @@ func (p *natsjsProvider) Publish(ctx context.Context, in <-chan *pb.Message, err
 				errChan <- &pb.Error{Message: unsupportedConfirmError}
 				continue
 			}
-			errChan <- p.publishMsg(ctx, bd, msg)
+			errChan <- p.publishMsg(ctx, bd, msg, false)
 		}
 	}
 }
@@ -709,22 +736,25 @@ func (p *natsjsProvider) PublishOne(ctx context.Context, msg *pb.Message) *pb.Er
 	if err != nil {
 		return &pb.Error{Message: err.Error(), IsFatal: true}
 	}
-	return p.publishMsg(ctx, bd, msg)
+	// A STREAM address must name a stream that already exists: amqp091 routes
+	// unary stream publishes through the RabbitMQ Streams client, which
+	// refuses a stream nobody declared (declaring is the reader's job —
+	// streamSubscribe's DeclareStream). Auto-creating here instead would turn
+	// a typo'd address name into a junk stream that swallows messages no
+	// reader will ever see. Only this unary path checks: amqp091's streaming
+	// Publish sends every address type, STREAM included, over an
+	// auto-declared exchange and reports no error either, so the streaming
+	// path keeps the auto-create.
+	requireDeclared := msg.GetAddress().GetType() == pb.Address_STREAM
+	return p.publishMsg(ctx, bd, msg, requireDeclared)
 }
 
-func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, msg *pb.Message) *pb.Error {
+func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, msg *pb.Message, requireDeclared bool) *pb.Error {
 	addr := msg.GetAddress()
-	streamName, err := p.ensureStreamFor(ctx, bd, addr)
-	if err != nil {
-		return &pb.Error{Message: fmt.Sprintf("ensure stream: %s", err.Error())}
-	}
-	nmsg := &nats.Msg{
-		Subject: publishSubjectFor(addr.GetName(), firstSubject(addr)),
-		Data:    msg.GetBody(),
-		Header:  pbToNatsHeader(msg.GetHeaders()),
-	}
-	var pubOpts []jetstream.PublishOpt
-	// publish_id + publisher_name -> Nats-Msg-Id (dedup within the stream window).
+	// Message-contract refusals come before any topology is touched: amqp091
+	// refuses both of these before it reaches for the stream or exchange, so
+	// a publish that is wrong twice over reports the contract error, not the
+	// missing stream — and a refused publish creates nothing.
 	if msg.GetPublishId() > 0 && addr.GetType() == pb.Address_QUEUE {
 		// JetStream would happily deduplicate this, since dedup here is a
 		// property of the stream rather than of the address type. Refusing it
@@ -737,6 +767,24 @@ func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, 
 	if msg.GetPublishId() > 0 && msg.GetPublisherName() == "" {
 		return &pb.Error{Message: "PublisherName not set on message, PublisherName is required when PublishID is set"}
 	}
+	assertStream := p.ensureStreamFor
+	if requireDeclared {
+		assertStream = p.lookupStream
+	}
+	streamName, err := assertStream(ctx, bd, addr)
+	if errors.Is(err, jetstream.ErrStreamNotFound) {
+		return &pb.Error{Message: fmt.Sprintf(streamMissingError, addr.GetName())}
+	}
+	if err != nil {
+		return &pb.Error{Message: fmt.Sprintf("ensure stream: %s", err.Error())}
+	}
+	nmsg := &nats.Msg{
+		Subject: publishSubjectFor(addr.GetName(), firstSubject(addr)),
+		Data:    msg.GetBody(),
+		Header:  pbToNatsHeader(msg.GetHeaders()),
+	}
+	var pubOpts []jetstream.PublishOpt
+	// publish_id + publisher_name -> Nats-Msg-Id (dedup within the stream window).
 	if msg.GetPublishId() > 0 {
 		pubOpts = append(pubOpts, jetstream.WithMsgID(fmt.Sprintf("%s-%d", msg.GetPublisherName(), msg.GetPublishId())))
 	}
@@ -749,10 +797,14 @@ func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, 
 		// publish — and a NATS client outlives broker state changes that would
 		// sever an AMQP connection. Drop the entry, re-assert the stream, and
 		// retry once; the first attempt was not stored (no stream answered),
-		// so the retry cannot duplicate it.
+		// so the retry cannot duplicate it. For a STREAM address the
+		// re-assertion is the existence check again, so a stream deleted out
+		// from under the connection is reported missing, not resurrected.
 		bd.knownStreams.Delete(streamName)
-		if _, rerr := p.ensureStreamFor(ctx, bd, addr); rerr == nil {
+		if _, rerr := assertStream(ctx, bd, addr); rerr == nil {
 			_, perr = bd.js.PublishMsg(ctx, nmsg, pubOpts...)
+		} else if errors.Is(rerr, jetstream.ErrStreamNotFound) {
+			return &pb.Error{Message: fmt.Sprintf(streamMissingError, addr.GetName())}
 		}
 	}
 	if perr != nil {

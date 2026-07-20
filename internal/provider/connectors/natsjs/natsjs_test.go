@@ -516,6 +516,85 @@ func TestPublishRecreatesDeletedStream(t *testing.T) {
 	assert.Equal(t, uint64(1), stream.CachedInfo().State.Msgs, "the retried publish must be stored")
 }
 
+// TestPublishOneStreamAddressRequiresDeclaredStream pins the amqp091 contract
+// for unary publishes to a STREAM address: the stream must already have been
+// declared by a reader (amqp091 routes these through the RabbitMQ Streams
+// client, which refuses a stream nobody declared), so a typo'd address name
+// errors instead of silently minting a junk stream that swallows the
+// messages.
+func TestPublishOneStreamAddressRequiresDeclaredStream(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.undeclared", Type: pb.Address_STREAM, Subjects: []string{"e"}}
+	perr := p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m")})
+	require.NotNil(t, perr, "publishing to an undeclared stream must fail")
+	assert.Equal(t, fmt.Sprintf(streamMissingError, "events.undeclared"), perr.GetMessage())
+
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	_, serr := bd.js.Stream(ctx, streamNameFor("events.undeclared"))
+	assert.ErrorIs(t, serr, jetstream.ErrStreamNotFound, "the refused publish must not create the stream")
+
+	// Once a reader has declared the stream, the same publish succeeds.
+	_, eerr := p.ensureStream(ctx, bd, "events.undeclared")
+	require.NoError(t, eerr)
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m")}))
+}
+
+// TestPublishOneStreamAddressDeletedStreamNotRecreated is the STREAM-address
+// counterpart of TestPublishRecreatesDeletedStream: the self-heal that
+// re-ensures an auto-created stream must not resurrect one the operator
+// deleted, because for a STREAM address the stream is the reader's declared
+// topology — a RabbitMQ stream publisher errors after deletion too.
+func TestPublishOneStreamAddressDeletedStreamNotRecreated(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.dropped", Type: pb.Address_STREAM, Subjects: []string{"e"}}
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	_, eerr := p.ensureStream(ctx, bd, "events.dropped")
+	require.NoError(t, eerr)
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("before")}))
+
+	require.NoError(t, bd.js.DeleteStream(ctx, streamNameFor("events.dropped")))
+
+	perr := p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("after")})
+	require.NotNil(t, perr, "a deleted stream must fail the publish, not be resurrected")
+	assert.Equal(t, fmt.Sprintf(streamMissingError, "events.dropped"), perr.GetMessage())
+	_, serr := bd.js.Stream(ctx, streamNameFor("events.dropped"))
+	assert.ErrorIs(t, serr, jetstream.ErrStreamNotFound)
+}
+
+// TestPublishStreamingPathStillAutoCreatesStreamAddress pins the deliberate
+// split: only the unary path requires a declared stream. amqp091's streaming
+// Publish sends STREAM addresses over an auto-declared exchange and reports
+// no error either, so the streaming path keeps auto-creating — the message is
+// stored where amqp091 would drop it into an unbound exchange.
+func TestPublishStreamingPathStillAutoCreatesStreamAddress(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	in := make(chan *pb.Message, 1)
+	errChan := make(chan *pb.Error, 1)
+	pubCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Publish(pubCtx, in, errChan)
+	in <- &pb.Message{
+		Address: &pb.Address{Name: "events.streamed", Type: pb.Address_STREAM, Subjects: []string{"e"}},
+		Body:    []byte("m")}
+	select {
+	case e := <-errChan:
+		require.Nil(t, e, "the streaming publish must auto-create the stream: %v", e.GetMessage())
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the publish reply")
+	}
+
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	stream, serr := bd.js.Stream(ctx, streamNameFor("events.streamed"))
+	require.NoError(t, serr, "the stream must have been auto-created")
+	assert.Equal(t, uint64(1), stream.CachedInfo().State.Msgs)
+}
+
 func TestSubscribeRecreatesDeletedStream(t *testing.T) {
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)
@@ -1857,6 +1936,16 @@ func TestPublishContractRefusals(t *testing.T) {
 	require.Nil(t, p.PublishOne(ctx, &pb.Message{
 		Address:       &pb.Address{Name: "events.t", Type: pb.Address_TOPIC, Subjects: []string{"k"}},
 		PublisherName: "pub", PublishId: 1, Body: []byte("x")}))
+
+	// A message wrong twice over — dedup contract violated AND aimed at an
+	// undeclared stream — reports the contract error: amqp091 refuses both
+	// of these before it reaches for the stream, so the refusals precede the
+	// stream lookup here too.
+	perr = p.PublishOne(ctx, &pb.Message{
+		Address:   &pb.Address{Name: "events.tcr.undeclared", Type: pb.Address_STREAM, Subjects: []string{"k"}},
+		PublishId: 7, Body: []byte("x")})
+	require.NotNil(t, perr)
+	assert.Contains(t, perr.GetMessage(), "PublisherName not set on message")
 
 	// Confirm on the fire-and-forget streaming publish.
 	in := make(chan *pb.Message, 1)
