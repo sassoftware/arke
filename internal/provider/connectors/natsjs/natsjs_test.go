@@ -385,6 +385,10 @@ func TestDeadLetterPreservesRoutingKey(t *testing.T) {
 // caller's fallback nack still resolves the uuid and the message is
 // redelivered — the failure mode is retry, not silent loss.
 func TestDeadLetterFailureKeepsMessage(t *testing.T) {
+	// The fallback nack of a failed dead-letter is paced (see
+	// deadLetterRetryDelay); shorten it so the test does not wait it out.
+	t.Setenv("NATSJS_DEADLETTER_RETRY_DELAY", "100ms")
+
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)
 
@@ -420,6 +424,10 @@ func TestDeadLetterFailureKeepsMessage(t *testing.T) {
 }
 
 func TestDeadLetterEmptyAddressKeepsMessage(t *testing.T) {
+	// The fallback nack of a failed dead-letter is paced (see
+	// deadLetterRetryDelay); shorten it so the test does not wait it out.
+	t.Setenv("NATSJS_DEADLETTER_RETRY_DELAY", "100ms")
+
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)
 
@@ -2882,6 +2890,55 @@ func TestBindingSurvivesBindinglessDeclare(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatal("the address-to-address binding did not survive a bindingless declare")
+		}
+	}
+}
+
+// TestFailedDeadLetterRedeliveryIsPaced: a dead-letter that fails leaves the
+// message in flight so the server's fallback nack retries it (see
+// TestDeadLetterFailureKeepsMessage). That retry runs the same attempt against
+// the same configuration, so when the failure is permanent — here an empty
+// DeadLetterAddress — an immediate nak spins the message between server and
+// client as fast as the client can nack, and MaxDeliver is deliberately unset
+// so nothing bounds it. The redelivery must be paced instead.
+func TestFailedDeadLetterRedeliveryIsPaced(t *testing.T) {
+	t.Setenv("NATSJS_DEADLETTER_RETRY_DELAY", "500ms")
+
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.dlpace", Subjects: []string{"job"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("poison")}))
+
+	out := make(chan *pb.Message, 64)
+	src := queueSource("events.dlpace.consumer", "events.dlpace", "job")
+	src.Options["DeadLetterAddress"] = ""
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	// Replay the gRPC server's nack handling for one poison message: it calls
+	// DeadLetter whenever the DeadLetterAddress key is present (whatever its
+	// value) and falls back to Nack when that errors.
+	deliveries := 0
+	const window = 3 * time.Second
+	deadline := time.After(window)
+	for {
+		select {
+		case m := <-out:
+			deliveries++
+			if deliveries > 40 {
+				t.Fatalf("redelivery storm: %d deliveries of one message in under %s", deliveries, window)
+			}
+			require.NotNil(t, p.DeadLetter(ctx, src, m.GetUuid()))
+			require.Nil(t, p.Nack(ctx, m.GetUuid()))
+		case <-deadline:
+			// Paced, but still retrying: dropping the message instead would
+			// lose it while it is also absent from any DLQ.
+			assert.GreaterOrEqual(t, deliveries, 2, "a failed dead-letter must still be retried")
+			assert.LessOrEqual(t, deliveries, 20,
+				"redelivery of a permanently-failing dead-letter must be paced, not immediate")
+			return
 		}
 	}
 }

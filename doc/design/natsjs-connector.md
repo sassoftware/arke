@@ -325,7 +325,19 @@ the message ack-pending — the server then falls back to a nack, so the
 message is redelivered and dead-lettering is retried instead of the message
 being lost. A present but empty `DeadLetterAddress` is treated the same way:
 the connector returns an error and leaves the original in flight rather than
-terminating it without a DLQ publish. The DLQ copy carries a `Nats-Msg-Id`
+terminating it without a DLQ publish.
+
+That fallback nack is delayed by `NATSJS_DEADLETTER_RETRY_DELAY` (default 5s)
+rather than issued immediately. The retry runs the same dead-letter attempt
+against the same configuration, so a failure that does not clear on its own —
+a `DeadLetterAddress` that cannot be resolved into a stream, or one set to the
+empty string — would otherwise spin the message between server and client as
+fast as the client can nack it, and nothing bounds that loop (`MaxDeliver` is
+deliberately left unset so a slow consumer is never silently cut off). Pacing
+it keeps a transient failure recovering promptly while a permanent one costs
+one redelivery per interval instead of hundreds a second.
+
+The DLQ copy carries a `Nats-Msg-Id`
 derived from the original's stream sequence, so a retried dead-letter of the
 same message deduplicates in the DLQ within its dedup window, and the
 `x-retry-count` the consumer saw when it gave the message up — RabbitMQ's
@@ -559,6 +571,7 @@ disconnect already stopped the consume machinery and drained the connection.
 | `NATSJS_API_TIMEOUT` | `30s` | Deadline for JetStream management API calls (stream / consumer creation). Go duration. |
 | `NATSJS_ACK_WAIT` | `30s` | How long the server waits for an ack before redelivering a message. Go duration. |
 | `NATSJS_SAC_PINNED_TTL` | `1m` | Single-active-consumer failover deadline: how long the pinned client may go without pulling before a standby takes over. Go duration. |
+| `NATSJS_DEADLETTER_RETRY_DELAY` | `5s` | How long to wait before redelivering a message whose dead-letter attempt failed, so a permanently-failing dead-letter cannot spin. Go duration. |
 
 TLS and credentials come from the standard `ConnectionConfiguration` (`Tls`,
 `Credentials`) and the server's `tlsSkipVerify` flag, exactly as for the AMQP

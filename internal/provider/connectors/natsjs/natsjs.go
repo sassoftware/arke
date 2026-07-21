@@ -98,6 +98,10 @@ const (
 	// from the pinned (active) client before unpinning and failing over to a
 	// standby. See sacPinnedTTL; override via NATSJS_SAC_PINNED_TTL.
 	defaultSACPinnedTTL = time.Minute
+	// defaultDeadLetterRetryDelay paces the redelivery that retries a failed
+	// dead-letter. See deadLetterRetryDelay; override via
+	// NATSJS_DEADLETTER_RETRY_DELAY.
+	defaultDeadLetterRetryDelay = 5 * time.Second
 )
 
 // supportedSourceOptionsList intentionally matches the amqp091 connector so that
@@ -381,6 +385,27 @@ func sacPinnedTTL() time.Duration {
 		}
 	}
 	return defaultSACPinnedTTL
+}
+
+// deadLetterRetryDelay paces the redelivery that retries a dead-letter attempt
+// which failed with the message still in flight (see DeadLetter and Nack).
+// That redelivery has to be delayed rather than immediate: the retry runs the
+// same dead-letter attempt against the same configuration, so a failure that
+// does not clear on its own — a DeadLetterAddress that cannot be resolved into
+// a stream, or one set to the empty string — otherwise spins the message
+// between server and client as fast as the client can nack it, and nothing
+// bounds the loop (MaxDeliver is deliberately left unset so a slow consumer is
+// never silently cut off). Delaying it keeps a transient failure recovering
+// promptly while a permanent one costs one redelivery per interval instead of
+// hundreds a second. Configured via NATSJS_DEADLETTER_RETRY_DELAY (Go
+// duration).
+func deadLetterRetryDelay() time.Duration {
+	if v := os.Getenv("NATSJS_DEADLETTER_RETRY_DELAY"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultDeadLetterRetryDelay
 }
 
 func (p *natsjsProvider) getBrokerDetails(ctx context.Context) (*natsBrokerDetails, error) {
@@ -1523,7 +1548,10 @@ func (p *natsjsProvider) Nack(ctx context.Context, uuid string) *pb.Error {
 		return perr
 	}
 	if redeliver {
-		if err := m.Nak(); err != nil {
+		// Delayed, not immediate: this redelivery is a dead-letter retry, and
+		// retrying a permanently-failing dead-letter as fast as the client can
+		// nack is a redelivery storm nothing bounds. See deadLetterRetryDelay.
+		if err := m.NakWithDelay(deadLetterRetryDelay()); err != nil {
 			return &pb.Error{Message: err.Error()}
 		}
 		return nil
