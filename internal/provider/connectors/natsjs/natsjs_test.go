@@ -379,6 +379,59 @@ func TestDeadLetterPreservesRoutingKey(t *testing.T) {
 		"the DLQ copy must carry the original routing key under the DLA root")
 }
 
+// TestDeadLetterPreservesRoutingKeyRoutedFromParent is the same contract for a
+// message that reached the source through an address-to-address binding.
+// Sourcing keeps the subject the message was published under, so it stays
+// rooted at the PARENT address while the source names the child — and RabbitMQ
+// preserves the original routing key through both the exchange-to-exchange
+// route and the DLX move, so the DLQ copy must still carry it.
+//
+// Regression: the routing key was recovered by stripping the consuming
+// address's own prefix, which a parent-rooted subject never matches, so every
+// message routed in from a parent dead-lettered under an empty key — landing
+// on the bare DLA subject where a DLQ consumer bound by routing key would
+// never see it.
+func TestDeadLetterPreservesRoutingKeyRoutedFromParent(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	parent := &pb.Address{Name: "events.dlrk.parent", Type: pb.Address_TOPIC}
+	child := &pb.Address{
+		Name:          "events.dlrk.child",
+		Type:          pb.Address_TOPIC,
+		Subjects:      []string{"region.us.created"},
+		ParentAddress: parent,
+	}
+
+	out := make(chan *pb.Message, 1)
+	src := &pb.Source{Name: "events.dlrk.child.consumer", Type: pb.Source_QUEUE, Address: child,
+		Options: map[string]string{
+			"Offset":            "first",
+			"DeadLetterAddress": "events.dlrk.routed.dlq",
+		}}
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+	time.Sleep(500 * time.Millisecond)
+
+	// Published to the PARENT: the binding sources it into the child's stream
+	// under its original, parent-rooted subject.
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: &pb.Address{Name: "events.dlrk.parent", Subjects: []string{"region.us.created"}},
+		Body:    []byte("poison")}))
+
+	m := recv(t, out)
+	require.Nil(t, p.DeadLetter(ctx, src, m.GetUuid()))
+
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	dlqStream, serr := bd.js.Stream(ctx, streamNameFor("events.dlrk.routed.dlq"))
+	require.NoError(t, serr)
+	raw, gerr := dlqStream.GetMsg(ctx, 1)
+	require.NoError(t, gerr)
+	assert.Equal(t, "events.dlrk.routed.dlq.~.region.us.created", raw.Subject,
+		"a message routed in from a parent must dead-letter under its original routing key")
+}
+
 // TestDeadLetterFailureKeepsMessage: when the dead-letter publish cannot happen
 // (here the DLQ address's subject space is already claimed by a foreign
 // stream, so ensuring its stream fails), DeadLetter must NOT Term the

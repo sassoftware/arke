@@ -4,6 +4,7 @@
 package natsjs
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/nats-io/nats.go"
@@ -307,23 +308,40 @@ func translateWildcards(key string) string {
 }
 
 // routingKeyFromSubject recovers the routing key a delivered message was
-// published with by stripping the address's subject prefix and decoding each
-// escaped token — the inverse of publishSubjectFor for subjects the
-// connector itself produced (the decode is what keeps a dead-letter
-// republish of the recovered key on the same tokens instead of escaping
-// them a second time). The bare prefix (an empty routing key) and any
-// subject not under the prefix (which a consumer's filter subjects make
-// impossible) yield "".
-func routingKeyFromSubject(addressName, subject string) string {
-	rk, ok := strings.CutPrefix(subject, subjectPrefix(addressName)+".")
-	if !ok {
+// published with by dropping everything up to and including the address
+// delimiter and decoding each escaped token — the inverse of publishSubjectFor
+// for subjects the connector itself produced (the decode is what keeps a
+// dead-letter republish of the recovered key on the same tokens instead of
+// escaping them a second time). A subject that is just a prefix (an empty
+// routing key) yields "", as does one carrying no delimiter at all.
+//
+// The delimiter is located rather than a specific address's prefix stripped,
+// because a message can legitimately arrive under a subject rooted at a
+// DIFFERENT address than the one the source names: an address-to-address
+// binding sources the parent's messages into the child's stream keeping the
+// subject they were published under (see ensureStreamFor), and the child's
+// consumer selects exactly those subjects (filterSubjectsFor). Stripping the
+// child's prefix would fail to match and report an empty routing key for every
+// message routed in from a parent — dead-lettering it under the wrong key,
+// where RabbitMQ's broker-side DLX move preserves the original.
+//
+// Scanning for the delimiter is unambiguous: escapeToken never emits a bare
+// "~" token (an escaped token is "~e", or '~' followed by one or more
+// two-character codes, so at least three characters), and subjectPrefix
+// inserts exactly one. So the first token equal to the delimiter is always the
+// one the connector put there.
+func routingKeyFromSubject(subject string) string {
+	tokens := strings.Split(subject, ".")
+	delim := slices.Index(tokens, addressDelim)
+	if delim < 0 || delim == len(tokens)-1 {
 		return ""
 	}
-	tokens := strings.Split(rk, ".")
-	for i, t := range tokens {
-		tokens[i] = unescapeToken(t)
+	rk := tokens[delim+1:]
+	out := make([]string, 0, len(rk))
+	for _, t := range rk {
+		out = append(out, unescapeToken(t))
 	}
-	return strings.Join(tokens, ".")
+	return strings.Join(out, ".")
 }
 
 // streamSubjectsFor returns the subject set a stream captures for the given

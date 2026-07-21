@@ -157,19 +157,32 @@ func TestPublishSubjectFor(t *testing.T) {
 func TestRoutingKeyFromSubject(t *testing.T) {
 	// inverse of publishSubjectFor
 	assert.Equal(t, "region.us.created",
-		routingKeyFromSubject("events.orders", "events.orders.~.region.us.created"))
+		routingKeyFromSubject("events.orders.~.region.us.created"))
 	// the bare prefix is the empty routing key
-	assert.Equal(t, "", routingKeyFromSubject("events.orders", "events.orders.~"))
-	// a subject outside the address's space yields no key
-	assert.Equal(t, "", routingKeyFromSubject("events.orders", "events.audit.~.x"))
+	assert.Equal(t, "", routingKeyFromSubject("events.orders.~"))
+	// a subject with no delimiter at all is not one the connector produced
+	assert.Equal(t, "", routingKeyFromSubject("events.orders"))
 	// empty address: subjects live directly under the delimiter
-	assert.Equal(t, "a.b", routingKeyFromSubject("", "~.a.b"))
+	assert.Equal(t, "a.b", routingKeyFromSubject("~.a.b"))
+	// A message routed in from a parent address keeps the subject it was
+	// published under, so it is rooted at the PARENT while the source that
+	// consumes it names the child. The key still has to come back: RabbitMQ's
+	// DLX move preserves the original routing key, and a dead-letter here is
+	// the proxy-side stand-in for that move.
+	//
+	// Regression: this stripped the consuming address's own prefix, which a
+	// parent-rooted subject never matches, so every message routed in from a
+	// parent dead-lettered under an empty key.
+	assert.Equal(t, "region.us.created",
+		routingKeyFromSubject(publishSubjectFor("events.parent", "region.us.created")))
 	// escaped tokens decode back to the published key, so a dead-letter
 	// republish of the recovered key lands on the same tokens (round trip:
-	// rk -> subject -> rk for keys with reserved characters)
-	for _, rk := range []string{"a b.c", "x.~.y", "#", "a*b", "region.us"} {
+	// rk -> subject -> rk for keys with reserved characters). The delimiter
+	// scan must survive a key that itself contains a literal '~', which
+	// escapes to "~~" and so is never mistaken for the delimiter token.
+	for _, rk := range []string{"a b.c", "x.~.y", "#", "a*b", "region.us", "~"} {
 		subj := publishSubjectFor("events.orders", rk)
-		assert.Equal(t, rk, routingKeyFromSubject("events.orders", subj), "via %q", subj)
+		assert.Equal(t, rk, routingKeyFromSubject(subj), "via %q", subj)
 	}
 }
 

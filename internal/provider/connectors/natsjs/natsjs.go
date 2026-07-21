@@ -1846,7 +1846,7 @@ func (p *natsjsProvider) DeadLetter(ctx context.Context, source *pb.Source, uuid
 	// message was originally headed.
 	dlSubject := opts["DeadLetterSubject"]
 	if dlSubject == "" {
-		dlSubject = routingKeyFromSubject(source.GetAddress().GetName(), m.Subject())
+		dlSubject = routingKeyFromSubject(m.Subject())
 	}
 	dlqMsg := &nats.Msg{
 		Subject: publishSubjectFor(dla, dlSubject),
