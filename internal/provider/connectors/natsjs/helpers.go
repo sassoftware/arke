@@ -4,7 +4,10 @@
 package natsjs
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/base64"
+	"io"
 	"slices"
 	"strings"
 
@@ -814,4 +817,26 @@ func filterMatches(f *pb.Filter, headers map[string]string) bool {
 	}
 	// ALL: every match passed; ANY: none passed.
 	return !any
+}
+
+// decompressBody undoes gzip compression on a STREAM-source message body,
+// mirroring amqp091's streamSubscribe (which undoes its own STREAM-publish
+// workaround for the RabbitMQ-Streams client's ~1MiB framing limit, but
+// applies to any body tagged Transfer-Encoding: gzip regardless of who
+// compressed it). natsjs never compresses on publish — JetStream's
+// max_payload has no equivalent 1MiB library ceiling — so this only ever
+// fires for a publisher's own pre-compressed body.
+func decompressBody(b []byte) ([]byte, error) {
+	r, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	out, err := io.ReadAll(r)
+	if cerr := r.Close(); cerr != nil && err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }

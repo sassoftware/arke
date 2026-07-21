@@ -650,6 +650,7 @@ Legend: **Native** = NATS does it; **Proxy** = rebuilt in the connector;
 | Publish / deliver rates in stats | Proxy | Sampled: counter deltas between `SourceStats` calls (see limitations). |
 | RabbitMQ management HTTP API | Drop | Replaced by the JetStream API over NATS itself. |
 | Stream reader position header (`x-current-offset`) | Native | STREAM-source deliveries only, matching amqp091's `streamSubscribe`; the message's own stream sequence in the `Offset` vocabulary. |
+| Gzip body passthrough (`Transfer-Encoding: gzip`) | Native | STREAM-source deliveries only, matching amqp091's `streamSubscribe`: a gzip-tagged body is decompressed and the header stripped. natsjs never compresses on publish — `max_payload` has no equivalent to the RabbitMQ-Streams client's ~1MiB ceiling amqp091 works around — so this only ever undoes a publisher's own compression. |
 
 ## Source options
 

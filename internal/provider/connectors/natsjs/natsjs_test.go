@@ -4,6 +4,8 @@
 package natsjs
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"net"
@@ -3661,4 +3663,74 @@ func TestQueueDeliveryOmitsCurrentOffset(t *testing.T) {
 	require.Nil(t, p.Ack(ctx, m.GetUuid()))
 	_, ok := m.GetHeaders()[currentOffsetHeaderName]
 	assert.False(t, ok, "x-current-offset is a STREAM-only header on amqp091 too; a queue source must not carry it")
+}
+
+// TestStreamGzipBodyIsDecompressed: amqp091's streamSubscribe decompresses a
+// gzip-tagged body and strips the header (amqp091.go:1286-1292) — a proxy-side
+// step needed because arke's own STREAM publish path transparently compresses
+// bodies over the RabbitMQ-Streams client's ~1MiB framing limit, but applied
+// to any body carrying the header regardless of who compressed it. Without
+// this, a natsjs STREAM consumer sees the raw compressed bytes: body
+// corruption, not just a missing header.
+func TestStreamGzipBodyIsDecompressed(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.gzstream", Subjects: []string{"e"}}
+	plain := []byte("the quick brown fox jumps over the lazy dog - repeated for compressibility - the quick brown fox")
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	_, err := gw.Write(plain)
+	require.NoError(t, err)
+	require.NoError(t, gw.Close())
+
+	src := streamSource("events.gzstream.consumer", "events.gzstream", "first", "e")
+	out := make(chan *pb.Message, 1)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: addr,
+		Headers: map[string]string{transferEncodingHeaderName: "gzip"},
+		Body:    buf.Bytes(),
+	}))
+
+	m := recv(t, out)
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	assert.Equal(t, plain, m.GetBody(), "a STREAM consumer must see the decompressed body, matching amqp091's streamSubscribe")
+	_, ok := m.GetHeaders()[transferEncodingHeaderName]
+	assert.False(t, ok, "the Transfer-Encoding header must be stripped once the body is decompressed, matching amqp091")
+}
+
+// TestQueueGzipBodyPassesThroughUntouched: amqp091 only decompresses on the
+// STREAM path; a QUEUE source's body and header must pass through exactly as
+// published, on both connectors.
+func TestQueueGzipBodyPassesThroughUntouched(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.gzqueue", Subjects: []string{"e"}}
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	_, err := gw.Write([]byte("hello"))
+	require.NoError(t, err)
+	require.NoError(t, gw.Close())
+	gzipped := append([]byte(nil), buf.Bytes()...)
+
+	out := make(chan *pb.Message, 1)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, queueSource("events.gzqueue.consumer", "events.gzqueue", "e"), out)
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: addr,
+		Headers: map[string]string{transferEncodingHeaderName: "gzip"},
+		Body:    gzipped,
+	}))
+
+	m := recv(t, out)
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	assert.Equal(t, gzipped, m.GetBody())
+	assert.Equal(t, "gzip", m.GetHeaders()[transferEncodingHeaderName])
 }

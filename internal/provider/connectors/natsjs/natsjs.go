@@ -63,6 +63,18 @@ const timestampHeaderName = "timestamp_in_ms"
 // amqp091 only sets it on the RabbitMQ-Streams delivery path.
 const currentOffsetHeaderName = "x-current-offset"
 
+// transferEncodingHeaderName mirrors the amqp091 connector's streamSubscribe.
+// amqp091's own STREAM publish path transparently gzips a body over the
+// RabbitMQ-Streams client library's ~1MiB framing limit (compression.go) and
+// tags it with this header so the delivery path can undo it; JetStream has no
+// equivalent library ceiling (max_payload is deploy-configured well above
+// 1MiB), so natsjs never compresses on publish. But the header is a plain
+// value match, not tied to arke's own compression: a publisher that gzips its
+// own body and sets this header itself gets decompressed on amqp091
+// regardless of who set it, so natsjs must honor it too rather than handing a
+// STREAM consumer raw gzip bytes it never asked to receive compressed.
+const transferEncodingHeaderName = "Transfer-Encoding"
+
 // Error strings a client may match on, so they have to read identically
 // whichever connector answers. Both take amqp091's wording: noMessageError is
 // what it returns for an ack, nack, or dead-letter naming a message it does
@@ -1686,6 +1698,7 @@ func (p *natsjsProvider) handleDelivery(ctx context.Context, bd *natsBrokerDetai
 	defer util.RecoverPanic()
 
 	headers := natsToPbHeader(m.Headers())
+	body := m.Data()
 	// Synthesize the headers a RabbitMQ client receives that have no NATS
 	// equivalent on the wire. Both come from the same metadata read.
 	if md, err := m.Metadata(); err == nil {
@@ -1706,6 +1719,20 @@ func (p *natsjsProvider) handleDelivery(ctx context.Context, bd *natsBrokerDetai
 		}
 	}
 
+	// STREAM-source parity with amqp091's streamSubscribe: undo a publisher's
+	// (or amqp091's own 1MiB-workaround) gzip compression rather than handing
+	// a consumer raw compressed bytes it never asked for. Queue/topic sources
+	// never decompress on either connector.
+	if source.GetType() == pb.Source_STREAM && headers[transferEncodingHeaderName] == "gzip" {
+		if decompressed, derr := decompressBody(body); derr != nil {
+			util.Logger.Debugf("natsjs: failed to decompress message on source %s: %s",
+				source.GetName(), derr.Error())
+		} else {
+			body = decompressed
+			delete(headers, transferEncodingHeaderName)
+		}
+	}
+
 	// Proxy-side replacement for RabbitMQ headers-exchange routing. A failed
 	// ack here only means the message will be redelivered and re-filtered —
 	// harmless, but it inflates NumDelivered (and so the synthesized
@@ -1720,7 +1747,7 @@ func (p *natsjsProvider) handleDelivery(ctx context.Context, bd *natsBrokerDetai
 
 	uuid := util.GenUUID()
 	bd.activeMessages.Add(uuid, inflightMsg{msg: m, subKey: subKey})
-	pbmsg := &pb.Message{Uuid: uuid, Headers: headers, Body: m.Data()}
+	pbmsg := &pb.Message{Uuid: uuid, Headers: headers, Body: body}
 
 	select {
 	case out <- pbmsg:
