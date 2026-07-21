@@ -1385,7 +1385,7 @@ func isStartPositionConflict(err error) bool {
 func (p *natsjsProvider) handleDelivery(ctx context.Context, bd *natsBrokerDetails, source *pb.Source, subKey string, m jetstream.Msg, out chan<- *pb.Message) {
 	defer util.RecoverPanic()
 
-	headers := natsToPbHeader(m.Headers())
+	headers := natsToPbHeader(m)
 	// Synthesize x-retry-count from JetStream's delivery count so a client's retry
 	// policy works without RabbitMQ's x-death header.
 	if md, err := m.Metadata(); err == nil && md.NumDelivered > 1 {

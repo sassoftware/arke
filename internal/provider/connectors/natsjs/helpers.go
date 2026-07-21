@@ -4,10 +4,14 @@
 package natsjs
 
 import (
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	pb "github.com/sassoftware/arke/api"
+	"github.com/sassoftware/arke/internal/util"
 )
 
 // Subject / topology mapping.
@@ -76,6 +80,8 @@ var tokenUnescapes = map[byte]byte{
 	'~': '~', 'w': ' ', 't': '\t', 'r': '\r', 'n': '\n', 'f': '\f',
 	'a': '*', 'g': '>', 'h': '#',
 }
+
+const HeaderNatsTimeStamp = "Nats-Time-Stamp" // Header key for NATS timestamp in milliseconds
 
 // tokenEscapeTriggers are the characters that force a token into the escaped
 // form; a token free of them passes through literally.
@@ -633,17 +639,21 @@ func copyHeader(in nats.Header) nats.Header {
 	return out
 }
 
-// natsToPbHeader converts a NATS header to Arke's flat string headers, keeping
+// natsToPbHeader creates Arke's flat string headers, keeping
 // the first value of each key.
-func natsToPbHeader(in nats.Header) map[string]string {
-	if len(in) == 0 {
-		return map[string]string{}
-	}
-	out := make(map[string]string, len(in))
-	for k, vals := range in {
+func natsToPbHeader(m jetstream.Msg) map[string]string {
+	hdrs := m.Headers()
+	out := make(map[string]string, len(hdrs))
+	for k, vals := range hdrs {
 		if len(vals) > 0 {
 			out[k] = vals[0]
 		}
+	}
+	meta, err := m.Metadata()
+	if err != nil {
+		util.Logger.Debugf("natsToPbHeader: failed to get metadata: %v", err)
+	} else {
+		out["timestamp_in_ms"] = strconv.FormatInt(meta.Timestamp.UnixNano()/int64(time.Millisecond), 10)
 	}
 	return out
 }
@@ -683,4 +693,11 @@ func filterMatches(f *pb.Filter, headers map[string]string) bool {
 	}
 	// ALL: every match passed; ANY: none passed.
 	return !any
+}
+
+func DumpMsg(m jetstream.Msg) {
+	util.Logger.Debugf("DumpMsg: subject=%s", m.Subject())
+	util.Logger.Debugf("DumpMsg: reply=%s", m.Reply())
+	util.Logger.Debugf("DumpMsg: len(data)=%d", len(m.Data()))
+	util.Logger.Debugf("DumpMsg: headers=%+v", m.Headers())
 }
