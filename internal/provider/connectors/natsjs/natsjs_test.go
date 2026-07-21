@@ -3518,3 +3518,45 @@ func TestHeadersSurviveARealBrokerRoundTrip(t *testing.T) {
 		assert.Equal(t, want, v, "header %q must arrive byte-for-byte", k)
 	}
 }
+
+// TestTimestampHeaderIsSynthesized: on RabbitMQ the broker's own ingress
+// interceptor stamps timestamp_in_ms on every incoming message, so an amqp091
+// consumer always sees one. NATS has no interceptor, so the connector has to
+// synthesize it from the JetStream store time or clients that read it see
+// nothing.
+//
+// This was long recorded as a capability gap ("NATS has no concept of it") and
+// parked in the per-broker skip list. That was wrong: JetStream carries a
+// per-message timestamp in its metadata.
+func TestTimestampHeaderIsSynthesized(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.timestamped", Subjects: []string{"probe"}}
+	out := make(chan *pb.Message, 4)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, &pb.Source{
+		Name: "events.timestamped.consumer", Type: pb.Source_QUEUE, Address: addr,
+		Options: map[string]string{"Offset": "first"},
+	}, out)
+	time.Sleep(500 * time.Millisecond)
+
+	before := time.Now().UnixMilli()
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: addr,
+		// A publisher-supplied value must be replaced, not kept: the RabbitMQ
+		// interceptor this stands in for runs with overwrite = true.
+		Headers: map[string]string{timestampHeaderName: "1"},
+		Body:    []byte("probe")}))
+
+	m := recv(t, out)
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+
+	raw, ok := m.GetHeaders()[timestampHeaderName]
+	require.True(t, ok, "every delivery must carry %s, as it does on RabbitMQ", timestampHeaderName)
+	ms, err := strconv.ParseInt(raw, 10, 64)
+	require.NoError(t, err, "%s must be integer milliseconds", timestampHeaderName)
+	assert.GreaterOrEqual(t, ms, before, "must be the broker store time, not the publisher's value")
+	assert.LessOrEqual(t, ms, time.Now().UnixMilli()+1000)
+}

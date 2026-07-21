@@ -42,6 +42,17 @@ const providerName = "natsjs"
 // x-death equivalent.
 const retryCountHeaderName = "x-retry-count"
 
+// timestampHeaderName mirrors the amqp091 connector, where the header is not
+// arke's work at all: RabbitMQ's own ingress interceptor
+// (message_interceptors.incoming.set_header_timestamp) stamps every incoming
+// message with it, so every consumed message carries one whatever the source
+// type. NATS has no interceptor equivalent, so the connector synthesizes it
+// from the JetStream metadata timestamp — "the time the message was originally
+// stored on a stream", which is the same broker-receive instant RabbitMQ
+// records. The rabbit conf sets overwrite = true, so a publisher-supplied
+// value is replaced rather than kept.
+const timestampHeaderName = "timestamp_in_ms"
+
 // Error strings a client may match on, so they have to read identically
 // whichever connector answers. Both take amqp091's wording: noMessageError is
 // what it returns for an ack, nack, or dead-letter naming a message it does
@@ -1630,10 +1641,17 @@ func (p *natsjsProvider) handleDelivery(ctx context.Context, bd *natsBrokerDetai
 	defer util.RecoverPanic()
 
 	headers := natsToPbHeader(m.Headers())
-	// Synthesize x-retry-count from JetStream's delivery count so a client's retry
-	// policy works without RabbitMQ's x-death header.
-	if md, err := m.Metadata(); err == nil && md.NumDelivered > 1 {
-		headers[retryCountHeaderName] = strconv.FormatUint(md.NumDelivered-1, 10)
+	// Synthesize the headers a RabbitMQ client receives that have no NATS
+	// equivalent on the wire. Both come from the same metadata read.
+	if md, err := m.Metadata(); err == nil {
+		// x-retry-count from JetStream's delivery count, so a client's retry
+		// policy works without RabbitMQ's x-death header.
+		if md.NumDelivered > 1 {
+			headers[retryCountHeaderName] = strconv.FormatUint(md.NumDelivered-1, 10)
+		}
+		// timestamp_in_ms unconditionally, matching the overwrite = true
+		// RabbitMQ ingress interceptor it stands in for.
+		headers[timestampHeaderName] = strconv.FormatInt(md.Timestamp.UnixMilli(), 10)
 	}
 
 	// Proxy-side replacement for RabbitMQ headers-exchange routing. A failed
