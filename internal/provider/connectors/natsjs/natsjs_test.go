@@ -2942,3 +2942,51 @@ func TestFailedDeadLetterRedeliveryIsPaced(t *testing.T) {
 		}
 	}
 }
+
+// TestSubscribeInvalidOffsetCreatesNoStream: an unrecognized Offset is a
+// contract refusal, and a refused subscribe must not leave topology behind for
+// an address the client only ever named by mistake.
+func TestSubscribeInvalidOffsetCreatesNoStream(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	out := make(chan *pb.Message, 1)
+	perr := p.Subscribe(ctx, streamSource("events.nostream.consumer", "events.nostream", "latest", "e"), out)
+	require.NotNil(t, perr)
+	assert.Contains(t, perr.GetMessage(), "invalid offset")
+
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	_, serr := bd.js.Stream(ctx, streamNameFor("events.nostream"))
+	assert.ErrorIs(t, serr, jetstream.ErrStreamNotFound,
+		"a subscribe refused on its options must not have created the address's stream")
+}
+
+// TestConcurrentResolveAndMarkLeavesNoOrphans: resolving a message and marking
+// one for redelivery are both read-modify-writes over activeMessages. Run
+// concurrently without a lock between them, a mark landing between a resolve's
+// read and its delete reinserts an entry nothing can ever resolve, leaking it
+// for the life of the connection and inflating the active-message stat.
+func TestConcurrentResolveAndMarkLeavesNoOrphans(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+
+	const n = 300
+	uuids := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		uuid := fmt.Sprintf("uuid-%d", i)
+		uuids = append(uuids, uuid)
+		bd.activeMessages.Add(uuid, inflightMsg{subKey: "sub#1"})
+	}
+
+	var wg sync.WaitGroup
+	for _, uuid := range uuids {
+		wg.Add(2)
+		go func() { defer wg.Done(); _, _ = p.takeMessage(ctx, uuid) }()
+		go func() { defer wg.Done(); markForRedelivery(bd, uuid) }()
+	}
+	wg.Wait()
+
+	assert.Equal(t, 0, bd.activeMessages.Length(),
+		"marking a message for redelivery must not reinsert one that was resolved concurrently")
+}

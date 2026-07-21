@@ -127,6 +127,13 @@ type natsBrokerDetails struct {
 	// Ack/Nack/Retry/DeadLetter RPC can resolve it and teardown can release
 	// only the closing subscription's own deliveries.
 	activeMessages *util.ConcurrentMap
+	// activeMu serializes the read-modify-write pairs over activeMessages —
+	// the take-then-delete that resolves a message, and the read-then-update
+	// that marks one for redelivery. The map is individually concurrency-safe,
+	// but without this a mark landing between a concurrent take's read and its
+	// delete would reinsert an entry nothing can ever resolve, leaking it for
+	// the life of the connection and inflating the active-message stat.
+	activeMu sync.Mutex
 	// knownStreams memoizes streams we have already ensured.
 	knownStreams *util.ConcurrentMap
 	// consumeContexts holds each live subscription's jetstream.ConsumeContext
@@ -151,6 +158,16 @@ type natsBrokerDetails struct {
 	// live subscribers share and how many hold it, so a conflicting declaration
 	// is rejected instead of silently dropping messages. Subject filters are
 	// excluded — they are the server's and update in place.
+	//
+	// Scope: this map is per connection, so the check catches conflicting
+	// subscribers that share one, not two clients on separate connections
+	// attaching to the same durable — the server-side consumer is shared but
+	// nothing here is. Enforcing it across connections would mean putting the
+	// fingerprint somewhere both can read (consumer metadata), which buys
+	// little: subscribers of one durable are ordinarily replicas of one
+	// service declaring identical filters, so a disagreement is a client bug
+	// this catches only when it is cheap to. Treat it as a guard rail, not a
+	// guarantee.
 	durableFilters  map[string]*durableFilterUse
 	durableFilterMu sync.Mutex
 
@@ -907,6 +924,13 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 			IsFatal: true,
 		}
 	}
+	// Also validated before any topology is created: an unrecognized Offset is
+	// a refusal, and a refused subscribe must not leave a stream behind for an
+	// address the client only ever named by mistake.
+	deliverPolicy, startSeq, derr := deliverPolicyFor(source)
+	if derr != nil {
+		return &pb.Error{Message: fmt.Sprintf("source %q: %s", source.GetName(), derr.Error()), IsFatal: true}
+	}
 	addr := source.GetAddress()
 	streamName, serr := p.ensureStreamFor(ctx, bd, addr)
 	if serr != nil {
@@ -945,10 +969,6 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	prefetch := int(source.GetPrefetchCount())
 	if prefetch <= 0 {
 		prefetch = -1
-	}
-	deliverPolicy, startSeq, derr := deliverPolicyFor(source)
-	if derr != nil {
-		return &pb.Error{Message: fmt.Sprintf("source %q: %s", source.GetName(), derr.Error()), IsFatal: true}
 	}
 	consCfg := jetstream.ConsumerConfig{
 		FilterSubjects: filterSubjectsFor(source),
@@ -1233,6 +1253,10 @@ func consumerLostError(source *pb.Source, consumerName string, err error) *pb.Er
 // resolves concurrently with teardown is deleted by whichever side gets there
 // first; the loser's ack/nak fails and is ignored (at-least-once either way).
 func releaseInFlight(bd *natsBrokerDetails, subKey string, nak bool) {
+	// Claim the entries under activeMu (so a concurrent mark cannot reinsert
+	// one), then do the network-bound naks outside it.
+	released := make(map[string]jetstream.Msg)
+	bd.activeMu.Lock()
 	for _, uuid := range bd.activeMessages.GetList() {
 		mu, ok := bd.activeMessages.Get(uuid)
 		if !ok {
@@ -1243,10 +1267,14 @@ func releaseInFlight(bd *natsBrokerDetails, subKey string, nak bool) {
 			continue
 		}
 		bd.activeMessages.Delete(uuid)
-		if !nak {
-			continue
-		}
-		if err := im.msg.Nak(); err != nil {
+		released[uuid] = im.msg
+	}
+	bd.activeMu.Unlock()
+	if !nak {
+		return
+	}
+	for uuid, msg := range released {
+		if err := msg.Nak(); err != nil {
 			util.Logger.Debugf("natsjs: nak of in-flight message %s at subscription end: %s", uuid, err.Error())
 		}
 	}
@@ -1480,6 +1508,8 @@ func (p *natsjsProvider) takeMessage(ctx context.Context, uuid string) (jetstrea
 	if err != nil {
 		return nil, &pb.Error{Message: err.Error()}
 	}
+	bd.activeMu.Lock()
+	defer bd.activeMu.Unlock()
 	mu, ok := bd.activeMessages.Get(uuid)
 	if !ok {
 		return nil, &pb.Error{Message: fmt.Sprintf(noMessageError, uuid)}
@@ -1495,6 +1525,8 @@ func (p *natsjsProvider) takeMessageForNack(ctx context.Context, uuid string) (j
 	if err != nil {
 		return nil, false, &pb.Error{Message: err.Error()}
 	}
+	bd.activeMu.Lock()
+	defer bd.activeMu.Unlock()
 	mu, ok := bd.activeMessages.Get(uuid)
 	if !ok {
 		return nil, false, &pb.Error{Message: fmt.Sprintf(noMessageError, uuid)}
@@ -1509,6 +1541,8 @@ func (p *natsjsProvider) takeMessageForNack(ctx context.Context, uuid string) (j
 // with the message still in flight: the error it returns makes the server nack
 // the same uuid, and that nack is the retry, not a rejection.
 func markForRedelivery(bd *natsBrokerDetails, uuid string) {
+	bd.activeMu.Lock()
+	defer bd.activeMu.Unlock()
 	mu, ok := bd.activeMessages.Get(uuid)
 	if !ok {
 		return
@@ -1678,7 +1712,9 @@ func (p *natsjsProvider) DeadLetter(ctx context.Context, source *pb.Source, uuid
 	if err := m.Term(); err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
+	bd.activeMu.Lock()
 	bd.activeMessages.Delete(uuid)
+	bd.activeMu.Unlock()
 	return nil
 }
 
