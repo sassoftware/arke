@@ -3611,3 +3611,54 @@ func TestSingleActiveConsumerDowngradeReleasesPinPromptly(t *testing.T) {
 	require.NoError(t, cerr)
 	assert.Empty(t, cons.CachedInfo().Config.PriorityGroups, "the downgraded consumer must carry no priority group")
 }
+
+// TestStreamDeliveryStampsCurrentOffset: amqp091's streamSubscribe stamps
+// x-current-offset on every STREAM-source delivery from the RabbitMQ Streams
+// consumer's own offset (amqp091.go:1279). The JetStream analogue is the
+// message's own stream sequence in the Offset vocabulary SourceStats already
+// uses, so a value read here and handed back as a source's Offset resumes at
+// the same message.
+func TestStreamDeliveryStampsCurrentOffset(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.curoffset", Subjects: []string{"e"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m0")}))
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m1")}))
+
+	out := make(chan *pb.Message, 4)
+	src := streamSource("events.curoffset.consumer", "events.curoffset", "first", "e")
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	m0 := recv(t, out)
+	require.Nil(t, p.Ack(ctx, m0.GetUuid()))
+	assert.Equal(t, "0", m0.GetHeaders()[currentOffsetHeaderName],
+		"the first message in a stream must report offset 0, matching the RabbitMQ-Streams vocabulary")
+
+	m1 := recv(t, out)
+	require.Nil(t, p.Ack(ctx, m1.GetUuid()))
+	assert.Equal(t, "1", m1.GetHeaders()[currentOffsetHeaderName])
+}
+
+// TestQueueDeliveryOmitsCurrentOffset: amqp091 only stamps x-current-offset on
+// the RabbitMQ-Streams delivery path (streamSubscribe) — queueSubscribe never
+// sets it — so a QUEUE source must not carry it either.
+func TestQueueDeliveryOmitsCurrentOffset(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.noqcuroffset", Subjects: []string{"e"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m")}))
+
+	out := make(chan *pb.Message, 1)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, queueSource("events.noqcuroffset.consumer", "events.noqcuroffset", "e"), out)
+
+	m := recv(t, out)
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	_, ok := m.GetHeaders()[currentOffsetHeaderName]
+	assert.False(t, ok, "x-current-offset is a STREAM-only header on amqp091 too; a queue source must not carry it")
+}

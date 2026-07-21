@@ -53,6 +53,16 @@ const retryCountHeaderName = "x-retry-count"
 // value is replaced rather than kept.
 const timestampHeaderName = "timestamp_in_ms"
 
+// currentOffsetHeaderName mirrors the amqp091 connector's streamSubscribe,
+// which stamps it on every STREAM-source delivery from the RabbitMQ Streams
+// consumer's own offset (amqp091.go:1279). The JetStream analogue of that
+// per-reader position is the message's own stream sequence, converted to the
+// Offset vocabulary SourceStats already uses (see offsetOf) so a value read
+// here and handed back as a source's Offset option resumes at the same
+// message. Queue/topic sources never carry this header on either connector —
+// amqp091 only sets it on the RabbitMQ-Streams delivery path.
+const currentOffsetHeaderName = "x-current-offset"
+
 // Error strings a client may match on, so they have to read identically
 // whichever connector answers. Both take amqp091's wording: noMessageError is
 // what it returns for an ack, nack, or dead-letter naming a message it does
@@ -1687,6 +1697,13 @@ func (p *natsjsProvider) handleDelivery(ctx context.Context, bd *natsBrokerDetai
 		// timestamp_in_ms unconditionally, matching the overwrite = true
 		// RabbitMQ ingress interceptor it stands in for.
 		headers[timestampHeaderName] = strconv.FormatInt(md.Timestamp.UnixMilli(), 10)
+		// x-current-offset, STREAM sources only, matching amqp091's
+		// streamSubscribe (queue/topic sources never carry it on either
+		// connector). The message's own stream sequence is this reader's
+		// current position in the log at the point of delivery.
+		if source.GetType() == pb.Source_STREAM {
+			headers[currentOffsetHeaderName] = strconv.FormatInt(offsetOf(md.Sequence.Stream), 10)
+		}
 	}
 
 	// Proxy-side replacement for RabbitMQ headers-exchange routing. A failed
