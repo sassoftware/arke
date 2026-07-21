@@ -4,11 +4,15 @@
 package natsjs
 
 import (
+	"bytes"
+	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/nats-io/nats.go"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestStreamNameFor(t *testing.T) {
@@ -496,4 +500,126 @@ func TestParentBindingSubjectsHeadersParent(t *testing.T) {
 		ParentAddress: &pb.Address{Name: "events.parent", Type: pb.Address_FILTER},
 	}
 	assert.Equal(t, []string{"events.parent.~", "events.parent.~.>"}, parentBindingSubjects(addr))
+}
+
+// TestHeaderRoundTripPreservesEverything: the NATS wire format silently drops
+// header names that are not HTTP tokens and trims whitespace off values (see
+// the header-mapping comment in helpers.go). Every one of these round-trips
+// through a real RabbitMQ unchanged, so the escaping has to make them survive
+// here too. The punctuation set is the one measured against a live broker of
+// each kind, where an unescaped connector delivered 15 of the 38 names.
+func TestHeaderRoundTripPreservesEverything(t *testing.T) {
+	in := map[string]string{
+		// conventional headers — must pass through unescaped
+		"Content-Type":    "application/vnd.example.event+json",
+		"__namespace":     "tenant-a",
+		"x-event-address": "events.orders",
+		"traceparent":     "00-abc-def-01",
+		"X-B3-TraceId":    "abc",
+		"x-retry-count":   "3",
+		// values the writer would rewrite
+		"empty-value":        "",
+		"leading-space":      "  v",
+		"trailing-space":     "v  ",
+		"surrounding-tab":    "\tv\t",
+		"embedded-newline":   "a\nb",
+		"embedded-crlf":      "a\r\nb",
+		"only-whitespace":    "   ",
+		"internal-space-ok":  "a b c",
+		"unicode-value":      "héllo wörld",
+		"looks-like-escaped": headerEscapePrefix + "Zm9v",
+	}
+	// names built from every character the live probe exercised
+	for _, c := range "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \tàé€中" {
+		in[string([]rune{'h', 'd', 'r', c, 'k', 'e', 'y'})] = "v"
+	}
+
+	got := natsToPbHeader(pbToNatsHeader(in))
+	assert.Equal(t, in, got, "every header must survive the round trip byte-for-byte")
+}
+
+// TestHeaderEscapingOnlyWhereNeeded: conventional names and values reach the
+// broker verbatim, so ordinary traffic stays readable to a native NATS
+// consumer and only the entries NATS cannot carry are encoded.
+func TestHeaderEscapingOnlyWhereNeeded(t *testing.T) {
+	h := pbToNatsHeader(map[string]string{
+		"Content-Type": "application/json",
+		"x-event-src":  "inventory",
+		"has space":    "v",
+		"trailing":     "v ",
+	})
+
+	assert.Equal(t, "application/json", h.Get("Content-Type"))
+	assert.Equal(t, "inventory", h.Get("x-event-src"))
+	// the two damaged entries are carried under the escape prefix instead
+	assert.Empty(t, h.Get("has space"))
+	assert.Empty(t, h.Get("trailing"))
+	escaped := 0
+	for k := range h {
+		if strings.HasPrefix(k, headerEscapePrefix) {
+			escaped++
+		}
+	}
+	assert.Equal(t, 2, escaped, "exactly the unrepresentable entries are escaped")
+}
+
+// TestHeaderEscapingSurvivesTheRealWriter drives the escaped form through the
+// actual lossy component — net/http's Header.Write, which is what nats.go uses
+// in Msg.headerBytes — and reads it back the way nats.go parses it. Asserting
+// against the real writer rather than against tchar (our restatement of its
+// rule) is the point: if the stdlib rule and ours ever diverge, this fails
+// while a test written against tchar alone would keep passing.
+func TestHeaderEscapingSurvivesTheRealWriter(t *testing.T) {
+	in := map[string]string{
+		"hdr key\twith\r\neverything: €": "  spaced\r\nvalue  ",
+		"Content-Type":                   "application/json",
+		"plain":                          "v",
+		"trailing":                       "v  ",
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, http.Header(pbToNatsHeader(in)).Write(&buf))
+	buf.WriteString("\r\n")
+
+	// Parse back preserving original case, as nats.go's readMIMEHeader does.
+	onWire := nats.Header{}
+	for _, line := range strings.Split(buf.String(), "\r\n") {
+		name, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		onWire[name] = append(onWire[name], strings.TrimLeft(value, " \t"))
+	}
+
+	assert.Equal(t, in, natsToPbHeader(onWire),
+		"headers must survive the real http.Header.Write round trip")
+}
+
+// TestHeaderDecodeLeavesForeignEntriesAlone: a publisher that is not this
+// connector can put anything on a subject, including a name that merely looks
+// escaped. Such an entry is passed through rather than dropped or mangled.
+func TestHeaderDecodeLeavesForeignEntriesAlone(t *testing.T) {
+	got := natsToPbHeader(nats.Header{
+		headerEscapePrefix + "not!valid!base64": []string{"dg"},
+		headerEscapePrefix + "Zm9v":             []string{"not!base64"},
+		"ordinary":                              []string{"v"},
+	})
+	assert.Equal(t, map[string]string{
+		headerEscapePrefix + "not!valid!base64": "dg",
+		headerEscapePrefix + "Zm9v":             "not!base64",
+		"ordinary":                              "v",
+	}, got)
+}
+
+// TestHeaderNameSurvives pins the RFC 7230 token rule the escaping keys on.
+func TestHeaderNameSurvives(t *testing.T) {
+	for _, ok := range []string{"Content-Type", "__namespace", "x-retry-count",
+		"a.b.c", "A1", "!#$%&'*+-.^_`|~"} {
+		assert.True(t, headerNameSurvives(ok), "%q should pass through", ok)
+	}
+	for _, bad := range []string{"", "has space", "has:colon", "has/slash",
+		"has@at", "has,comma", "has=eq", "has[br]", "unicodeé",
+		headerEscapePrefix + "x"} {
+		assert.False(t, headerNameSurvives(bad), "%q must be escaped", bad)
+	}
 }
