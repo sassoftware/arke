@@ -1200,6 +1200,20 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 		defer bd.releaseDurableFilter(consCfg.Durable)
 	}
 
+	// A durable that previously had SingleActiveConsumer pinned a client to
+	// its priority group. If this subscribe no longer asks for that, the pin
+	// must be released HERE, before CreateOrUpdateConsumer below clears the
+	// group from the consumer's declared config: once the group is gone from
+	// the config, unpinning it errors ("priority group does not exist for
+	// this consumer" — verified against an embedded server), so a pin
+	// released only after the update can no longer be released at all. Left
+	// alone, the stale pin blocks ordinary (non-priority-group) delivery for
+	// up to NATSJS_SAC_PINNED_TTL (default 1m) with no error or warning
+	// anywhere, even though the live config already shows no priority policy.
+	if consCfg.Durable != "" && !source.GetSingleActiveConsumer() {
+		releaseStalePins(tctx, stream, consCfg.Durable)
+	}
+
 	cons, cerr := stream.CreateOrUpdateConsumer(tctx, consCfg)
 	if cerr != nil && consCfg.Durable != "" && isStartPositionConflict(cerr) {
 		// A durable's start position (DeliverPolicy/OptStartSeq) is fixed at
@@ -1618,6 +1632,27 @@ var startPositionConflictMessages = []string{
 	"deliver policy can not be updated",
 	"start sequence can not be updated",
 	"start time can not be updated",
+}
+
+// releaseStalePins unpins every priority group an existing durable's live
+// config still carries, ahead of a subscribe that is about to strip
+// SingleActiveConsumer's config from it (see the call site in Subscribe).
+// Best-effort and read-first: a durable that does not exist yet (the
+// ordinary first-subscribe case) answers ErrConsumerNotFound immediately and
+// nothing is unpinned; a durable that was never single-active has an empty
+// group list and the loop below does nothing. Only a durable coming OFF a
+// pin pays the extra UnpinConsumer call.
+func releaseStalePins(ctx context.Context, stream jetstream.Stream, durable string) {
+	existing, err := stream.Consumer(ctx, durable)
+	if err != nil {
+		return
+	}
+	for _, group := range existing.CachedInfo().Config.PriorityGroups {
+		if uerr := stream.UnpinConsumer(ctx, durable, group); uerr != nil {
+			util.Logger.Debugf("natsjs: release stale single-active pin on %s (group %s): %s",
+				durable, group, uerr.Error())
+		}
+	}
 }
 
 // isStartPositionConflict reports whether err is JetStream refusing to move an

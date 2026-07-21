@@ -260,7 +260,14 @@ so single-active cannot be enforced; the connector detects that from the
 effective consumer config and logs a warning that consumers will compete.
 Priority-group config is update-mutable, so a durable created before its
 source set `SingleActiveConsumer` is upgraded in place, keeping its name and
-ack position.
+ack position. The reverse transition needs an extra step: a durable coming
+OFF `SingleActiveConsumer` has its pin released explicitly (`UnpinConsumer`)
+before the update clears the priority-group config, because unpinning AFTER
+the group is gone from the config is rejected by the server ("priority group
+does not exist for this consumer"). Skipping that step leaves the previous
+pin as server-side state independent of the declared config, silently
+blocking ordinary delivery to the downgraded consumer for up to
+`NATSJS_SAC_PINNED_TTL` with no error anywhere.
 
 When a subscription ends, its delivered-but-unresolved messages are released:
 their acks could only have arrived on the consume stream that just closed, so

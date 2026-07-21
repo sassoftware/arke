@@ -3560,3 +3560,54 @@ func TestTimestampHeaderIsSynthesized(t *testing.T) {
 	assert.GreaterOrEqual(t, ms, before, "must be the broker store time, not the publisher's value")
 	assert.LessOrEqual(t, ms, time.Now().UnixMilli()+1000)
 }
+
+// TestSingleActiveConsumerDowngradeReleasesPinPromptly: a durable that drops
+// SingleActiveConsumer must resume ordinary (non-pinned) delivery promptly.
+// Without releaseStalePins, CreateOrUpdateConsumer clears the priority-group
+// config immediately but the server's own pin persists as runtime state
+// independent of that config (verified against the embedded server: unpinning
+// AFTER the config is cleared errors "priority group does not exist for this
+// consumer") — so a plain re-subscribe would silently receive nothing until
+// NATSJS_SAC_PINNED_TTL (default 1m) elapsed, with no error anywhere. This
+// pins the fix at the connector's default TTL, not a shortened test-only one,
+// so it actually proves the wait is gone rather than just faster.
+func TestSingleActiveConsumerDowngradeReleasesPinPromptly(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.sacdowngrade", Subjects: []string{"e"}}
+	sac := sacSource("events.sacdowngrade.consumer", "events.sacdowngrade", "e")
+
+	out := make(chan *pb.Message, 1)
+	subCtx, cancel := context.WithCancel(ctx)
+	errCh := make(chan *pb.Error, 1)
+	go func() { errCh <- p.Subscribe(subCtx, sac, out) }()
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m0")}))
+	m := recv(t, out)
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	cancel()
+	require.Nil(t, <-errCh)
+
+	// Re-subscribe to the same durable without SingleActiveConsumer.
+	plain := queueSource("events.sacdowngrade.consumer", "events.sacdowngrade", "e")
+	out2 := make(chan *pb.Message, 1)
+	subCtx2, cancel2 := context.WithCancel(ctx)
+	defer cancel2()
+	go p.Subscribe(subCtx2, plain, out2)
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m1")}))
+	select {
+	case m := <-out2:
+		require.Nil(t, p.Ack(ctx, m.GetUuid()))
+		assert.Equal(t, "m1", string(m.GetBody()))
+	case <-time.After(5 * time.Second):
+		t.Fatal("plain re-subscribe never received a message: the prior single-active pin was not released")
+	}
+
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	stream, serr := bd.js.Stream(ctx, streamNameFor("events.sacdowngrade"))
+	require.NoError(t, serr)
+	cons, cerr := stream.Consumer(ctx, durableName(plain))
+	require.NoError(t, cerr)
+	assert.Empty(t, cons.CachedInfo().Config.PriorityGroups, "the downgraded consumer must carry no priority group")
+}
