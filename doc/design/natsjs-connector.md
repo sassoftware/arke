@@ -172,6 +172,19 @@ parent to declare. Because JetStream replaces a stream's source set wholesale
 on update, every assertion reads the current set and writes it back, rather
 than sending only what the caller happens to know about.
 
+Reading and writing back makes an assertion a read-modify-write, and the lock
+that serializes it is process-local while Arke runs more than one replica. So
+an assertion writes only when it would actually change something: it compares
+the live configuration against the one it built and returns early if the
+stream already satisfies it. That takes the overwhelmingly common case — a
+bare assertion against a steady-state stream, which is every publisher's
+first touch and every reconnect — out of the race entirely, leaving only
+callers that genuinely change the configuration, which for bindings are
+symmetric (both are adding). A stream created before a limit existed is still
+retrofitted: its configuration differs, so the update runs. Two concurrent
+*binding* declarations across replicas remain a real, much narrower window;
+closing it would need a compare-and-swap JetStream does not offer.
+
 This subject scheme — and the stream/durable name encoding above — is part
 of the connector's persistence contract: retained messages are stored under
 these subjects for the life of the stream's retention limits, so any future

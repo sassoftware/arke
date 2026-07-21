@@ -14,6 +14,7 @@ import (
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/stretchr/testify/assert"
@@ -3158,4 +3159,209 @@ func TestHeadersAddressStillAppliesHeaderFilters(t *testing.T) {
 		t.Fatalf("header filters must still gate a headers address; got %q", string(extra.GetBody()))
 	case <-time.After(2 * time.Second):
 	}
+}
+
+// TestBareStreamAssertionIssuesNoUpdate pins that asserting a stream that
+// already satisfies the requested config writes nothing.
+//
+// Carrying the existing binding set forward makes ensureStreamFor a
+// read-modify-write, and p.bindMu serializes that only inside one process —
+// Arke runs more than one replica. Skipping the write when nothing would
+// change takes the overwhelmingly common case (every publisher's first touch
+// of an existing stream) out of that cross-process race, so a bare assertion
+// can no longer be the thing that drops a binding another replica just added.
+func TestBareStreamAssertionIssuesNoUpdate(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+
+	streamName := streamNameFor("events.noupdate")
+	_, eerr := p.ensureStream(ctx, bd, "events.noupdate")
+	require.NoError(t, eerr)
+
+	// Watch the JetStream management API for updates to this stream. A plain
+	// subscription is an observer: the server's own responder still receives
+	// the request, so this changes nothing about the call itself.
+	updates := make(chan struct{}, 8)
+	sub, serr := bd.nc.Subscribe("$JS.API.STREAM.UPDATE."+streamName, func(*nats.Msg) {
+		updates <- struct{}{}
+	})
+	require.NoError(t, serr)
+	defer sub.Unsubscribe() //nolint:errcheck
+	require.NoError(t, bd.nc.Flush())
+
+	// Drop the per-connection memo so the assertion really re-runs against the
+	// server, exactly as a fresh connection's first touch would.
+	bd.knownStreams.Delete(streamName)
+	_, eerr = p.ensureStream(ctx, bd, "events.noupdate")
+	require.NoError(t, eerr)
+	require.NoError(t, bd.nc.Flush())
+
+	select {
+	case <-updates:
+		t.Fatal("a bare assertion of an already-satisfying stream must not issue a stream update")
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// ...but an assertion that genuinely changes something still writes. A
+	// binding is the case that matters: it must survive the skip logic.
+	child := &pb.Address{
+		Name:          "events.noupdate",
+		Type:          pb.Address_TOPIC,
+		Subjects:      []string{"routed.key"},
+		ParentAddress: &pb.Address{Name: "events.noupdate.parent", Type: pb.Address_TOPIC},
+	}
+	_, eerr = p.ensureStreamFor(ctx, bd, child)
+	require.NoError(t, eerr)
+	require.NoError(t, bd.nc.Flush())
+	select {
+	case <-updates:
+	case <-time.After(2 * time.Second):
+		t.Fatal("declaring a new binding must still update the stream")
+	}
+
+	// And the binding really landed — the skip must not have swallowed it.
+	st, ferr := bd.js.Stream(ctx, streamName)
+	require.NoError(t, ferr)
+	sources := st.CachedInfo().Config.Sources
+	require.Len(t, sources, 1)
+	assert.Equal(t, streamNameFor("events.noupdate.parent"), sources[0].Name)
+	require.Len(t, sources[0].SubjectTransforms, 1)
+	assert.Equal(t, publishSubjectFor("events.noupdate.parent", "routed.key"),
+		sources[0].SubjectTransforms[0].Source)
+
+	// Re-asserting that same binding is now itself a no-op.
+	bd.knownStreams.Delete(streamName)
+	_, eerr = p.ensureStreamFor(ctx, bd, child)
+	require.NoError(t, eerr)
+	require.NoError(t, bd.nc.Flush())
+	select {
+	case <-updates:
+		t.Fatal("re-declaring an existing binding must not issue a stream update")
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// A SECOND binding onto a parent already in the source set must still
+	// write. This is the case the skip gets wrong if the config being built
+	// shares its StreamSource objects with the snapshot it is compared
+	// against: merging appends to the transforms in place, so both sides move
+	// together and a genuinely new binding reads as no change at all. A first
+	// binding hides that — it appends a whole element, so the lengths differ
+	// regardless.
+	sibling := &pb.Address{
+		Name:          "events.noupdate",
+		Type:          pb.Address_TOPIC,
+		Subjects:      []string{"second.key"},
+		ParentAddress: &pb.Address{Name: "events.noupdate.parent", Type: pb.Address_TOPIC},
+	}
+	_, eerr = p.ensureStreamFor(ctx, bd, sibling)
+	require.NoError(t, eerr)
+	require.NoError(t, bd.nc.Flush())
+	select {
+	case <-updates:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a second binding onto an already-bound parent must still update the stream")
+	}
+
+	st, ferr = bd.js.Stream(ctx, streamName)
+	require.NoError(t, ferr)
+	sources = st.CachedInfo().Config.Sources
+	require.Len(t, sources, 1, "both bindings share one parent, so one source carries both")
+	assert.Len(t, sources[0].SubjectTransforms, 2, "the earlier binding must survive the later one")
+}
+
+// TestStreamConfigSatisfied covers the comparison that lets ensureStreamFor
+// skip an assertion which would change nothing (see
+// TestBareStreamAssertionIssuesNoUpdate for why that matters). It must answer
+// "satisfied" only when every field the connector manages already matches —
+// a false positive there silently drops a real config change.
+func TestStreamConfigSatisfied(t *testing.T) {
+	base := func() *jetstream.StreamConfig {
+		return &jetstream.StreamConfig{
+			Name:       "arke_events_x",
+			Subjects:   []string{"events.x.~", "events.x.~.>"},
+			Storage:    jetstream.FileStorage,
+			Retention:  jetstream.LimitsPolicy,
+			Duplicates: defaultDedupWindow,
+			Replicas:   1,
+			MaxAge:     defaultStreamMaxAge,
+		}
+	}
+	assert.True(t, streamConfigSatisfied(base(), base()))
+
+	// Subject order is the server's to choose, not a difference.
+	reordered := base()
+	reordered.Subjects = []string{"events.x.~.>", "events.x.~"}
+	assert.True(t, streamConfigSatisfied(reordered, base()))
+
+	// Each managed field, differing.
+	for name, mutate := range map[string]func(*jetstream.StreamConfig){
+		"subjects":   func(c *jetstream.StreamConfig) { c.Subjects = []string{"events.x.~"} },
+		"max age":    func(c *jetstream.StreamConfig) { c.MaxAge = time.Hour },
+		"max bytes":  func(c *jetstream.StreamConfig) { c.MaxBytes = 1 << 20 },
+		"replicas":   func(c *jetstream.StreamConfig) { c.Replicas = 3 },
+		"duplicates": func(c *jetstream.StreamConfig) { c.Duplicates = time.Minute },
+		"storage":    func(c *jetstream.StreamConfig) { c.Storage = jetstream.MemoryStorage },
+		"retention":  func(c *jetstream.StreamConfig) { c.Retention = jetstream.WorkQueuePolicy },
+	} {
+		t.Run(name+" differs", func(t *testing.T) {
+			live := base()
+			mutate(live)
+			assert.False(t, streamConfigSatisfied(live, base()),
+				"a differing %s must not read as satisfied", name)
+		})
+	}
+
+	// A stream with no bindings does not satisfy a config that declares one...
+	want := base()
+	want.Sources = []*jetstream.StreamSource{{Name: "arke_events_p",
+		SubjectTransforms: []jetstream.SubjectTransformConfig{{Source: "events.p.~.k", Destination: "events.p.~.k"}}}}
+	assert.False(t, streamConfigSatisfied(base(), want))
+
+	// ...and one that already carries exactly that binding does.
+	live := base()
+	live.Sources = []*jetstream.StreamSource{{Name: "arke_events_p",
+		SubjectTransforms: []jetstream.SubjectTransformConfig{{Source: "events.p.~.k", Destination: "events.p.~.k"}}}}
+	assert.True(t, streamConfigSatisfied(live, want))
+
+	// An extra binding on the live stream is a difference in the other
+	// direction: the merged config would have carried it forward, so a
+	// mismatch here means something else changed it concurrently.
+	extra := base()
+	extra.Sources = append(copySources(live.Sources), &jetstream.StreamSource{Name: "arke_events_q"})
+	assert.False(t, streamConfigSatisfied(extra, want))
+}
+
+// TestCopySourcesIsDeep guards the trap that makes the skip logic safe:
+// mergeBoundSources appends to a StreamSource's transforms in place, so the
+// snapshot ensureStreamFor compares against must not share those objects with
+// the config it merges into — or every merge would compare equal to itself and
+// a newly declared binding would be skipped instead of written.
+func TestCopySourcesIsDeep(t *testing.T) {
+	orig := []*jetstream.StreamSource{{Name: "arke_events_p",
+		SubjectTransforms: []jetstream.SubjectTransformConfig{{Source: "a", Destination: "a"}}}}
+	snapshot := copySources(orig)
+
+	merged := mergeBoundSources(orig, "arke_events_p", []string{"b"})
+	require.Len(t, merged[0].SubjectTransforms, 2)
+	assert.Len(t, snapshot[0].SubjectTransforms, 1,
+		"the snapshot must not see a transform appended after it was taken")
+	assert.False(t, sameSources(snapshot, merged),
+		"a merge that added a binding must read as a difference")
+}
+
+// TestStreamConfigSatisfiedUnlimitedSentinel: JetStream normalizes an unset
+// size limit to its -1 "unlimited" sentinel and echoes that back, so a config
+// asking for 0 describes the same stream. Comparing the two literally made
+// every assertion look like a change, defeating the skip entirely.
+func TestStreamConfigSatisfiedUnlimitedSentinel(t *testing.T) {
+	live := &jetstream.StreamConfig{Subjects: []string{"a"}, Replicas: 1, MaxBytes: -1}
+	want := &jetstream.StreamConfig{Subjects: []string{"a"}, Replicas: 1, MaxBytes: 0}
+	assert.True(t, streamConfigSatisfied(live, want),
+		"an unset max-bytes and the server's -1 sentinel describe the same stream")
+
+	// A real cap is still a difference in both directions.
+	capped := &jetstream.StreamConfig{Subjects: []string{"a"}, Replicas: 1, MaxBytes: 1 << 20}
+	assert.False(t, streamConfigSatisfied(live, capped))
+	assert.False(t, streamConfigSatisfied(capped, want))
 }

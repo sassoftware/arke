@@ -654,14 +654,42 @@ func (p *natsjsProvider) ensureStreamFor(ctx context.Context, bd *natsBrokerDeta
 		// stream. Nothing here unbinds (see mergeBoundSources), and an
 		// ordinary publisher to a bound address — which names no parent, so it
 		// reaches this path with no bindings — must not be the thing that does.
-		sources, serr := p.existingSources(cctx, bd, streamName)
+		existing, serr := p.existingConfig(cctx, bd, streamName)
 		if serr != nil {
 			return serr
 		}
-		if len(bindings) > 0 {
-			sources = mergeBoundSources(sources, parentStream, bindings)
+		if existing != nil {
+			// Its OWN copy, independent of the snapshot in existing:
+			// mergeBoundSources appends to a StreamSource's transforms in
+			// place, so sharing them would mutate the very thing the config is
+			// about to be compared against — the merge would compare equal to
+			// itself and a newly declared binding would be skipped instead of
+			// written. Only visible when the parent is already in the source
+			// set (the second binding onto one parent), since a first binding
+			// appends a fresh element and changes the length.
+			cfg.Sources = copySources(existing.Sources)
 		}
-		cfg.Sources = sources
+		if len(bindings) > 0 {
+			cfg.Sources = mergeBoundSources(cfg.Sources, parentStream, bindings)
+		}
+		// Assert only when the assertion would actually change something.
+		// Carrying the source set forward makes this a read-modify-write, and
+		// bindMu serializes that only within one process — Arke runs more than
+		// one replica, so two processes interleaving a read and a write on one
+		// stream can still drop a binding the other just added. Skipping the
+		// write when the live config already satisfies this caller removes the
+		// overwhelmingly common case from that race entirely: a bare assertion
+		// against a steady-state stream (every publisher's first touch, every
+		// reconnect) now reads and stops. What remains is two callers that both
+		// genuinely change the config, which is far rarer and, for bindings,
+		// symmetric — both are adding.
+		//
+		// A stream created before these limits existed still gets retrofitted:
+		// its MaxAge/MaxBytes differ, so it does not satisfy the config and the
+		// update runs.
+		if existing != nil && streamConfigSatisfied(existing, &cfg) {
+			return nil
+		}
 		_, err := bd.js.CreateOrUpdateStream(cctx, cfg)
 		return err
 	}
@@ -710,22 +738,125 @@ func (p *natsjsProvider) lookupStream(ctx context.Context, bd *natsBrokerDetails
 	return streamName, nil
 }
 
-// existingSources reads the address-to-address bindings already configured on a
-// stream, or nil if the stream does not exist yet. Stream() itself fetches the
-// stream info, so CachedInfo costs nothing further.
-func (p *natsjsProvider) existingSources(ctx context.Context, bd *natsBrokerDetails,
-	streamName string) ([]*jetstream.StreamSource, error) {
+// existingConfig reads a stream's live configuration — its address-to-address
+// bindings and the limits an assertion may need to update — or nil if the
+// stream does not exist yet. Stream() itself fetches the stream info, so
+// CachedInfo costs nothing further.
+func (p *natsjsProvider) existingConfig(ctx context.Context, bd *natsBrokerDetails,
+	streamName string) (*jetstream.StreamConfig, error) {
 	st, err := bd.js.Stream(ctx, streamName)
 	if errors.Is(err, jetstream.ErrStreamNotFound) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read existing bindings: %w", err)
+		return nil, fmt.Errorf("read existing stream config: %w", err)
 	}
 	if info := st.CachedInfo(); info != nil {
-		return info.Config.Sources, nil
+		cfg := info.Config
+		// Deep-copy the source set. mergeBoundSources appends to a
+		// StreamSource's transforms in place, and the value CachedInfo hands
+		// back shares those pointers — so without this the merged config and
+		// the config it is compared against would be the same objects,
+		// streamConfigSatisfied would always agree, and a newly declared
+		// binding would be silently skipped instead of written.
+		cfg.Sources = copySources(cfg.Sources)
+		return &cfg, nil
 	}
 	return nil, nil
+}
+
+func copySources(in []*jetstream.StreamSource) []*jetstream.StreamSource {
+	if in == nil {
+		return nil
+	}
+	out := make([]*jetstream.StreamSource, 0, len(in))
+	for _, s := range in {
+		if s == nil {
+			continue
+		}
+		c := *s
+		c.SubjectTransforms = slices.Clone(s.SubjectTransforms)
+		out = append(out, &c)
+	}
+	return out
+}
+
+// streamConfigSatisfied reports whether a stream's live config already provides
+// everything an assertion asks for, so the assertion can skip its update (see
+// ensureStreamFor). Only the fields the connector sets are compared; anything
+// an operator tuned outside them is left alone, exactly as CreateOrUpdateStream
+// would leave it.
+func streamConfigSatisfied(live, want *jetstream.StreamConfig) bool {
+	if live.Storage != want.Storage || live.Retention != want.Retention ||
+		live.Duplicates != want.Duplicates || live.Replicas != want.Replicas ||
+		live.MaxAge != want.MaxAge || !sameLimit(live.MaxBytes, want.MaxBytes) {
+		return false
+	}
+	if !sameStringSet(live.Subjects, want.Subjects) {
+		return false
+	}
+	return sameSources(live.Sources, want.Sources)
+}
+
+// sameLimit compares two JetStream size/count limits, treating every
+// non-positive value as the same "unlimited". The server normalizes an unset
+// limit to -1 and echoes it back that way, so a config asking for 0 describes
+// the same stream as a live -1 — comparing them literally would make every
+// assertion look like a change.
+func sameLimit(live, want int64) bool {
+	if live <= 0 && want <= 0 {
+		return true
+	}
+	return live == want
+}
+
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, s := range a {
+		seen[s]++
+	}
+	for _, s := range b {
+		seen[s]--
+		if seen[s] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// sameSources compares two address-to-address binding sets by the fields
+// mergeBoundSources builds: the parent stream each sources from and the
+// subjects it routes in. Order is irrelevant on both levels — the server may
+// return either in any order.
+func sameSources(live, want []*jetstream.StreamSource) bool {
+	if len(live) != len(want) {
+		return false
+	}
+	byName := make(map[string]*jetstream.StreamSource, len(live))
+	for _, s := range live {
+		byName[s.Name] = s
+	}
+	for _, w := range want {
+		l, ok := byName[w.Name]
+		if !ok {
+			return false
+		}
+		if !sameStringSet(transformSubjects(l), transformSubjects(w)) {
+			return false
+		}
+	}
+	return true
+}
+
+func transformSubjects(s *jetstream.StreamSource) []string {
+	out := make([]string, 0, len(s.SubjectTransforms))
+	for _, t := range s.SubjectTransforms {
+		out = append(out, t.Source+">"+t.Destination)
+	}
+	return out
 }
 
 // mergeBoundSources merges bindings into a stream's existing source set, so a
