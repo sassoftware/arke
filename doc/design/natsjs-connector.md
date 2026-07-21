@@ -389,6 +389,22 @@ connector); the connector sets `Nats-Msg-Id` from that pair so re-publishes
 within the window are collapsed. A publisher name by itself does not enable
 deduplication.
 
+Dedup belongs to `STREAM` addresses, and only to them. JetStream would happily
+deduplicate on any address — dedup here is a property of the stream, not of
+the address type — but RabbitMQ gets it from the Streams client, which is the
+only thing the AMQP connector reaches for a `STREAM` address. So the two paths
+mirror that connector rather than what JetStream can do:
+
+- a **unary publish** (`PublishOne`) carrying a publish id for any other
+  address type — `TOPIC`, `QUEUE` or `FILTER` — is refused, because the AMQP
+  connector refuses it. `TOPIC` is the case to watch: it is the protobuf zero
+  value, so an address that never sets a type is refused too;
+- a **streaming publish** carrying one *ignores* it, because the AMQP
+  connector's streaming path hands every non-`STREAM` address to a plain
+  channel publish that drops the id on the floor. Refusing would be stricter
+  than RabbitMQ, and honouring it would hand the client a guarantee that
+  disappears the moment it runs there.
+
 ## Retention: work-queue vs append-log
 
 This is the most important behavioral difference between the two brokers. A

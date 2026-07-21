@@ -797,7 +797,7 @@ func (p *natsjsProvider) Publish(ctx context.Context, in <-chan *pb.Message, err
 				errChan <- &pb.Error{Message: unsupportedConfirmError}
 				continue
 			}
-			errChan <- p.publishMsg(ctx, bd, msg, false)
+			errChan <- p.publishMsg(ctx, bd, msg, false /* unary */)
 		}
 	}
 }
@@ -807,39 +807,50 @@ func (p *natsjsProvider) PublishOne(ctx context.Context, msg *pb.Message) *pb.Er
 	if err != nil {
 		return &pb.Error{Message: err.Error(), IsFatal: true}
 	}
-	// A STREAM address must name a stream that already exists: amqp091 routes
-	// unary stream publishes through the RabbitMQ Streams client, which
-	// refuses a stream nobody declared (declaring is the reader's job —
-	// streamSubscribe's DeclareStream). Auto-creating here instead would turn
-	// a typo'd address name into a junk stream that swallows messages no
-	// reader will ever see. Only this unary path checks: amqp091's streaming
-	// Publish sends every address type, STREAM included, over an
-	// auto-declared exchange and reports no error either, so the streaming
-	// path keeps the auto-create.
-	requireDeclared := msg.GetAddress().GetType() == pb.Address_STREAM
-	return p.publishMsg(ctx, bd, msg, requireDeclared)
+	return p.publishMsg(ctx, bd, msg, true /* unary */)
 }
 
-func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, msg *pb.Message, requireDeclared bool) *pb.Error {
+// publishMsg publishes one message. unary distinguishes PublishOne from the
+// streaming Publish, which amqp091 routes through entirely different client
+// code — so two parts of the contract below differ by path, not just by
+// address type.
+func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, msg *pb.Message, unary bool) *pb.Error {
 	addr := msg.GetAddress()
+	// Dedup is a STREAM-address feature on both brokers: RabbitMQ gets it from
+	// the Streams client, which is the only thing amqp091's publish paths
+	// reach for a STREAM address.
+	dedupAddress := addr.GetType() == pb.Address_STREAM
 	// Message-contract refusals come before any topology is touched: amqp091
-	// refuses both of these before it reaches for the stream or exchange, so
-	// a publish that is wrong twice over reports the contract error, not the
-	// missing stream — and a refused publish creates nothing.
-	if msg.GetPublishId() > 0 && addr.GetType() == pb.Address_QUEUE {
-		// JetStream would happily deduplicate this, since dedup here is a
-		// property of the stream rather than of the address type. Refusing it
-		// anyway keeps the option meaning one thing across brokers: amqp091
-		// cannot offer dedup on a queue address (RabbitMQ dedup comes from
-		// streams), so a client allowed to set it here would be writing code
-		// that silently loses its deduplication on RabbitMQ.
+	// refuses these before it reaches for the stream or exchange, so a publish
+	// that is wrong twice over reports the contract error, not the missing
+	// stream — and a refused publish creates nothing.
+	if msg.GetPublishId() > 0 && unary && !dedupAddress {
+		// The refusal covers every non-STREAM address, not just Address_QUEUE:
+		// amqp091's PublishOne routes STREAM to publishOneStream and everything
+		// else — TOPIC, QUEUE and FILTER alike — to publishOneQueue, which is
+		// where the refusal lives (amqp091.go:1501). TOPIC matters most: it is
+		// the proto zero value, so an address that never sets a type takes this
+		// path. JetStream would happily deduplicate any of them, since dedup
+		// here is a property of the stream rather than of the address type;
+		// refusing anyway keeps the option meaning one thing across brokers,
+		// instead of letting a client write a publish that works here and
+		// fails outright on RabbitMQ.
 		return &pb.Error{Message: queueDedupError}
 	}
 	if msg.GetPublishId() > 0 && msg.GetPublisherName() == "" {
 		return &pb.Error{Message: "PublisherName not set on message, PublisherName is required when PublishID is set"}
 	}
+	// A STREAM address must name a stream that already exists: amqp091 routes
+	// unary stream publishes through the RabbitMQ Streams client, which
+	// refuses a stream nobody declared (declaring is the reader's job —
+	// streamSubscribe's DeclareStream). Auto-creating here instead would turn
+	// a typo'd address name into a junk stream that swallows messages no
+	// reader will ever see. Only the unary path checks: amqp091's streaming
+	// Publish sends every address type, STREAM included, over an
+	// auto-declared exchange and reports no error either, so the streaming
+	// path keeps the auto-create.
 	assertStream := p.ensureStreamFor
-	if requireDeclared {
+	if unary && dedupAddress {
 		assertStream = p.lookupStream
 	}
 	streamName, err := assertStream(ctx, bd, addr)
@@ -855,8 +866,14 @@ func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, 
 		Header:  pbToNatsHeader(msg.GetHeaders()),
 	}
 	var pubOpts []jetstream.PublishOpt
-	// publish_id + publisher_name -> Nats-Msg-Id (dedup within the stream window).
-	if msg.GetPublishId() > 0 {
+	// publish_id + publisher_name -> Nats-Msg-Id (dedup within the stream window),
+	// but only where amqp091 would also have deduplicated. On a non-STREAM
+	// address the id is ignored rather than honoured: amqp091's streaming
+	// Publish hands every non-STREAM address to the plain channel publish,
+	// which drops the id on the floor, so applying it here would silently give
+	// the client a guarantee that disappears on RabbitMQ. (The unary path never
+	// gets this far with that combination — it is refused above.)
+	if msg.GetPublishId() > 0 && dedupAddress {
 		pubOpts = append(pubOpts, jetstream.WithMsgID(fmt.Sprintf("%s-%d", msg.GetPublisherName(), msg.GetPublishId())))
 	}
 	_, perr := bd.js.PublishMsg(ctx, nmsg, pubOpts...)

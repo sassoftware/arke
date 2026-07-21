@@ -875,7 +875,14 @@ func TestDeduplication(t *testing.T) {
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)
 
-	addr := &pb.Address{Name: "events.dedup", Subjects: []string{"e"}}
+	// Dedup is a STREAM-address feature on both brokers — RabbitMQ gets it from
+	// the Streams client, which is the only thing amqp091's publish paths reach
+	// for a STREAM address — and a unary publish to one needs a declared stream.
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	_, eerr := p.ensureStream(ctx, bd, "events.dedup")
+	require.NoError(t, eerr)
+
+	addr := &pb.Address{Name: "events.dedup", Type: pb.Address_STREAM, Subjects: []string{"e"}}
 	dup := func() *pb.Message {
 		return &pb.Message{Address: addr, Body: []byte("x"), PublisherName: "pub", PublishId: 42}
 	}
@@ -894,8 +901,15 @@ func TestPublishIDRequiresPublisherName(t *testing.T) {
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)
 
+	// A STREAM address: the only kind whose unary publish reaches the
+	// PublisherName check at all, since every other type is refused outright
+	// for asking for dedup (see TestPublishDedupRefusedOnEveryNonStreamAddress).
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	_, eerr := p.ensureStream(ctx, bd, "events.dedup.required")
+	require.NoError(t, eerr)
+
 	perr := p.PublishOne(ctx, &pb.Message{
-		Address:   &pb.Address{Name: "events.dedup.required", Subjects: []string{"e"}},
+		Address:   &pb.Address{Name: "events.dedup.required", Type: pb.Address_STREAM, Subjects: []string{"e"}},
 		Body:      []byte("x"),
 		PublishId: 1,
 	})
@@ -1940,8 +1954,10 @@ func TestPublishContractRefusals(t *testing.T) {
 	require.NotNil(t, perr)
 	assert.Equal(t, queueDedupError, perr.GetMessage())
 
-	// ...but the same publish to a non-queue address is fine.
-	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+	// ...and equally on a topic address. amqp091's PublishOne sends every
+	// non-STREAM address through publishOneQueue, which is where that refusal
+	// lives, so TOPIC and FILTER are refused on exactly the same grounds.
+	require.NotNil(t, p.PublishOne(ctx, &pb.Message{
 		Address:       &pb.Address{Name: "events.t", Type: pb.Address_TOPIC, Subjects: []string{"k"}},
 		PublisherName: "pub", PublishId: 1, Body: []byte("x")}))
 
@@ -2989,4 +3005,82 @@ func TestConcurrentResolveAndMarkLeavesNoOrphans(t *testing.T) {
 
 	assert.Equal(t, 0, bd.activeMessages.Length(),
 		"marking a message for redelivery must not reinsert one that was resolved concurrently")
+}
+
+// TestPublishDedupRefusedOnEveryNonStreamAddress pins the address types a
+// unary publish may ask for deduplication on. amqp091's PublishOne routes only
+// Address_STREAM to publishOneStream (the RabbitMQ Streams client, the one
+// thing that can deduplicate); every other type — TOPIC, QUEUE and FILTER —
+// goes to publishOneQueue, which refuses PublishId outright (amqp091.go:1501).
+// TOPIC is the case that matters most: it is the proto zero value, so an
+// address that never sets a type lands here.
+//
+// Regression: the refusal used to test == Address_QUEUE, so a TOPIC or FILTER
+// address silently accepted the id and deduplicated — giving a client a
+// guarantee that turns into a hard error the moment it runs against RabbitMQ.
+func TestPublishDedupRefusedOnEveryNonStreamAddress(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	for _, tc := range []struct {
+		name string
+		typ  pb.Address_TargetType
+	}{
+		{"topic (the proto zero value)", pb.Address_TOPIC},
+		{"queue", pb.Address_QUEUE},
+		{"filter", pb.Address_FILTER},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			perr := p.PublishOne(ctx, &pb.Message{
+				Address:       &pb.Address{Name: "events.dedup.scope." + tc.name, Type: tc.typ, Subjects: []string{"k"}},
+				PublisherName: "pub", PublishId: 1, Body: []byte("x")})
+			require.NotNil(t, perr, "a unary publish asking for dedup on a non-STREAM address must be refused")
+			assert.Equal(t, queueDedupError, perr.GetMessage())
+		})
+	}
+
+	// A STREAM address is the one that may: declare it, then dedup applies.
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	_, eerr := p.ensureStream(ctx, bd, "events.dedup.scope.stream")
+	require.NoError(t, eerr)
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address:       &pb.Address{Name: "events.dedup.scope.stream", Type: pb.Address_STREAM, Subjects: []string{"k"}},
+		PublisherName: "pub", PublishId: 1, Body: []byte("x")}))
+}
+
+// TestStreamingPublishIgnoresPublishIDOnNonStreamAddress pins the other half of
+// the dedup contract: the refusal belongs to the unary path only. amqp091's
+// streaming Publish hands every non-STREAM address to the plain channel
+// publish, which neither refuses the id nor deduplicates on it — so natsjs
+// must not refuse it either (that would be stricter than RabbitMQ, breaking a
+// publisher that works there today), and must not honour it either (that would
+// be a guarantee RabbitMQ does not give).
+func TestStreamingPublishIgnoresPublishIDOnNonStreamAddress(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	in := make(chan *pb.Message, 2)
+	errChan := make(chan *pb.Error, 2)
+	pubCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Publish(pubCtx, in, errChan)
+
+	addr := &pb.Address{Name: "events.stream.dedupignored", Type: pb.Address_TOPIC, Subjects: []string{"k"}}
+	for i := 0; i < 2; i++ {
+		in <- &pb.Message{Address: addr, Body: []byte("x"), PublisherName: "pub", PublishId: 42}
+		select {
+		case e := <-errChan:
+			require.Nil(t, e, "the streaming path must not refuse a publish id: %v", e.GetMessage())
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for the publish reply")
+		}
+	}
+
+	stats := p.SourceStats(ctx, &pb.Source{
+		Name:    "events.stream.dedupignored.consumer",
+		Address: &pb.Address{Name: "events.stream.dedupignored"},
+	})
+	assert.Nil(t, stats.GetError())
+	assert.Equal(t, int64(2), stats.GetMessageCount(),
+		"the id must be ignored on a non-STREAM address, not deduplicated on — RabbitMQ drops it on the floor")
 }
