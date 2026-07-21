@@ -3084,3 +3084,78 @@ func TestStreamingPublishIgnoresPublishIDOnNonStreamAddress(t *testing.T) {
 	assert.Equal(t, int64(2), stats.GetMessageCount(),
 		"the id must be ignored on a non-STREAM address, not deduplicated on — RabbitMQ drops it on the floor")
 }
+
+// TestHeadersAddressIgnoresRoutingKey covers a headers address that also
+// carries subjects. RabbitMQ's headers exchange never looks at the routing key
+// — rabbit_exchange_type_headers matches every binding of the exchange on its
+// header arguments alone — so the subjects amqp091 passes to QueueBind decide
+// nothing, and a message published under any key reaches the consumer.
+//
+// Regression: subjects on a FILTER address used to become NATS consumer filter
+// subjects, so a message whose routing key matched no subject was dropped —
+// silently delivering strictly less than RabbitMQ would.
+func TestHeadersAddressIgnoresRoutingKey(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.headers", Type: pb.Address_FILTER, Subjects: []string{"bound.one"}}
+	out := make(chan *pb.Message, 8)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, &pb.Source{Name: "events.headers.consumer", Type: pb.Source_QUEUE,
+		Address: addr, Options: map[string]string{"Offset": "first"}}, out)
+	time.Sleep(500 * time.Millisecond)
+
+	for _, key := range []string{"bound.one", "some.other.key"} {
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{
+			Address: &pb.Address{Name: "events.headers", Type: pb.Address_FILTER, Subjects: []string{key}},
+			Body:    []byte(key)}))
+	}
+
+	got := map[string]bool{}
+	for len(got) < 2 {
+		m := recv(t, out)
+		got[string(m.GetBody())] = true
+		require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	}
+	assert.True(t, got["bound.one"], "the message under the declared key must arrive")
+	assert.True(t, got["some.other.key"],
+		"a headers exchange ignores routing keys, so a message under any key must arrive")
+}
+
+// TestHeadersAddressStillAppliesHeaderFilters is the guard on the test above:
+// selecting the whole address must hand the decision to the header filters,
+// not deliver everything unconditionally.
+func TestHeadersAddressStillAppliesHeaderFilters(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.headers.filtered", Type: pb.Address_FILTER, Subjects: []string{"bound.one"}}
+	out := make(chan *pb.Message, 8)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, &pb.Source{
+		Name: "events.headers.filtered.consumer", Type: pb.Source_QUEUE, Address: addr,
+		Filters: []*pb.Filter{{Type: pb.Filter_ALL, Matches: []*pb.Match{{Name: "tenant", Value: "acme"}}}},
+		Options: map[string]string{"Offset": "first"},
+	}, out)
+	time.Sleep(500 * time.Millisecond)
+
+	// Matching headers under a key no subject names: delivered (headers decide).
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: &pb.Address{Name: "events.headers.filtered", Type: pb.Address_FILTER, Subjects: []string{"any.key"}},
+		Headers: map[string]string{"tenant": "acme"}, Body: []byte("match")}))
+	// Non-matching headers under the declared key: filtered out.
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: &pb.Address{Name: "events.headers.filtered", Type: pb.Address_FILTER, Subjects: []string{"bound.one"}},
+		Headers: map[string]string{"tenant": "other"}, Body: []byte("nomatch")}))
+
+	m := recv(t, out)
+	assert.Equal(t, "match", string(m.GetBody()))
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	select {
+	case extra := <-out:
+		t.Fatalf("header filters must still gate a headers address; got %q", string(extra.GetBody()))
+	case <-time.After(2 * time.Second):
+	}
+}

@@ -443,3 +443,44 @@ func TestEvaluateFilters(t *testing.T) {
 	// multiple filters are OR'd: second filter matches
 	assert.True(t, evaluateFilters([]*pb.Filter{allMiss, all}, headers))
 }
+
+// TestFilterSubjectsForHeadersAddress pins that a headers address selects its
+// whole subject space regardless of the subjects it declares: RabbitMQ's
+// headers exchange routes on header arguments alone and never reads the
+// routing key, so binding subjects decide nothing there. evaluateFilters is
+// the connector's stand-in for the header arguments.
+func TestFilterSubjectsForHeadersAddress(t *testing.T) {
+	whole := []string{"events.hdr.~", "events.hdr.~.>"}
+
+	withSubjects := &pb.Source{Type: pb.Source_QUEUE, Address: &pb.Address{
+		Name: "events.hdr", Type: pb.Address_FILTER, Subjects: []string{"bound.one", "bound.two"}}}
+	assert.Equal(t, whole, filterSubjectsFor(withSubjects),
+		"subjects on a headers address must not narrow the filter")
+
+	// Already the behaviour when it carries no subjects but has filters, and
+	// the two must agree.
+	noSubjects := &pb.Source{Type: pb.Source_QUEUE,
+		Address: &pb.Address{Name: "events.hdr", Type: pb.Address_FILTER},
+		Filters: []*pb.Filter{{Type: pb.Filter_ALL,
+			Matches: []*pb.Match{{Name: "tenant", Value: "acme"}}}}}
+	assert.Equal(t, whole, filterSubjectsFor(noSubjects))
+
+	// A topic address with the same subjects still narrows — the widening is
+	// scoped to headers addresses.
+	topic := &pb.Source{Type: pb.Source_QUEUE, Address: &pb.Address{
+		Name: "events.hdr", Type: pb.Address_TOPIC, Subjects: []string{"bound.one"}}}
+	assert.Equal(t, []string{"events.hdr.~.bound.one"}, filterSubjectsFor(topic))
+}
+
+// TestParentBindingSubjectsHeadersParent: the binding keys of an
+// address-to-address binding are matched by the PARENT exchange's type, so a
+// headers parent ignores them too — amqp091's ExchangeBind passes the child's
+// subjects with no arguments, which a headers exchange matches unconditionally.
+func TestParentBindingSubjectsHeadersParent(t *testing.T) {
+	addr := &pb.Address{
+		Name:          "events.child",
+		Subjects:      []string{"bound.one"},
+		ParentAddress: &pb.Address{Name: "events.parent", Type: pb.Address_FILTER},
+	}
+	assert.Equal(t, []string{"events.parent.~", "events.parent.~.>"}, parentBindingSubjects(addr))
+}

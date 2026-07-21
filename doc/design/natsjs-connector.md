@@ -138,6 +138,14 @@ the escaping above can never emit. Three cases are deliberately not that:
   single `""` key there purely to have somewhere to hang the header
   arguments; `evaluateFilters` is this connector's stand-in for those.
 
+A headers address selects the whole address whether or not it declares
+binding keys, for that same reason: a headers exchange matches every one of
+its bindings on their header arguments alone and never reads the routing key,
+so keys declared on one decide nothing and must not narrow the consumer.
+They still travel to the parent in an address-to-address binding, where the
+*parent's* type decides how they are matched — a topic parent matches them as
+routing keys, a headers parent ignores them in turn.
+
 ### Address-to-address binding
 
 An address may name a `ParentAddress`, binding it to that parent: what is

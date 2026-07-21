@@ -387,6 +387,17 @@ func ownFilterSubjectsFor(source *pb.Source) []string {
 	if len(source.GetAddress().GetSubjects()) == 0 {
 		return boundNothingSubjects(source)
 	}
+	// A headers address routes on headers alone: RabbitMQ's headers exchange
+	// never looks at the routing key, so the subjects a source declares on one
+	// are binding keys the broker discards (amqp091 passes them to QueueBind /
+	// ExchangeBind all the same, and they decide nothing). Selecting the whole
+	// address and letting evaluateFilters decide is the equivalent — filtering
+	// by subject here would drop messages RabbitMQ delivers, which is the same
+	// reasoning boundNothingSubjects already applies to a headers address that
+	// carries no subjects at all.
+	if source.GetAddress().GetType() == pb.Address_FILTER {
+		return wholeAddressSubjects(source.GetAddress().GetName())
+	}
 	if source.GetAddress().GetType() == pb.Address_QUEUE {
 		return directFilterSubjectsFor(source)
 	}
@@ -467,13 +478,22 @@ func pruneSubsumed(subjects []string) []string {
 // single character other than "~e".
 const unmatchableToken = "~x"
 
+// wholeAddressSubjects selects everything an address's stream captures — the
+// bare prefix (empty routing key) and every subject under it. It is the filter
+// set for a source bound to the address as a whole rather than to particular
+// routing keys.
+func wholeAddressSubjects(addressName string) []string {
+	prefix := subjectPrefix(addressName)
+	return []string{prefix, prefix + ".>"}
+}
+
 // boundNothingSubjects gives the filter subjects for a source whose address
 // carries no routing-key patterns. amqp091 declares no binding at all in that
 // case (declareBinding iterates an empty subject list), so the source receives
 // nothing — with two exceptions that both mean "the whole address".
 func boundNothingSubjects(source *pb.Source) []string {
 	prefix := subjectPrefix(source.GetAddress().GetName())
-	whole := []string{prefix, prefix + ".>"}
+	whole := wholeAddressSubjects(source.GetAddress().GetName())
 	// A stream source is not bound to its address at all. amqp091 reads a
 	// RabbitMQ stream by name — streamSubscribe goes straight to the stream
 	// connection and never declares an exchange or a binding — so its reader
