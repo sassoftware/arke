@@ -574,6 +574,17 @@ func (p *natsjsProvider) ensureStreamFor(ctx context.Context, bd *natsBrokerDeta
 			return streamName, nil
 		}
 	}
+	// The parent's own stream is asserted before bindMu is taken below: that
+	// assertion runs through the same lock, so holding it across the nested
+	// call would deadlock.
+	var parentStream string
+	if len(bindings) > 0 {
+		ps, perr := p.ensureStream(ctx, bd, addr.GetParentAddress().GetName())
+		if perr != nil {
+			return "", fmt.Errorf("ensure parent address stream: %w", perr)
+		}
+		parentStream = ps
+	}
 	build := func() error {
 		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jsAPITimeout())
 		defer cancel()
@@ -594,33 +605,41 @@ func (p *natsjsProvider) ensureStreamFor(ctx context.Context, bd *natsBrokerDeta
 			MaxAge:   streamMaxAge(),
 			MaxBytes: streamMaxBytes(),
 		}
-		if len(bindings) > 0 {
-			parentStream, perr := p.ensureStream(cctx, bd, addr.GetParentAddress().GetName())
-			if perr != nil {
-				return fmt.Errorf("ensure parent address stream: %w", perr)
-			}
-			sources, serr := p.boundSources(cctx, bd, streamName, parentStream, bindings)
-			if serr != nil {
-				return serr
-			}
-			cfg.Sources = sources
+		// The source set is carried forward on EVERY assertion, not just the
+		// ones that declare a binding of their own: CreateOrUpdateStream
+		// replaces it wholesale, so a config that omits it unbinds every
+		// address-to-address binding another subscriber declared on this
+		// stream. Nothing here unbinds (see mergeBoundSources), and an
+		// ordinary publisher to a bound address — which names no parent, so it
+		// reaches this path with no bindings — must not be the thing that does.
+		sources, serr := p.existingSources(cctx, bd, streamName)
+		if serr != nil {
+			return serr
 		}
+		if len(bindings) > 0 {
+			sources = mergeBoundSources(sources, parentStream, bindings)
+		}
+		cfg.Sources = sources
 		_, err := bd.js.CreateOrUpdateStream(cctx, cfg)
 		return err
 	}
+	// build reads the stream's current binding set and writes back a superset,
+	// so the read-modify-write has to be serialized or one concurrent caller's
+	// bindings are lost — including a caller that only meant to assert the
+	// stream exists. The streams registry cannot do this job: it *collapses*
+	// concurrent callers, which is right when they all want the same stream but
+	// would silently drop one of two different binding sets.
 	var err error
 	if len(bindings) > 0 {
-		// boundSources reads the current binding set to add to it, so the
-		// read-modify-write has to be serialized or a concurrent subscriber
-		// declaring a different binding would be overwritten. The streams
-		// registry cannot do this job: it *collapses* concurrent callers, which
-		// is right when they all want the same stream but would silently drop
-		// one of two different binding sets.
 		p.bindMu.Lock()
 		err = build()
 		p.bindMu.Unlock()
 	} else {
-		err = p.streams.ensure(ctx, streamEnsureKey(bd.connectionConfig, streamName), build)
+		err = p.streams.ensure(ctx, streamEnsureKey(bd.connectionConfig, streamName), func() error {
+			p.bindMu.Lock()
+			defer p.bindMu.Unlock()
+			return build()
+		})
 	}
 	if err != nil {
 		return "", err
@@ -649,22 +668,32 @@ func (p *natsjsProvider) lookupStream(ctx context.Context, bd *natsBrokerDetails
 	return streamName, nil
 }
 
-// boundSources merges bindings into the stream's existing source set, so a
+// existingSources reads the address-to-address bindings already configured on a
+// stream, or nil if the stream does not exist yet. Stream() itself fetches the
+// stream info, so CachedInfo costs nothing further.
+func (p *natsjsProvider) existingSources(ctx context.Context, bd *natsBrokerDetails,
+	streamName string) ([]*jetstream.StreamSource, error) {
+	st, err := bd.js.Stream(ctx, streamName)
+	if errors.Is(err, jetstream.ErrStreamNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read existing bindings: %w", err)
+	}
+	if info := st.CachedInfo(); info != nil {
+		return info.Config.Sources, nil
+	}
+	return nil, nil
+}
+
+// mergeBoundSources merges bindings into a stream's existing source set, so a
 // second address-to-address binding adds to the first rather than replacing
 // it. Bindings accumulate the same way on RabbitMQ, where declaring one never
 // removes another; nothing here unbinds, so a binding outlives the
 // subscription that declared it, exactly as an AMQP exchange-to-exchange
 // binding outlives the client that bound it.
-func (p *natsjsProvider) boundSources(ctx context.Context, bd *natsBrokerDetails,
-	streamName, parentStream string, bindings []string) ([]*jetstream.StreamSource, error) {
-	sources := []*jetstream.StreamSource{}
-	if st, err := bd.js.Stream(ctx, streamName); err == nil {
-		if info, ierr := st.Info(ctx); ierr == nil {
-			sources = info.Config.Sources
-		}
-	} else if !errors.Is(err, jetstream.ErrStreamNotFound) {
-		return nil, fmt.Errorf("read existing bindings: %w", err)
-	}
+func mergeBoundSources(sources []*jetstream.StreamSource,
+	parentStream string, bindings []string) []*jetstream.StreamSource {
 	var from *jetstream.StreamSource
 	for _, s := range sources {
 		if s.Name == parentStream {
@@ -688,7 +717,7 @@ func (p *natsjsProvider) boundSources(ctx context.Context, bd *natsBrokerDetails
 		from.SubjectTransforms = append(from.SubjectTransforms,
 			jetstream.SubjectTransformConfig{Source: subject, Destination: subject})
 	}
-	return sources, nil
+	return sources
 }
 
 func firstSubject(addr *pb.Address) string {

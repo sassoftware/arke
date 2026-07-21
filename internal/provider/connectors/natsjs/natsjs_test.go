@@ -2797,3 +2797,91 @@ func TestExpiresThreshold(t *testing.T) {
 	_, err = expiresThreshold(src(map[string]string{"Expires": "-5"}))
 	require.EqualError(t, err, "value for Expires option must be a positive integer")
 }
+
+// connectSecondClient attaches a second, independently-identified client to the
+// same server, so a test can exercise what one connection's state (the
+// knownStreams memo, say) hides from another.
+func connectSecondClient(t *testing.T, s *natsserver.Server, id string) (*natsjsProvider, context.Context) {
+	t.Helper()
+	saved := GetClientIdentifier
+	t.Cleanup(func() { GetClientIdentifier = saved })
+	GetClientIdentifier = func(context.Context) (string, error) { return id, nil }
+
+	addr := s.Addr().(*net.TCPAddr)
+	p := NewNATSJetStreamProvider().(*natsjsProvider)
+	ctx := context.Background()
+	if perr := p.Connect(ctx, &pb.ConnectionConfiguration{
+		Host: "127.0.0.1", Port: int32(addr.Port), //nolint:gosec // local server port fits int32
+		ClientName: id}, false); perr != nil {
+		t.Fatalf("connect %s: %s", id, perr.GetMessage())
+	}
+	if !p.WaitForConnect(ctx) {
+		t.Fatalf("WaitForConnect returned false for %s", id)
+	}
+	return p, ctx
+}
+
+// TestBindingSurvivesBindinglessDeclare: asserting a stream that has
+// address-to-address bindings must carry them forward even when the asserting
+// call declares none of its own. CreateOrUpdateStream replaces the source set
+// wholesale, so a config that omits it silently unbinds the address — and the
+// call that omits it is the most ordinary one there is: a publisher naming the
+// bound address directly, which carries no ParentAddress. The per-connection
+// knownStreams memo hides this from the connection that declared the binding,
+// so the regression only shows up from a second one.
+func TestBindingSurvivesBindinglessDeclare(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	parent := &pb.Address{Name: "events.bsurv.parent", Type: pb.Address_TOPIC}
+	child := &pb.Address{
+		Name:          "events.bsurv.child",
+		Type:          pb.Address_TOPIC,
+		Subjects:      []string{"key.one"},
+		ParentAddress: parent,
+	}
+
+	out := make(chan *pb.Message, 8)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, &pb.Source{Name: "events.bsurv.consumer", Type: pb.Source_QUEUE,
+		Address: child, Options: map[string]string{"Offset": "first"}}, out)
+	time.Sleep(500 * time.Millisecond)
+
+	pubToParent := func(t *testing.T, body string) {
+		t.Helper()
+		require.Nil(t, p.PublishOne(ctx, &pb.Message{
+			Address: &pb.Address{Name: "events.bsurv.parent", Subjects: []string{"key.one"}},
+			Body:    []byte(body)}))
+	}
+
+	pubToParent(t, "before")
+	m := recv(t, out)
+	require.Equal(t, "before", string(m.GetBody()))
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+
+	// A second client publishes straight to the bound address, naming no
+	// parent. Its connection has never asserted this stream, so it takes the
+	// create-or-update path with no bindings of its own to declare.
+	p2, ctx2 := connectSecondClient(t, s, "other-client")
+	require.Nil(t, p2.PublishOne(ctx2, &pb.Message{
+		Address: &pb.Address{Name: "events.bsurv.child", Subjects: []string{"direct"}},
+		Body:    []byte("direct")}))
+
+	// The binding the first client declared must still route.
+	GetClientIdentifier = func(context.Context) (string, error) { return "test-client", nil }
+	pubToParent(t, "after")
+
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case m := <-out:
+			require.Nil(t, p.Ack(ctx, m.GetUuid()))
+			if string(m.GetBody()) == "after" {
+				return
+			}
+		case <-deadline:
+			t.Fatal("the address-to-address binding did not survive a bindingless declare")
+		}
+	}
+}

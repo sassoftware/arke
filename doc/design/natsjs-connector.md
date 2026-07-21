@@ -158,7 +158,11 @@ accumulate: declaring one never removes another, as on RabbitMQ, so a second
 subscriber binding a different key on the same address adds to the set rather
 than replacing it. Nothing unbinds — a binding outlives the subscription that
 declared it, as an AMQP exchange-to-exchange binding outlives the client that
-bound it.
+bound it. That holds for assertions carrying no binding at all, which is the
+ordinary case: a publisher names the bound address directly and so has no
+parent to declare. Because JetStream replaces a stream's source set wholesale
+on update, every assertion reads the current set and writes it back, rather
+than sending only what the caller happens to know about.
 
 This subject scheme — and the stream/durable name encoding above — is part
 of the connector's persistence contract: retained messages are stored under
