@@ -3049,41 +3049,89 @@ func TestPublishDedupRefusedOnEveryNonStreamAddress(t *testing.T) {
 		PublisherName: "pub", PublishId: 1, Body: []byte("x")}))
 }
 
-// TestStreamingPublishIgnoresPublishIDOnNonStreamAddress pins the other half of
-// the dedup contract: the refusal belongs to the unary path only. amqp091's
-// streaming Publish hands every non-STREAM address to the plain channel
-// publish, which neither refuses the id nor deduplicates on it — so natsjs
-// must not refuse it either (that would be stricter than RabbitMQ, breaking a
-// publisher that works there today), and must not honour it either (that would
-// be a guarantee RabbitMQ does not give).
-func TestStreamingPublishIgnoresPublishIDOnNonStreamAddress(t *testing.T) {
+// TestStreamingPublishIgnoresPublishID pins the other half of the dedup
+// contract: the whole publish-id contract belongs to the unary path only.
+// amqp091's streaming Publish calls prepareAndSend directly for EVERY address
+// type — the plain channel publish, which reads neither PublishId nor
+// PublisherName — so natsjs must not refuse the id there (that would be
+// stricter than RabbitMQ, breaking a publisher that works there today) and
+// must not honour it there either (that would be a guarantee RabbitMQ does not
+// give, and honouring it discards a message RabbitMQ stores).
+//
+// Regression: the address type alone decided this, so a STREAM address was
+// deduplicated on the streaming path too — silently dropping the second
+// publish, where amqp091 never reaches the Streams client that deduplicates.
+func TestStreamingPublishIgnoresPublishID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		typ  pb.Address_TargetType
+	}{
+		{"topic (the proto zero value)", pb.Address_TOPIC},
+		{"queue", pb.Address_QUEUE},
+		// The one that regressed: STREAM is the type the UNARY path
+		// deduplicates on, but the streaming path never routes to the client
+		// that does the deduplicating, so the id has to be dropped here too.
+		{"stream", pb.Address_STREAM},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := runJetStreamServer(t)
+			p, ctx := connectClient(t, s)
+
+			in := make(chan *pb.Message, 2)
+			errChan := make(chan *pb.Error, 2)
+			pubCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			go p.Publish(pubCtx, in, errChan)
+
+			addr := &pb.Address{Name: "events.stream.dedupignored", Type: tc.typ, Subjects: []string{"k"}}
+			for i := 0; i < 2; i++ {
+				in <- &pb.Message{Address: addr, Body: []byte("x"), PublisherName: "pub", PublishId: 42}
+				select {
+				case e := <-errChan:
+					require.Nil(t, e, "the streaming path must not refuse a publish id: %v", e.GetMessage())
+				case <-time.After(5 * time.Second):
+					t.Fatal("timed out waiting for the publish reply")
+				}
+			}
+
+			stats := p.SourceStats(ctx, &pb.Source{
+				Name:    "events.stream.dedupignored.consumer",
+				Address: &pb.Address{Name: "events.stream.dedupignored"},
+			})
+			assert.Nil(t, stats.GetError())
+			assert.Equal(t, int64(2), stats.GetMessageCount(),
+				"the id must be ignored on the streaming path, not deduplicated on — RabbitMQ drops it on the floor")
+		})
+	}
+}
+
+// TestStreamingPublishAcceptsPublishIDWithoutPublisherName pins the companion
+// refusal to the unary path as well. amqp091 requires a PublisherName
+// alongside a PublishID only in publishOneStream (amqp091.go:1544), where the
+// RabbitMQ Streams client needs a named publisher to deduplicate against. The
+// streaming Publish never routes there and reads neither field, so this
+// publish succeeds on RabbitMQ and must succeed here.
+func TestStreamingPublishAcceptsPublishIDWithoutPublisherName(t *testing.T) {
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)
 
-	in := make(chan *pb.Message, 2)
-	errChan := make(chan *pb.Error, 2)
+	in := make(chan *pb.Message, 1)
+	errChan := make(chan *pb.Error, 1)
 	pubCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go p.Publish(pubCtx, in, errChan)
 
-	addr := &pb.Address{Name: "events.stream.dedupignored", Type: pb.Address_TOPIC, Subjects: []string{"k"}}
-	for i := 0; i < 2; i++ {
-		in <- &pb.Message{Address: addr, Body: []byte("x"), PublisherName: "pub", PublishId: 42}
-		select {
-		case e := <-errChan:
-			require.Nil(t, e, "the streaming path must not refuse a publish id: %v", e.GetMessage())
-		case <-time.After(5 * time.Second):
-			t.Fatal("timed out waiting for the publish reply")
-		}
+	in <- &pb.Message{
+		Address:   &pb.Address{Name: "events.stream.noPubName", Type: pb.Address_TOPIC, Subjects: []string{"k"}},
+		Body:      []byte("x"),
+		PublishId: 42,
 	}
-
-	stats := p.SourceStats(ctx, &pb.Source{
-		Name:    "events.stream.dedupignored.consumer",
-		Address: &pb.Address{Name: "events.stream.dedupignored"},
-	})
-	assert.Nil(t, stats.GetError())
-	assert.Equal(t, int64(2), stats.GetMessageCount(),
-		"the id must be ignored on a non-STREAM address, not deduplicated on — RabbitMQ drops it on the floor")
+	select {
+	case e := <-errChan:
+		require.Nil(t, e, "the streaming path reads neither PublishId nor PublisherName: %v", e.GetMessage())
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the publish reply")
+	}
 }
 
 // TestHeadersAddressIgnoresRoutingKey covers a headers address that also

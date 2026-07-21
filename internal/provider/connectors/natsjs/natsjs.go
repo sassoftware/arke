@@ -968,7 +968,13 @@ func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, 
 		// fails outright on RabbitMQ.
 		return &pb.Error{Message: queueDedupError}
 	}
-	if msg.GetPublishId() > 0 && msg.GetPublisherName() == "" {
+	// The companion refusal, and unary-only for the same reason: it lives in
+	// amqp091's publishOneStream (amqp091.go:1544), which only PublishOne
+	// reaches. The streaming Publish calls prepareAndSend directly and reads
+	// neither field, so a streaming publish carrying an id but no publisher
+	// name is accepted on RabbitMQ — refusing it here would break a publisher
+	// that works there today.
+	if unary && msg.GetPublishId() > 0 && msg.GetPublisherName() == "" {
 		return &pb.Error{Message: "PublisherName not set on message, PublisherName is required when PublishID is set"}
 	}
 	// A STREAM address must name a stream that already exists: amqp091 routes
@@ -998,13 +1004,21 @@ func (p *natsjsProvider) publishMsg(ctx context.Context, bd *natsBrokerDetails, 
 	}
 	var pubOpts []jetstream.PublishOpt
 	// publish_id + publisher_name -> Nats-Msg-Id (dedup within the stream window),
-	// but only where amqp091 would also have deduplicated. On a non-STREAM
-	// address the id is ignored rather than honoured: amqp091's streaming
-	// Publish hands every non-STREAM address to the plain channel publish,
-	// which drops the id on the floor, so applying it here would silently give
-	// the client a guarantee that disappears on RabbitMQ. (The unary path never
-	// gets this far with that combination — it is refused above.)
-	if msg.GetPublishId() > 0 && dedupAddress {
+	// but only where amqp091 would also have deduplicated: the unary path, on a
+	// STREAM address. That is the one combination RabbitMQ deduplicates on,
+	// because publishOneStream is the only place amqp091 forwards the id
+	// (streamPrepareAndSend, amqp091.go:1638) and PublishOne is the only caller
+	// that routes there.
+	//
+	// Everywhere else the id is ignored rather than honoured, and the streaming
+	// path is ignored for EVERY address type, STREAM included: amqp091's
+	// Publish hands them all to the plain channel publish, which drops the id
+	// on the floor. Deduplicating a STREAM address here because the type looks
+	// right would silently discard a message RabbitMQ stores — the client
+	// reusing an id on that path is doing something RabbitMQ told it was free.
+	// (The unary path never reaches here on a non-STREAM address; it is refused
+	// above.)
+	if unary && msg.GetPublishId() > 0 && dedupAddress {
 		pubOpts = append(pubOpts, jetstream.WithMsgID(fmt.Sprintf("%s-%d", msg.GetPublisherName(), msg.GetPublishId())))
 	}
 	_, perr := bd.js.PublishMsg(ctx, nmsg, pubOpts...)
