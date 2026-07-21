@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	pb "github.com/sassoftware/arke/api"
+	"github.com/sassoftware/arke/internal/util/tracing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -3733,4 +3735,42 @@ func TestQueueGzipBodyPassesThroughUntouched(t *testing.T) {
 	require.Nil(t, p.Ack(ctx, m.GetUuid()))
 	assert.Equal(t, gzipped, m.GetBody())
 	assert.Equal(t, "gzip", m.GetHeaders()[transferEncodingHeaderName])
+}
+
+// TestDeliveryInjectsTraceHeadersWhenTracingEnabled: mirrors amqp091's
+// queueSubscribe, which starts (or continues) a span for every delivery and,
+// when tracing is enabled, writes its W3C trace context back into the
+// consumed message's headers — so a distributed trace shows arke's own
+// "received from broker" hop even when the publisher set no trace headers at
+// all. tracing.Enabled() is a process-global flag flipped by
+// InitTracerProvider, so this test brackets it carefully and restores the
+// disabled state before returning, since other tests in this package assert
+// exact header sets and would break under a leaked global.
+func TestDeliveryInjectsTraceHeadersWhenTracingEnabled(t *testing.T) {
+	require.NoError(t, os.Setenv(tracing.EnvTelemetryExporter, "stdout"))
+	require.NoError(t, os.Setenv(tracing.EnvOtelSdkDisabled, "false"))
+	_, err := tracing.InitTracerProvider()
+	require.NoError(t, err)
+	defer func() {
+		_ = os.Setenv(tracing.EnvOtelSdkDisabled, "true")
+		_, _ = tracing.InitTracerProvider()
+	}()
+	require.True(t, tracing.Enabled())
+
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.traced", Subjects: []string{"e"}}
+	out := make(chan *pb.Message, 1)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, queueSource("events.traced.consumer", "events.traced", "e"), out)
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("m")}))
+	m := recv(t, out)
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+
+	assert.NotEmpty(t, m.GetHeaders()[tracing.HeaderTraceParent],
+		"a consumed message must carry a traceparent when tracing is enabled, matching amqp091's queueSubscribe")
+	assert.Contains(t, m.GetHeaders()[tracing.HeaderTraceParent], "-", "traceparent must be the W3C dashed format")
 }

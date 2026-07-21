@@ -32,6 +32,9 @@ import (
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/internal/provider"
 	"github.com/sassoftware/arke/internal/util"
+	"github.com/sassoftware/arke/internal/util/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const providerName = "natsjs"
@@ -1744,6 +1747,24 @@ func (p *natsjsProvider) handleDelivery(ctx context.Context, bd *natsBrokerDetai
 		}
 		return
 	}
+
+	// Mirrors amqp091's queueSubscribe: start (or continue, if the publisher
+	// already set traceparent/tracestate) a span for this delivery and, when
+	// tracing is enabled, write its context back into the headers the
+	// consumer receives. Without this a distributed trace has no record of
+	// arke's own "received from broker" hop on natsjs, even though amqp091
+	// always injects one.
+	_, span := tracing.SpanFromHeaders(ctx, headers, source.GetAddress().GetName()+" received from broker", trace.SpanKindInternal)
+	if tracing.Enabled() {
+		span.SetAttributes(attribute.String("source.name", source.GetName()),
+			attribute.String("messaging.client_id", bd.clientIdentifier))
+		headers[tracing.HeaderTraceState] = span.SpanContext().TraceState().String()
+		headers[tracing.HeaderTraceParent] = fmt.Sprintf("00-%s-%s-%s",
+			span.SpanContext().TraceID().String(),
+			span.SpanContext().SpanID().String(),
+			span.SpanContext().TraceFlags())
+	}
+	span.End()
 
 	uuid := util.GenUUID()
 	bd.activeMessages.Add(uuid, inflightMsg{msg: m, subKey: subKey})
