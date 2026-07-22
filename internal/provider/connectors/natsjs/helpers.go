@@ -599,8 +599,13 @@ func subjectSubsumes(wide, narrow string) bool {
 // strip is amqp091's: a quorum queue's dead letters belong to the logical
 // source, not to the queue-type suffix.
 func dlqSourceName(sourceName string) string {
-	return strings.Replace(sourceName, ".quorum", "", 1) + ".dlq"
+	return strings.Replace(sourceName, ".quorum", "", 1) + dlqSourceNameSuffix
 }
+
+// dlqSourceNameSuffix is what dlqSourceName appends. Named because the
+// adoption path tests for it to skip a server lookup for every source that
+// cannot possibly be a dead-letter reader (see adoptableDLQDurable).
+const dlqSourceNameSuffix = ".dlq"
 
 func durableName(source *pb.Source) string {
 	if source.GetAutoDelete() || source.GetExclusive() || source.GetType() == pb.Source_TEMPORARY {

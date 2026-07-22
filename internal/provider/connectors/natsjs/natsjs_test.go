@@ -716,6 +716,11 @@ func TestDLQDeclareTTLFromEnv(t *testing.T) {
 // transient source whose name merely collides with an existing durable must
 // stay ephemeral. Adopting on name alone would hand it another subscriber's
 // pending messages and stored ack position.
+//
+// The source is named with the dead-letter suffix deliberately, so it clears
+// the cheap name check in adoptableDLQDurable and actually reaches the marker
+// check this test is about. Without the suffix it would short-circuit earlier
+// and pass for the wrong reason.
 func TestTransientSourceDoesNotAdoptUnmarkedDurable(t *testing.T) {
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)
@@ -731,7 +736,7 @@ func TestTransientSourceDoesNotAdoptUnmarkedDurable(t *testing.T) {
 	stream, serr := bd.js.Stream(ctx, streamNameFor("events.collide"))
 	require.NoError(t, serr)
 	_, cerr := stream.CreateConsumer(ctx, jetstream.ConsumerConfig{
-		Durable:   streamNameFor("events.collide.reader"),
+		Durable:   streamNameFor("events.collide.reader.dlq"),
 		AckPolicy: jetstream.AckExplicitPolicy,
 	})
 	require.NoError(t, cerr)
@@ -741,7 +746,7 @@ func TestTransientSourceDoesNotAdoptUnmarkedDurable(t *testing.T) {
 
 	out := make(chan *pb.Message, 1)
 	src := &pb.Source{
-		Name:    "events.collide.reader",
+		Name:    "events.collide.reader.dlq",
 		Type:    pb.Source_TEMPORARY,
 		Address: srcAddr,
 		// Read from the start, so receipt does not race consumer setup. The
@@ -757,7 +762,7 @@ func TestTransientSourceDoesNotAdoptUnmarkedDurable(t *testing.T) {
 
 	// The pre-existing durable is untouched: the subscribe went to an ephemeral
 	// consumer of its own rather than adopting it.
-	existing, ierr := stream.Consumer(ctx, streamNameFor("events.collide.reader"))
+	existing, ierr := stream.Consumer(ctx, streamNameFor("events.collide.reader.dlq"))
 	require.NoError(t, ierr)
 	info, ierr := existing.Info(ctx)
 	require.NoError(t, ierr)

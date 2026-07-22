@@ -2089,6 +2089,19 @@ func (p *natsjsProvider) setupDeadLetter(ctx context.Context, bd *natsBrokerDeta
 // it leaves an existing consumer alone precisely so it never moves a position
 // that has been accumulating.
 func adoptableDLQDurable(ctx context.Context, stream jetstream.Stream, source *pb.Source) (string, map[string]string) {
+	// Only a source named like a dead-letter reader can match one, so check the
+	// name before asking the server. This is exact, not a heuristic: the only
+	// durables setupDeadLetter creates are named streamNameFor(<source>.dlq),
+	// and streamNameFor is injective, so a match requires the reader's own name
+	// to end in the suffix. Skipping the lookup matters because every OTHER
+	// transient subscribe would otherwise pay a management round trip whose
+	// answer is always "consumer not found" — and that answer is an error
+	// response, so it also inflates the JetStream API error counter that
+	// deployments watch as a health signal, worst during the reconnect storm
+	// after a restart when every transient consumer re-subscribes at once.
+	if !strings.HasSuffix(source.GetName(), dlqSourceNameSuffix) {
+		return "", nil
+	}
 	durable := streamNameFor(source.GetName())
 	cons, err := stream.Consumer(ctx, durable)
 	if err != nil {
