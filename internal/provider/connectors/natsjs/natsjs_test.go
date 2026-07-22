@@ -1934,6 +1934,16 @@ func TestSubscribeInvalidOffsetRejected(t *testing.T) {
 // not fail; it attaches to the existing durable and resumes from its stored ack
 // position, per the documented contract.
 func TestDurableOffsetPinnedAtCreation(t *testing.T) {
+	// The first subscription reads ahead, so it can pull m1 into flight before
+	// this test cancels it. releaseInFlight naks such messages precisely so
+	// they redeliver promptly, but that nak is best-effort: if it loses its
+	// race with the unsubscribe, the server holds m1 until AckWait instead.
+	// The production default (30s) outlasts recv's own 10s timeout, so when
+	// both of those happen at once the test failed spuriously. Pin an AckWait
+	// shorter than recv's timeout — the subject here is the pinned start
+	// position, not redelivery latency.
+	t.Setenv("NATSJS_ACK_WAIT", "2s")
+
 	s := runJetStreamServer(t)
 	p, ctx := connectClient(t, s)
 
