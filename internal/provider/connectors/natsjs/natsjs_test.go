@@ -483,6 +483,287 @@ func TestDeadLetterPreservesRoutingKeyRoutedFromParent(t *testing.T) {
 // original. It returns an error and leaves the message in flight, so the
 // caller's fallback nack still resolves the uuid and the message is
 // redelivered — the failure mode is retry, not silent loss.
+// TestLateDLQReaderSeesEarlierDeadLetters: a dead-letter reader that attaches
+// after the failures still receives them. The reader is transient by
+// convention (the arke integration suite's dead-letter tests use
+// Source_TEMPORARY), which makes it ephemeral and starts it at the stream tail
+// — behind the very messages it exists to read. amqp091 passes this because
+// arke declares the DLQ queue when the *source* declares its
+// DeadLetterAddress, so it accumulates from that moment; setupDeadLetter
+// mirrors it with a pre-declared durable the reader adopts.
+//
+// Deliberately cross-connection: the reader is a different client from the
+// source that declared the DLA, so no per-connection state can carry the
+// position (see the connector's per-connection memos — knownStreams,
+// durableFilters). Only server-side topology can.
+func TestLateDLQReaderSeesEarlierDeadLetters(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.late", Subjects: []string{"job"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("poison")}))
+
+	out := make(chan *pb.Message, 1)
+	src := queueSource("events.late.consumer", "events.late", "job")
+	src.Options["DeadLetterAddress"] = "events.late.dlq"
+	src.Options["DeadLetterSubject"] = "failed"
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	m := recv(t, out)
+	require.Nil(t, p.DeadLetter(ctx, src, m.GetUuid()))
+
+	// Only now does the reader attach, on its own connection, naming the
+	// conventional DLQ source name and asking for no Offset — it must not need
+	// one, exactly as it does not on RabbitMQ.
+	p2, ctx2 := connectClient(t, s)
+	readerOut := make(chan *pb.Message, 1)
+	reader := &pb.Source{
+		Name:    dlqSourceName("events.late.consumer"),
+		Type:    pb.Source_TEMPORARY,
+		Address: &pb.Address{Name: "events.late.dlq", Subjects: []string{"failed"}},
+	}
+	readCtx, readCancel := context.WithCancel(ctx2)
+	defer readCancel()
+	go p2.Subscribe(readCtx, reader, readerOut)
+
+	got := recv(t, readerOut)
+	assert.Equal(t, "poison", string(got.GetBody()))
+}
+
+// TestDLQDurableAdoptableByASecondReader: attaching to a pre-declared
+// dead-letter durable re-asserts its config, and a config without the marker
+// metadata would REPLACE the stored metadata and erase it — leaving the
+// durable unadoptable, so the next reader of the same queue would silently
+// fall back to an ephemeral at the tail. Found in the arke integration suite,
+// where TestDeadLettering and TestDeadLetteringReject share a source name:
+// the first test's reader wiped the marker and the second saw nothing.
+func TestDLQDurableAdoptableByASecondReader(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.twice", Subjects: []string{"job"}}
+	out := make(chan *pb.Message, 2)
+	src := queueSource("events.twice.consumer", "events.twice", "job")
+	src.Options["DeadLetterAddress"] = "events.twice.dlq"
+	src.Options["DeadLetterSubject"] = "failed"
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	reader := func() *pb.Source {
+		return &pb.Source{
+			Name:    dlqSourceName("events.twice.consumer"),
+			Type:    pb.Source_TEMPORARY,
+			Address: &pb.Address{Name: "events.twice.dlq", Subjects: []string{"failed"}},
+		}
+	}
+
+	// First reader: attaches, drains one dead letter, goes away.
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("first")}))
+	first := recv(t, out)
+	require.Nil(t, p.DeadLetter(ctx, src, first.GetUuid()))
+
+	firstOut := make(chan *pb.Message, 1)
+	firstCtx, firstCancel := context.WithCancel(ctx)
+	go p.Subscribe(firstCtx, reader(), firstOut)
+	got := recv(t, firstOut)
+	require.Equal(t, "first", string(got.GetBody()))
+	require.Nil(t, p.Ack(ctx, got.GetUuid()))
+	firstCancel()
+
+	// Second reader, after another failure: must still adopt the same durable.
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("second")}))
+	next := recv(t, out)
+	require.Nil(t, p.DeadLetter(ctx, src, next.GetUuid()))
+
+	secondOut := make(chan *pb.Message, 1)
+	secondCtx, secondCancel := context.WithCancel(ctx)
+	defer secondCancel()
+	go p.Subscribe(secondCtx, reader(), secondOut)
+	assert.Equal(t, "second", string(recv(t, secondOut).GetBody()))
+}
+
+// TestLateDLQReaderNoDeadLetterSubject covers the other filter branch: with no
+// DeadLetterSubject the dead-lettered copy keeps its ORIGINAL routing key,
+// which is per-message and unknowable when the queue is pre-declared, so
+// setupDeadLetter captures the whole dead-letter address instead. A reader
+// binding by that original key must still find it. This is the shape a source
+// setting only DeadLetterAddress produces — the common one.
+func TestLateDLQReaderNoDeadLetterSubject(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.nosub", Subjects: []string{"job"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("poison")}))
+
+	out := make(chan *pb.Message, 1)
+	src := queueSource("events.nosub.consumer", "events.nosub", "job")
+	src.Options["DeadLetterAddress"] = "events.nosub.dlq"
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	m := recv(t, out)
+	require.Nil(t, p.DeadLetter(ctx, src, m.GetUuid()))
+
+	readerOut := make(chan *pb.Message, 1)
+	reader := &pb.Source{
+		Name: dlqSourceName("events.nosub.consumer"),
+		Type: pb.Source_TEMPORARY,
+		// Bound by the ORIGINAL routing key, which is what the copy carries.
+		Address: &pb.Address{Name: "events.nosub.dlq", Subjects: []string{"job"}},
+	}
+	readCtx, readCancel := context.WithCancel(ctx)
+	defer readCancel()
+	go p.Subscribe(readCtx, reader, readerOut)
+
+	assert.Equal(t, "poison", string(recv(t, readerOut).GetBody()))
+}
+
+// TestSetupDeadLetterLeavesExistingDurableAlone: re-declaring a source must not
+// disturb a dead-letter queue that has been accumulating. setupDeadLetter
+// returns early when the durable exists precisely so it never moves a position
+// — re-asserting it at DeliverNew would silently discard every dead letter
+// collected since the first declare, and clients re-subscribe routinely
+// (reconnects, rollouts), so this is a common path, not an edge case.
+func TestSetupDeadLetterLeavesExistingDurableAlone(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.redeclare", Subjects: []string{"job"}}
+	out := make(chan *pb.Message, 2)
+	src := queueSource("events.redeclare.consumer", "events.redeclare", "job")
+	src.Options["DeadLetterAddress"] = "events.redeclare.dlq"
+	src.Options["DeadLetterSubject"] = "failed"
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("poison")}))
+	m := recv(t, out)
+	require.Nil(t, p.DeadLetter(ctx, src, m.GetUuid()))
+
+	// Re-declare the same source, as a reconnecting client does. If this moved
+	// the pre-declared durable's start position, the dead letter above would
+	// become invisible.
+	againCtx, againCancel := context.WithCancel(ctx)
+	go p.Subscribe(againCtx, src, make(chan *pb.Message, 1))
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	require.Eventually(t, func() bool {
+		st, serr := bd.js.Stream(ctx, streamNameFor("events.redeclare.dlq"))
+		if serr != nil {
+			return false
+		}
+		info, ierr := st.Info(ctx)
+		return ierr == nil && info.State.Msgs == 1
+	}, 10*time.Second, 20*time.Millisecond, "dead letter never stored")
+	againCancel()
+
+	readerOut := make(chan *pb.Message, 1)
+	readCtx, readCancel := context.WithCancel(ctx)
+	defer readCancel()
+	go p.Subscribe(readCtx, &pb.Source{
+		Name:    dlqSourceName("events.redeclare.consumer"),
+		Type:    pb.Source_TEMPORARY,
+		Address: &pb.Address{Name: "events.redeclare.dlq", Subjects: []string{"failed"}},
+	}, readerOut)
+
+	assert.Equal(t, "poison", string(recv(t, readerOut).GetBody()))
+}
+
+// TestSetupDeadLetterEmptyAddressDeclaresNothing: an empty DeadLetterAddress
+// must declare no topology at all. Not hypothetical — the amqp091 connector's
+// own Retry builds a source with DeadLetterAddress "" to mean "expire back to
+// the default exchange", and an empty address maps to the degenerate stream
+// name "arke_".
+func TestSetupDeadLetterEmptyAddressDeclaresNothing(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	out := make(chan *pb.Message, 1)
+	src := queueSource("events.emptydla.consumer", "events.emptydla", "job")
+	src.Options["DeadLetterAddress"] = ""
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: &pb.Address{Name: "events.emptydla", Subjects: []string{"job"}},
+		Body:    []byte("hello"),
+	}))
+	require.Equal(t, "hello", string(recv(t, out).GetBody()))
+
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	_, serr := bd.js.Stream(ctx, streamNameFor(""))
+	assert.ErrorIs(t, serr, jetstream.ErrStreamNotFound,
+		"an empty DeadLetterAddress must not create a stream")
+}
+
+func TestDLQDeclareTTLFromEnv(t *testing.T) {
+	t.Setenv("NATSJS_DLQ_DECLARE_TTL", "10m")
+	assert.Equal(t, 10*time.Minute, dlqDeclareThreshold())
+	t.Setenv("NATSJS_DLQ_DECLARE_TTL", "bad")
+	assert.Equal(t, defaultDLQDeclareThreshold, dlqDeclareThreshold())
+	// "0" is meaningful here, unlike the other thresholds: it opts out of
+	// expiry entirely, which is exact amqp091 parity.
+	t.Setenv("NATSJS_DLQ_DECLARE_TTL", "0")
+	assert.Equal(t, time.Duration(0), dlqDeclareThreshold())
+}
+
+// TestTransientSourceDoesNotAdoptUnmarkedDurable pins the gate on adoption: a
+// transient source whose name merely collides with an existing durable must
+// stay ephemeral. Adopting on name alone would hand it another subscriber's
+// pending messages and stored ack position.
+func TestTransientSourceDoesNotAdoptUnmarkedDurable(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	// A durable with the name a transient source would look for, but none of
+	// arke's dead-letter marker metadata.
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	_, serr := bd.js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:     streamNameFor("events.collide"),
+		Subjects: streamSubjectsFor("events.collide"),
+	})
+	require.NoError(t, serr)
+	stream, serr := bd.js.Stream(ctx, streamNameFor("events.collide"))
+	require.NoError(t, serr)
+	_, cerr := stream.CreateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:   streamNameFor("events.collide.reader"),
+		AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	require.NoError(t, cerr)
+
+	srcAddr := &pb.Address{Name: "events.collide", Subjects: []string{"job"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: srcAddr, Body: []byte("hello")}))
+
+	out := make(chan *pb.Message, 1)
+	src := &pb.Source{
+		Name:    "events.collide.reader",
+		Type:    pb.Source_TEMPORARY,
+		Address: srcAddr,
+		// Read from the start, so receipt does not race consumer setup. The
+		// discriminator here is the untouched durable below, not the delivery.
+		Options: map[string]string{"Offset": "first"},
+	}
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	got := recv(t, out)
+	require.Equal(t, "hello", string(got.GetBody()))
+
+	// The pre-existing durable is untouched: the subscribe went to an ephemeral
+	// consumer of its own rather than adopting it.
+	existing, ierr := stream.Consumer(ctx, streamNameFor("events.collide.reader"))
+	require.NoError(t, ierr)
+	info, ierr := existing.Info(ctx)
+	require.NoError(t, ierr)
+	assert.Zero(t, info.Delivered.Consumer, "an unmarked durable must not have been consumed from")
+}
+
 func TestDeadLetterFailureKeepsMessage(t *testing.T) {
 	// The fallback nack of a failed dead-letter is paced (see
 	// deadLetterRetryDelay); shorten it so the test does not wait it out.

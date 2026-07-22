@@ -591,6 +591,17 @@ func subjectSubsumes(wide, narrow string) bool {
 // auto-delete/exclusive/TEMPORARY sources are treated as the transient ones. A
 // non-transient QUEUE (a durable named listener) gets a durable consumer, as does
 // a STREAM source with a ConsumerGroup, or any SingleActiveConsumer.
+// dlqSourceName is the conventional name of the source that reads a source's
+// dead-letter queue. It has to match amqp091's byte for byte (setupDeadLetter
+// there): that connector pre-declares a queue under this name whenever a source
+// sets DeadLetterAddress, and clients attach to the dead letters by naming it —
+// the arke integration suite's dead-letter tests do exactly that. The '.quorum'
+// strip is amqp091's: a quorum queue's dead letters belong to the logical
+// source, not to the queue-type suffix.
+func dlqSourceName(sourceName string) string {
+	return strings.Replace(sourceName, ".quorum", "", 1) + ".dlq"
+}
+
 func durableName(source *pb.Source) string {
 	if source.GetAutoDelete() || source.GetExclusive() || source.GetType() == pb.Source_TEMPORARY {
 		return ""

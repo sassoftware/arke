@@ -138,7 +138,21 @@ const (
 	// dead-letter. See deadLetterRetryDelay; override via
 	// NATSJS_DEADLETTER_RETRY_DELAY.
 	defaultDeadLetterRetryDelay = 5 * time.Second
+	// defaultDLQDeclareThreshold bounds how long a pre-declared dead-letter
+	// consumer survives with nothing reading it. See setupDeadLetter for why
+	// one is declared at all, and dlqDeclareThreshold for why this is bounded
+	// where amqp091's equivalent queue is not. Override via
+	// NATSJS_DLQ_DECLARE_TTL ("0" keeps it forever, matching amqp091).
+	defaultDLQDeclareThreshold = time.Hour
 )
+
+// dlqDurableMetadataKey marks a durable consumer as one setupDeadLetter
+// pre-declared, and records the source whose dead letters it holds. Adoption
+// (see adoptableDLQDurable) is gated on this marker rather than on the name
+// alone: a transient source must never silently attach to some unrelated
+// durable that merely happens to share its name, which would hand it another
+// subscriber's pending messages and its stored ack position.
+const dlqDurableMetadataKey = "arke_dead_letters_for"
 
 // supportedSourceOptionsList intentionally matches the amqp091 connector so that
 // existing client Sources validate against the server unchanged.
@@ -459,6 +473,37 @@ func deadLetterRetryDelay() time.Duration {
 		}
 	}
 	return defaultDeadLetterRetryDelay
+}
+
+// dlqDeclareThreshold is the InactiveThreshold given to a pre-declared
+// dead-letter consumer (setupDeadLetter).
+//
+// amqp091's equivalent — the queue setupDeadLetter declares there — has no
+// expiry at all: it is not auto-delete, so once declared it persists until
+// something removes it. Mirroring that exactly would leak here, because a
+// source name is not always stable. Clients commonly mark a transient
+// consumer by turning an Exclusive source into AutoDelete plus a fresh UUID
+// (see durableName), so one using a transient source *with* a
+// DeadLetterAddress would strand one never-expiring durable per connection,
+// forever. Bounding the threshold trades the long tail of that parity (a DLQ
+// reader attaching days later) for a leak that cannot run away: the reader
+// still sees everything dead-lettered since the source was declared, provided
+// it attaches within the window.
+//
+// NATSJS_DLQ_DECLARE_TTL overrides it; "0" disables expiry outright, which is
+// full amqp091 parity for deployments whose source names are stable.
+func dlqDeclareThreshold() time.Duration {
+	v := os.Getenv("NATSJS_DLQ_DECLARE_TTL")
+	if v == "" {
+		return defaultDLQDeclareThreshold
+	}
+	if v == "0" {
+		return 0
+	}
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return d
+	}
+	return defaultDLQDeclareThreshold
 }
 
 func (p *natsjsProvider) getBrokerDetails(ctx context.Context) (*natsBrokerDetails, error) {
@@ -1193,8 +1238,33 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 	// defaultInactiveThreshold (amqp091 defaults auto-delete/exclusive queues
 	// to the same 5 minutes), durables never expire.
 	consCfg.InactiveThreshold = expires
-	if durable := durableName(source); durable != "" {
+	durable := durableName(source)
+	adoptedDLQ := false
+	if durable == "" {
+		// A transient source is ordinarily an independent ephemeral reader, but
+		// the reader of a dead-letter queue is transient by convention while
+		// needing the opposite of a tail start: it exists to read what was
+		// dead-lettered before it attached. If setupDeadLetter pre-declared a
+		// durable under this source's name, that durable is the queue being
+		// named, so adopt it and inherit its position.
+		var marker map[string]string
+		durable, marker = adoptableDLQDurable(tctx, stream, source)
+		adoptedDLQ = durable != ""
+		// Carried forward so attaching does not erase the marker it matched on
+		// (see adoptableDLQDurable).
+		consCfg.Metadata = marker
+	}
+	if durable != "" {
 		consCfg.Durable = durable
+		if adoptedDLQ && expires == 0 {
+			// Keep the bound setupDeadLetter declared. Adoption otherwise
+			// rewrites the pre-declared threshold to "never expire", so a
+			// reader that attached once and left would silently convert its
+			// dead-letter queue into permanent server state — the leak
+			// dlqDeclareThreshold exists to bound. An explicit Expires still
+			// wins, as it does for every other source.
+			consCfg.InactiveThreshold = dlqDeclareThreshold()
+		}
 		if source.GetSingleActiveConsumer() {
 			// RabbitMQ's single-active-consumer delivers to one consumer at a
 			// time — the point is ordered processing across competing
@@ -1267,6 +1337,12 @@ func (p *natsjsProvider) Subscribe(ctx context.Context, source *pb.Source, out c
 			IsFatal: true,
 		}
 	}
+
+	// Pre-declare the dead-letter reader's consumer now that this source's own
+	// topology exists, matching where amqp091 does it (after its queue and
+	// binding, before the DeclareOnly return) so a declare-only subscribe
+	// establishes the same topology on both connectors.
+	p.setupDeadLetter(tctx, bd, source)
 
 	// DeclareOnly: topology established, do not consume. An ephemeral consumer
 	// created only to validate that topology is garbage the moment we return —
@@ -1907,6 +1983,122 @@ func (p *natsjsProvider) Retry(ctx context.Context, _ *pb.Source, uuid string, d
 	bd.activeMessages.Delete(uuid)
 	bd.activeMu.Unlock()
 	return nil
+}
+
+// setupDeadLetter pre-declares the consumer that holds a source's dead letters,
+// mirroring the amqp091 connector's setupDeadLetter. Best-effort: a failure
+// here leaves dead-lettering itself working (DeadLetter ensures the stream on
+// its own) and must not fail the subscribe, which is how amqp091 treats it too.
+//
+// Why this exists at all. On RabbitMQ the pass is not a broker property: arke
+// declares a queue named dlqSourceName(source) and binds it to the DLX the
+// moment a source declares a DeadLetterAddress, before any message can be
+// dead-lettered. From then on that queue accumulates, so a consumer attaching
+// later — after the failures, which is the normal shape for a DLQ reader —
+// finds them waiting. natsjs had no equivalent: it ensured the DLQ stream
+// lazily inside DeadLetter, and a late reader (Source_TEMPORARY, hence
+// ephemeral, hence DeliverNew) started at the stream's tail and saw an empty
+// queue while its messages sat in the stream just behind it.
+//
+// The faithful start position is therefore neither "tail at attach" (what we
+// did: misses everything) nor DeliverAll (replays up to MaxAge of history the
+// RabbitMQ queue never held). It is the tail *as of declare time*, which is
+// exactly what a durable created here with DeliverNew records, and what the
+// reader inherits by adopting it (adoptableDLQDurable).
+func (p *natsjsProvider) setupDeadLetter(ctx context.Context, bd *natsBrokerDetails, origSource *pb.Source) {
+	opts := origSource.GetOptions()
+	dla := opts["DeadLetterAddress"]
+	// Absent or empty are both no-ops. Empty is not hypothetical: amqp091's own
+	// Retry builds a source with DeadLetterAddress "" to mean "expire back to
+	// the default exchange", and nothing should be declared for that.
+	if dla == "" {
+		return
+	}
+	durable := streamNameFor(dlqSourceName(origSource.GetName()))
+
+	streamName, serr := p.ensureStream(ctx, bd, dla)
+	if serr != nil {
+		util.Logger.Warn(
+			"natsjs: source {0} declares dead-letter address {1} but its stream could not be ensured ({2}); "+
+				"dead letters published before a reader attaches will not be visible to it",
+			origSource.GetName(), dla, serr.Error())
+		return
+	}
+	stream, serr := bd.js.Stream(ctx, streamName)
+	if serr != nil {
+		util.Logger.Warn("natsjs: open dead-letter stream {0} for source {1}: {2}",
+			streamName, origSource.GetName(), serr.Error())
+		return
+	}
+	// Already declared: skip the create. This saves a management round trip on
+	// every subscribe of a source with a dead-letter address; it is not what
+	// protects the position a queue has been accumulating. Nothing here could
+	// move that anyway — after creation a durable's position is its stored ack
+	// floor, not its declared DeliverPolicy, so re-asserting the same config is
+	// a no-op for it, and a genuinely different start position is refused
+	// outright (err 10012, which Subscribe absorbs separately). Creating rather
+	// than updating below keeps that true even if this check is removed.
+	if _, cerr := stream.Consumer(ctx, durable); cerr == nil {
+		return
+	}
+	// Capture the whole dead-letter address, not just where DeadLetterSubject
+	// says this source's copies will land. Narrowing here would be false
+	// precision: what a reader ultimately sees is decided by the filter IT
+	// asks for, because adopting rewrites the filter (mutable) while
+	// inheriting the position (not). The pre-declared filter therefore only
+	// affects num_pending until someone attaches — and a source with no
+	// DeadLetterSubject cannot be narrowed anyway, since DeadLetter then
+	// preserves each message's own routing key.
+	if _, cerr := stream.CreateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:           durable,
+		FilterSubjects:    wholeAddressSubjects(dla),
+		AckPolicy:         jetstream.AckExplicitPolicy,
+		DeliverPolicy:     jetstream.DeliverNewPolicy,
+		AckWait:           ackWait(),
+		InactiveThreshold: dlqDeclareThreshold(),
+		Metadata:          map[string]string{dlqDurableMetadataKey: origSource.GetName()},
+	}); cerr != nil {
+		util.Logger.Warn(
+			"natsjs: pre-declare of dead-letter consumer {0} for source {1} failed ({2}); "+
+				"dead-lettering still works, but a reader attaching later may not see earlier dead letters",
+			durable, origSource.GetName(), cerr.Error())
+	}
+}
+
+// adoptableDLQDurable returns the pre-declared dead-letter durable this source
+// is the reader for, or "" if there is none.
+//
+// A DLQ reader is conventionally transient (the suite's dead-letter tests use
+// Source_TEMPORARY and AutoDelete), which would otherwise make it ephemeral and
+// start it at the stream tail — after the dead letters it exists to read. When
+// setupDeadLetter has already declared a durable under this source's name, that
+// durable *is* the queue the reader is naming, so attach to it and inherit the
+// position it has been holding since the source was declared.
+//
+// Adoption is deliberately gated on the marker metadata, not on the name alone:
+// name-only matching would let any transient source hijack an unrelated durable
+// that happens to share its name, taking over another subscriber's pending
+// messages and ack position. A lookup miss of any kind means no adoption.
+//
+// It returns the metadata to carry forward alongside the name. That is not
+// cosmetic: attaching re-asserts the consumer's whole config, and a config
+// without the marker REPLACES the stored metadata and erases it — after which
+// the durable is unadoptable and the next reader of the same queue silently
+// falls back to an ephemeral at the tail, which is the exact failure this
+// whole mechanism exists to prevent. setupDeadLetter cannot repair that later:
+// it leaves an existing consumer alone precisely so it never moves a position
+// that has been accumulating.
+func adoptableDLQDurable(ctx context.Context, stream jetstream.Stream, source *pb.Source) (string, map[string]string) {
+	durable := streamNameFor(source.GetName())
+	cons, err := stream.Consumer(ctx, durable)
+	if err != nil {
+		return "", nil
+	}
+	marker, ok := cons.CachedInfo().Config.Metadata[dlqDurableMetadataKey]
+	if !ok {
+		return "", nil
+	}
+	return durable, map[string]string{dlqDurableMetadataKey: marker}
 }
 
 // DeadLetter publishes the message to the configured dead-letter subject (there

@@ -360,6 +360,25 @@ func TestSubjectSubsumes(t *testing.T) {
 	assert.False(t, cover("a.*", "*.b"))
 }
 
+// TestDLQSourceName: the name has to match the amqp091 connector's byte for
+// byte. It is the name clients attach to when reading a source's dead letters,
+// so a mismatch means a reader that works on one broker finds nothing on the
+// other — silently, since an absent queue just delivers no messages.
+func TestDLQSourceName(t *testing.T) {
+	assert.Equal(t, "events.orders.listener.dlq",
+		dlqSourceName("events.orders.listener"))
+
+	// The '.quorum' suffix is stripped: dead letters belong to the logical
+	// source, not to the queue type the other connector encodes in the name.
+	assert.Equal(t, "events.orders.listener.dlq",
+		dlqSourceName("events.orders.listener.quorum"))
+
+	// Only the first occurrence, matching amqp091's strings.Replace(..., 1).
+	assert.Equal(t, "a.quorum.b.dlq", dlqSourceName("a.quorum.quorum.b"))
+
+	assert.Equal(t, ".dlq", dlqSourceName(""))
+}
+
 func TestDurableName(t *testing.T) {
 	q := func(name string) *pb.Source {
 		return &pb.Source{Name: name, Address: &pb.Address{Name: "events.orders"}}
