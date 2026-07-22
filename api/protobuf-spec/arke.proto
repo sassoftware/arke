@@ -22,7 +22,7 @@ package arke;
 message ConnectionConfiguration {
     string host = 1; // Broker hostname or IP address.
     int32 port = 2; // Broker port.
-    string provider = 3; // Provider type, currently only amqp091.
+    string provider = 3; // Provider type, currently only amqp091, and natsjs.
     string tenant = 4; // Tenant name for this connection. Tenant is not required
     Credentials credentials = 5; // Authentication credentials.
     bool tls = 8; // Should this provider connection use TLS.

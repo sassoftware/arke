@@ -3694,7 +3694,7 @@ func Test_SourceStatsNoStream(t *testing.T) {
 	defer c.Disconnect(ctx, &pb.Empty{})
 
 	connResp, err := c.Connect(ctx, connConfig)
-	assert.Nil(t, err)
+	assert.Nil(t, err, "got an error: %+v", err)
 	assert.NotNil(t, connResp)
 	assert.True(t, connResp.GetSuccess())
 
@@ -3705,7 +3705,13 @@ func Test_SourceStatsNoStream(t *testing.T) {
 	assert.Nil(t, ssErr)
 	assert.NotNil(t, stats)
 	assert.NotNil(t, stats.Error)
-	assert.Contains(t, stats.Error.GetMessage(), "request returned a 404")
+	brokerResponses := map[string]string{
+		"amqp091": "request returned a 404",
+		"natsjs":  "stream not found",
+	}
+	notFoundResponse := brokerResponses[connConfig.GetProvider()]
+
+	assert.Contains(t, stats.Error.GetMessage(), notFoundResponse)
 
 	// verified 404 when no created yet, now create it and get stats.
 	// we should get an "Offset not found" error in the stats.Error
@@ -3722,7 +3728,7 @@ func Test_SourceStatsNoStream(t *testing.T) {
 		assert.Nil(t, ssErr)
 		assert.NotNil(t, stats)
 		// emsg := stats.Error.GetMessage()
-		if strings.Contains(stats.GetError().GetMessage(), "request returned a 404") {
+		if strings.Contains(stats.GetError().GetMessage(), notFoundResponse) {
 			time.Sleep(1 * time.Second)
 			continue
 		}
