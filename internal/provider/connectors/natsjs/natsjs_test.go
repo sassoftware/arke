@@ -274,6 +274,47 @@ func TestRetrySynthesizesRetryCount(t *testing.T) {
 	require.Nil(t, p.Ack(ctx, second.GetUuid()))
 }
 
+// TestRetryFailureKeepsMessageResolvable: if NakWithDelay fails, Retry must
+// leave the active-message entry in place instead of deleting it up front
+// (which a plain takeMessage would). The server falls back to nacking this
+// same uuid when Retry returns an error (server.go, mirroring the existing
+// DeadLetter fallback) — a fallback that can only resolve anything while the
+// uuid stays in activeMessages. Deleting it first strands the message with
+// neither a nak nor a term having reached the server, until AckWait expires
+// on its own instead of redelivering promptly.
+func TestRetryFailureKeepsMessageResolvable(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.retryfail", Subjects: []string{"job"}}
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{Address: addr, Body: []byte("work")}))
+
+	out := make(chan *pb.Message, 1)
+	src := queueSource("events.retryfail.consumer", "events.retryfail", "job")
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	m := recv(t, out)
+
+	// Force NakWithDelay to fail: ack the underlying message directly,
+	// bypassing the connector's own bookkeeping, so the entry stays in
+	// activeMessages but the message itself is already resolved server-side.
+	bd := p.getBrokerDetailsByIdentifier("test-client")
+	mu, ok := bd.activeMessages.Get(m.GetUuid())
+	require.True(t, ok)
+	require.NoError(t, mu.(inflightMsg).msg.Ack())
+
+	perr := p.Retry(ctx, src, m.GetUuid(), 1)
+	require.NotNil(t, perr, "Retry must surface the NakWithDelay failure")
+
+	entry, stillThere := bd.activeMessages.Get(m.GetUuid())
+	require.True(t, stillThere,
+		"a failed NakWithDelay must not remove the active-message entry the fallback nack needs")
+	assert.True(t, entry.(inflightMsg).redeliverOnNack,
+		"the fallback nack must put the message back, not term it, after a failed retry")
+}
+
 // TestNackDoesNotRedeliver pins Nack to amqp091's Delivery.Nack(requeue=false):
 // a nacked message is rejected, not put back. Naking it instead (JetStream's
 // Nak, which means redeliver now) turns one nacked message into an unbounded

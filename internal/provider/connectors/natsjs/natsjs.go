@@ -1880,14 +1880,32 @@ func (p *natsjsProvider) Nack(ctx context.Context, uuid string) *pb.Error {
 // JetStream primitive that replaces RabbitMQ's per-message-TTL + dead-letter
 // retry-queue idiom; JetStream increments the delivery count for us, which
 // handleDelivery surfaces as x-retry-count.
+//
+// Mirrors DeadLetter's ordering: the server falls back to nacking this same
+// uuid when Retry returns an error (server.go), and that fallback can only
+// resolve anything while the uuid is still in activeMessages. Deleting it
+// up front (as a plain takeMessage would) strands the message the moment
+// NakWithDelay fails — neither nak'd nor resolvable — until AckWait expires
+// on its own. markForRedelivery also makes that fallback nack mean "put it
+// back", not "reject": a freshly delivered message's redeliverOnNack default
+// is false, and a failed Retry is a request to try again, not to give up.
 func (p *natsjsProvider) Retry(ctx context.Context, _ *pb.Source, uuid string, delay int32) *pb.Error {
-	m, perr := p.takeMessage(ctx, uuid)
-	if perr != nil {
-		return perr
+	bd, err := p.getBrokerDetails(ctx)
+	if err != nil {
+		return &pb.Error{Message: err.Error()}
 	}
+	mu, ok := bd.activeMessages.Get(uuid)
+	if !ok {
+		return &pb.Error{Message: fmt.Sprintf(noMessageError, uuid)}
+	}
+	m := mu.(inflightMsg).msg
+	markForRedelivery(bd, uuid)
 	if err := m.NakWithDelay(time.Duration(delay) * time.Second); err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
+	bd.activeMu.Lock()
+	bd.activeMessages.Delete(uuid)
+	bd.activeMu.Unlock()
 	return nil
 }
 
