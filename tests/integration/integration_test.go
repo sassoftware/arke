@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 	pb "github.com/sassoftware/arke/api"
+	"github.com/sassoftware/arke/test/config"
 	mf "github.com/sassoftware/arke/test/messagefunctions"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
@@ -3730,6 +3731,10 @@ func Test_SourceStatsNoStream(t *testing.T) {
 	}
 }
 func TestStreamHeaderReceivedTimeEqualsTimestampInMs(t *testing.T) {
+	config := config.ConnectionConfigurationFromEnv()
+	if config.GetProvider() != "amqp091" {
+		t.Skip("Skipping test because it is only applicable to RabbitMQ broker")
+	}
 	producerConnection := connect()
 	defer producerConnection.Close()
 	expectedMessageCount := 1
