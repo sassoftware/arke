@@ -5,6 +5,7 @@ package natsjs
 
 import (
 	"bytes"
+	"compress/gzip"
 	"net/http"
 	"strings"
 	"testing"
@@ -457,8 +458,55 @@ func TestEvaluateFilters(t *testing.T) {
 	}
 	assert.True(t, evaluateFilters([]*pb.Filter{any}, headers))
 
+	// ANY where NOTHING hits -> fail. A present header with the wrong value does
+	// not count, exactly as a RabbitMQ headers exchange with x-match=any requires.
+	anyMiss := &pb.Filter{
+		Type: pb.Filter_ANY,
+		Matches: []*pb.Match{
+			{Name: "event-source", Value: "nope"},
+			{Name: "region", Value: "eu"},   // present but wrong value
+			{Name: "absent", Value: "there"}, // not present at all
+		},
+	}
+	assert.False(t, evaluateFilters([]*pb.Filter{anyMiss}, headers))
+
+	// A filter with NO matches passes everything: amqp091 still appends its
+	// (empty) binding table, and a headers binding with no arguments matches
+	// every message. Also the only thing that exercises the len(matches)==0
+	// short-circuit in filterMatches.
+	assert.True(t, evaluateFilters([]*pb.Filter{{Type: pb.Filter_ALL}}, headers))
+	assert.True(t, evaluateFilters([]*pb.Filter{{Type: pb.Filter_ANY}}, headers))
+
 	// multiple filters are OR'd: second filter matches
 	assert.True(t, evaluateFilters([]*pb.Filter{allMiss, all}, headers))
+}
+
+// TestDecompressBody exercises decompressBody's three outcomes directly: a
+// valid gzip body round-trips; a body that is not gzip at all fails at the
+// reader header; and a body with a valid gzip header but a truncated payload
+// fails during the read, not at construction. The delivery-path test
+// (TestStreamGzipBodyIsDecompressed) only ever drove the success case, and the
+// stream mislabel test only the bad-header case.
+func TestDecompressBody(t *testing.T) {
+	plain := []byte("payload worth compressing, repeated payload worth compressing")
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	_, err := gw.Write(plain)
+	require.NoError(t, err)
+	require.NoError(t, gw.Close())
+	gzipped := buf.Bytes()
+
+	got, err := decompressBody(gzipped)
+	require.NoError(t, err)
+	assert.Equal(t, plain, got)
+
+	_, err = decompressBody([]byte("not gzip at all"))
+	assert.Error(t, err, "a non-gzip body must error at the reader header")
+
+	// Valid 10-byte header, payload cut short: NewReader succeeds, the inflate
+	// fails partway — the io.ReadAll error branch the success case never reaches.
+	_, err = decompressBody(gzipped[:len(gzipped)-6])
+	assert.Error(t, err, "a truncated gzip stream must error during the read")
 }
 
 // TestFilterSubjectsForHeadersAddress pins that a headers address selects its
@@ -487,6 +535,17 @@ func TestFilterSubjectsForHeadersAddress(t *testing.T) {
 	topic := &pb.Source{Type: pb.Source_QUEUE, Address: &pb.Address{
 		Name: "events.hdr", Type: pb.Address_TOPIC, Subjects: []string{"bound.one"}}}
 	assert.Equal(t, []string{"events.hdr.~.bound.one"}, filterSubjectsFor(topic))
+}
+
+// TestFilterSubjectsForStreamSourceNoSubjects: a STREAM source with no subjects
+// reads the whole log — amqp091's streamSubscribe goes straight to the stream
+// by name and declares no binding, so its reader sees everything. Selecting the
+// whole address's captured subjects is the equivalent, and is the ordinary way
+// to read a stream (a QUEUE/topic source with no subjects instead gets an
+// unmatchable filter, per TestFilterSubjectsFor).
+func TestFilterSubjectsForStreamSourceNoSubjects(t *testing.T) {
+	src := &pb.Source{Type: pb.Source_STREAM, Address: &pb.Address{Name: "events.orders"}}
+	assert.Equal(t, []string{"events.orders.~", "events.orders.~.>"}, filterSubjectsFor(src))
 }
 
 // TestParentBindingSubjectsHeadersParent: the binding keys of an
@@ -536,6 +595,21 @@ func TestHeaderRoundTripPreservesEverything(t *testing.T) {
 
 	got := natsToPbHeader(pbToNatsHeader(in))
 	assert.Equal(t, in, got, "every header must survive the round trip byte-for-byte")
+}
+
+// TestNatsToPbHeaderSkipsEmptyValueSlice: a raw NATS header can carry a key
+// with no values (nats.go's Header is map[string][]string, and a foreign
+// publisher or library may leave a key present with an empty slice).
+// natsToPbHeader must skip it rather than index vals[0] out of range, while
+// keeping the well-formed entries alongside it. pbToNatsHeader never produces
+// this shape (it always Sets a single value), so the round-trip tests never
+// reach the guard.
+func TestNatsToPbHeaderSkipsEmptyValueSlice(t *testing.T) {
+	in := nats.Header{
+		"Present": []string{"here"},
+		"Empty":   []string{},
+	}
+	assert.Equal(t, map[string]string{"Present": "here"}, natsToPbHeader(in))
 }
 
 // TestHeaderEscapingOnlyWhereNeeded: conventional names and values reach the

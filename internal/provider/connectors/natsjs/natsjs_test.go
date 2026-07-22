@@ -3307,6 +3307,56 @@ func TestHeadersAddressStillAppliesHeaderFilters(t *testing.T) {
 	}
 }
 
+// TestHeaderFilterMatchesWireEscapedHeader exercises the intersection of two
+// features added at different times: the wire-format header escaping
+// (pbToNatsHeader/natsToPbHeader — a name or value the NATS wire would drop or
+// trim is base64-wrapped under X-Arke-Esc-) and proxy-side headers-exchange
+// matching (evaluateFilters). A FILTER source that matches on a header whose
+// NAME is not an RFC 7230 token (spaces, a colon) and whose VALUE would not
+// survive http.Header.Write (leading/trailing spaces) must still match exactly
+// the messages RabbitMQ's headers exchange would — the filter is evaluated on
+// the DECODED header map, so the escape has to round-trip transparently before
+// the match runs. If it did not, a headers source keyed on any non-token header
+// would silently drop every message. Neither the escaping tests
+// (TestHeadersSurviveARealBrokerRoundTrip) nor the filter tests
+// (TestHeaderFilterDropsNonMatching) cover this composition on their own.
+func TestHeaderFilterMatchesWireEscapedHeader(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	// Name has a space and a colon (neither is a tchar); value has leading and
+	// trailing spaces (trimmed by the wire) — so both halves force escaping.
+	const hdrName, hdrVal = "x tenant:id", "  acme  "
+	addr := &pb.Address{Name: "events.escfilter", Type: pb.Address_FILTER, Subjects: []string{"k"}}
+	out := make(chan *pb.Message, 8)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, &pb.Source{
+		Name: "events.escfilter.consumer", Type: pb.Source_QUEUE, Address: addr,
+		Filters: []*pb.Filter{{Type: pb.Filter_ALL, Matches: []*pb.Match{{Name: hdrName, Value: hdrVal}}}},
+		Options: map[string]string{"Offset": "first"},
+	}, out)
+	time.Sleep(500 * time.Millisecond)
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: addr, Headers: map[string]string{hdrName: hdrVal}, Body: []byte("match")}))
+	// Same escaped name, a value that differs only in the spaces the wire would
+	// have trimmed — proving the value round-trips byte-for-byte into the match.
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: addr, Headers: map[string]string{hdrName: "acme"}, Body: []byte("nomatch")}))
+
+	m := recv(t, out)
+	assert.Equal(t, "match", string(m.GetBody()))
+	assert.Equal(t, hdrVal, m.GetHeaders()[hdrName],
+		"the escaped header must decode byte-for-byte for the consumer, not just for the filter")
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	select {
+	case extra := <-out:
+		t.Fatalf("a value differing only by wire-trimmed spaces must not match; got %q", string(extra.GetBody()))
+	case <-time.After(2 * time.Second):
+	}
+}
+
 // TestBareStreamAssertionIssuesNoUpdate pins that asserting a stream that
 // already satisfies the requested config writes nothing.
 //
@@ -3776,6 +3826,41 @@ func TestQueueGzipBodyPassesThroughUntouched(t *testing.T) {
 	require.Nil(t, p.Ack(ctx, m.GetUuid()))
 	assert.Equal(t, gzipped, m.GetBody())
 	assert.Equal(t, "gzip", m.GetHeaders()[transferEncodingHeaderName])
+}
+
+// TestStreamGzipDecompressFailureKeepsRawBody: a STREAM body tagged
+// Transfer-Encoding: gzip that is not in fact valid gzip must be delivered
+// untouched — raw body and the header both preserved — rather than dropped or
+// blanked. This matches amqp091's streamSubscribe, which on a decompress error
+// logs at debug and forwards the original data with the header intact
+// (amqp091.go decompress branch). natsjs never compresses on publish, so this
+// failure path only ever fires for a foreign publisher's mislabelled body; the
+// success path (TestStreamGzipBodyIsDecompressed) left it uncovered.
+func TestStreamGzipDecompressFailureKeepsRawBody(t *testing.T) {
+	s := runJetStreamServer(t)
+	p, ctx := connectClient(t, s)
+
+	addr := &pb.Address{Name: "events.gzbad", Subjects: []string{"e"}}
+	notGzip := []byte("this is plainly not gzip-framed data")
+
+	src := streamSource("events.gzbad.consumer", "events.gzbad", "first", "e")
+	out := make(chan *pb.Message, 1)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go p.Subscribe(subCtx, src, out)
+
+	require.Nil(t, p.PublishOne(ctx, &pb.Message{
+		Address: addr,
+		Headers: map[string]string{transferEncodingHeaderName: "gzip"},
+		Body:    notGzip,
+	}))
+
+	m := recv(t, out)
+	require.Nil(t, p.Ack(ctx, m.GetUuid()))
+	assert.Equal(t, notGzip, m.GetBody(),
+		"a body that fails to decompress must be forwarded raw, matching amqp091")
+	assert.Equal(t, "gzip", m.GetHeaders()[transferEncodingHeaderName],
+		"the Transfer-Encoding header must be kept when decompression fails, matching amqp091")
 }
 
 // TestDeliveryInjectsTraceHeadersWhenTracingEnabled: mirrors amqp091's
