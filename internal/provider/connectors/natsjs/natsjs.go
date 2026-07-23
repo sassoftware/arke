@@ -138,12 +138,6 @@ const (
 	// dead-letter. See deadLetterRetryDelay; override via
 	// NATSJS_DEADLETTER_RETRY_DELAY.
 	defaultDeadLetterRetryDelay = 5 * time.Second
-	// defaultDLQDeclareThreshold bounds how long a pre-declared dead-letter
-	// consumer survives with nothing reading it. See setupDeadLetter for why
-	// one is declared at all, and dlqDeclareThreshold for why this is bounded
-	// where amqp091's equivalent queue is not. Override via
-	// NATSJS_DLQ_DECLARE_TTL ("0" keeps it forever, matching amqp091).
-	defaultDLQDeclareThreshold = time.Hour
 )
 
 // dlqDurableMetadataKey marks a durable consumer as one setupDeadLetter
@@ -478,24 +472,29 @@ func deadLetterRetryDelay() time.Duration {
 // dlqDeclareThreshold is the InactiveThreshold given to a pre-declared
 // dead-letter consumer (setupDeadLetter).
 //
-// amqp091's equivalent — the queue setupDeadLetter declares there — has no
-// expiry at all: it is not auto-delete, so once declared it persists until
-// something removes it. Mirroring that exactly would leak here, because a
-// source name is not always stable. Clients commonly mark a transient
-// consumer by turning an Exclusive source into AutoDelete plus a fresh UUID
-// (see durableName), so one using a transient source *with* a
-// DeadLetterAddress would strand one never-expiring durable per connection,
-// forever. Bounding the threshold trades the long tail of that parity (a DLQ
-// reader attaching days later) for a leak that cannot run away: the reader
-// still sees everything dead-lettered since the source was declared, provided
-// it attaches within the window.
+// It defaults to the dead-letter stream's own retention (streamMaxAge), so the
+// queue never expires while there is still something in it to read. That is
+// the property that matters: a dead-letter reader attaches AFTER the failures
+// — finding out what broke is why it is attaching — so any window where the
+// messages are still retained but their queue has already gone is a window
+// where the reader silently sees nothing, which is the exact bug
+// setupDeadLetter exists to fix. Tying the two together closes it by
+// construction rather than by guessing a duration. A stream configured for
+// unbounded retention (MaxAge 0) yields 0 here too: no expiry, consistently.
+//
+// amqp091's equivalent queue has no expiry at all, so this is still a
+// divergence, but only past the point where the messages themselves are gone.
+// Bounding it at all is what stops a leak: a source name is not always stable
+// — clients commonly mark a transient consumer by turning an Exclusive source
+// into AutoDelete plus a fresh UUID (see durableName) — so an unbounded
+// threshold would strand one permanent durable per connection.
 //
 // NATSJS_DLQ_DECLARE_TTL overrides it; "0" disables expiry outright, which is
 // full amqp091 parity for deployments whose source names are stable.
 func dlqDeclareThreshold() time.Duration {
 	v := os.Getenv("NATSJS_DLQ_DECLARE_TTL")
 	if v == "" {
-		return defaultDLQDeclareThreshold
+		return streamMaxAge()
 	}
 	if v == "0" {
 		return 0
@@ -503,7 +502,7 @@ func dlqDeclareThreshold() time.Duration {
 	if d, err := time.ParseDuration(v); err == nil && d > 0 {
 		return d
 	}
-	return defaultDLQDeclareThreshold
+	return streamMaxAge()
 }
 
 func (p *natsjsProvider) getBrokerDetails(ctx context.Context) (*natsBrokerDetails, error) {

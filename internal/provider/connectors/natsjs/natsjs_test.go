@@ -704,10 +704,24 @@ func TestSetupDeadLetterEmptyAddressDeclaresNothing(t *testing.T) {
 func TestDLQDeclareTTLFromEnv(t *testing.T) {
 	t.Setenv("NATSJS_DLQ_DECLARE_TTL", "10m")
 	assert.Equal(t, 10*time.Minute, dlqDeclareThreshold())
+
+	// Unset and unparseable both fall back to the dead-letter stream's own
+	// retention, so the queue outlives the messages in it instead of expiring
+	// at some guessed duration while they are still there to read.
 	t.Setenv("NATSJS_DLQ_DECLARE_TTL", "bad")
-	assert.Equal(t, defaultDLQDeclareThreshold, dlqDeclareThreshold())
+	assert.Equal(t, defaultStreamMaxAge, dlqDeclareThreshold())
+	t.Setenv("NATSJS_STREAM_MAX_AGE", "6h")
+	assert.Equal(t, 6*time.Hour, dlqDeclareThreshold(),
+		"the pre-declared queue must track the retention actually configured")
+
+	// A stream retaining forever gives a queue that never expires, so there is
+	// still no window where messages outlive the queue holding them.
+	t.Setenv("NATSJS_STREAM_MAX_AGE", "0")
+	assert.Equal(t, time.Duration(0), dlqDeclareThreshold())
+
 	// "0" is meaningful here, unlike the other thresholds: it opts out of
 	// expiry entirely, which is exact amqp091 parity.
+	t.Setenv("NATSJS_STREAM_MAX_AGE", "72h")
 	t.Setenv("NATSJS_DLQ_DECLARE_TTL", "0")
 	assert.Equal(t, time.Duration(0), dlqDeclareThreshold())
 }
