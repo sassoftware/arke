@@ -100,7 +100,7 @@ RabbitMQ and Kafka.
 | ----- | ---- | ----- | ----------- |
 | host | [string](#string) |  | Broker hostname or IP address. |
 | port | [int32](#int32) |  | Broker port. |
-| provider | [string](#string) |  | Provider type, currently only amqp091. |
+| provider | [string](#string) |  | Provider type, currently only amqp091, and natsjs. |
 | tenant | [string](#string) |  | Tenant name for this connection. Tenant is not required |
 | credentials | [Credentials](#arke-Credentials) |  | Authentication credentials. |
 | tls | [bool](#bool) |  | Should this provider connection use TLS. |

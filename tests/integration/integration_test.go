@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 	pb "github.com/sassoftware/arke/api"
+	"github.com/sassoftware/arke/test/config"
 	mf "github.com/sassoftware/arke/test/messagefunctions"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
@@ -821,13 +822,22 @@ func TestConsumeContinueOffset(t *testing.T) {
 	c.Disconnect(ctx, &pb.Empty{})
 
 	expectedMessageCount = 10
-	c2 := pb.NewConsumerClient(consumerConnection)
+	// The second consumer needs its own gRPC connection and its own done
+	// channel. Arke identifies a client by name and peer address, so a second
+	// ConsumerClient over the same connection is the *same* Arke connection,
+	// and the first consumer's deferred Disconnect would tear this one down.
+	// consumeMessages also signals its own completion on done, so sharing that
+	// channel lets the first consumer's exit break this loop.
+	consumerConnection2 := connect()
+	defer consumerConnection2.Close()
+	done2 := make(chan bool)
+	c2 := pb.NewConsumerClient(consumerConnection2)
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel2()
 	defer c2.Disconnect(ctx2, &pb.Empty{})
 	messages2 := make(chan *pb.Message)
 
-	go consumeMessages(consumerConnection, c2, ctx2, messages2, done, clientConnected, source, defaultHandler, t)
+	go consumeMessages(consumerConnection2, c2, ctx2, messages2, done2, clientConnected, source, defaultHandler, t)
 	<-clientConnected
 
 	err = mf.ProduceMessagesUnaryWOConnect(pctx, pc, expectedMessageCount, message, false)
@@ -839,7 +849,7 @@ func TestConsumeContinueOffset(t *testing.T) {
 		select {
 		case <-messages2:
 			msgCount2++
-		case <-done:
+		case <-done2:
 			breakLoop = true
 		case <-time.After(5 * time.Second):
 			breakLoop = true
@@ -3690,7 +3700,7 @@ func Test_SourceStatsNoStream(t *testing.T) {
 	defer c.Disconnect(ctx, &pb.Empty{})
 
 	connResp, err := c.Connect(ctx, connConfig)
-	assert.Nil(t, err)
+	assert.Nil(t, err, "got an error: %+v", err)
 	assert.NotNil(t, connResp)
 	assert.True(t, connResp.GetSuccess())
 
@@ -3701,7 +3711,13 @@ func Test_SourceStatsNoStream(t *testing.T) {
 	assert.Nil(t, ssErr)
 	assert.NotNil(t, stats)
 	assert.NotNil(t, stats.Error)
-	assert.Contains(t, stats.Error.GetMessage(), "request returned a 404")
+	brokerResponses := map[string]string{
+		"amqp091": "request returned a 404",
+		"natsjs":  "stream not found",
+	}
+	notFoundResponse := brokerResponses[connConfig.GetProvider()]
+
+	assert.Contains(t, stats.Error.GetMessage(), notFoundResponse)
 
 	// verified 404 when no created yet, now create it and get stats.
 	// we should get an "Offset not found" error in the stats.Error
@@ -3718,7 +3734,7 @@ func Test_SourceStatsNoStream(t *testing.T) {
 		assert.Nil(t, ssErr)
 		assert.NotNil(t, stats)
 		// emsg := stats.Error.GetMessage()
-		if strings.Contains(stats.GetError().GetMessage(), "request returned a 404") {
+		if strings.Contains(stats.GetError().GetMessage(), notFoundResponse) {
 			time.Sleep(1 * time.Second)
 			continue
 		}
@@ -3727,6 +3743,10 @@ func Test_SourceStatsNoStream(t *testing.T) {
 	}
 }
 func TestStreamHeaderReceivedTimeEqualsTimestampInMs(t *testing.T) {
+	config := config.ConnectionConfigurationFromEnv()
+	if config.GetProvider() != "amqp091" {
+		t.Skip("Skipping test because it is only applicable to RabbitMQ broker")
+	}
 	producerConnection := connect()
 	defer producerConnection.Close()
 	expectedMessageCount := 1

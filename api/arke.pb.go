@@ -232,7 +232,7 @@ type ConnectionConfiguration struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Host          string                 `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`                               // Broker hostname or IP address.
 	Port          int32                  `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`                              // Broker port.
-	Provider      string                 `protobuf:"bytes,3,opt,name=provider,proto3" json:"provider,omitempty"`                       // Provider type, currently only amqp091.
+	Provider      string                 `protobuf:"bytes,3,opt,name=provider,proto3" json:"provider,omitempty"`                       // Provider type, currently only amqp091, and natsjs.
 	Tenant        string                 `protobuf:"bytes,4,opt,name=tenant,proto3" json:"tenant,omitempty"`                           // Tenant name for this connection. Tenant is not required
 	Credentials   *Credentials           `protobuf:"bytes,5,opt,name=credentials,proto3" json:"credentials,omitempty"`                 // Authentication credentials.
 	Tls           bool                   `protobuf:"varint,8,opt,name=tls,proto3" json:"tls,omitempty"`                                // Should this provider connection use TLS.
