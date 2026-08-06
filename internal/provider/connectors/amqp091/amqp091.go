@@ -38,6 +38,10 @@ const streamOffsetHeaderName = "x-current-offset"
 const retryCountHeaderName = "x-retry-count"
 const rabbitReceivedTimeHeaderName = "x-opt-rabbitmq-received-time"
 const timeStampInMSHeaderName = "timestamp_in_ms"
+
+// streamStatsOffsetWaitTimeout bounds how long updateStatsForStream waits for
+// the fake "last" offset consumer to deliver a message before falling back.
+var streamStatsOffsetWaitTimeout = 500 * time.Millisecond
 const transferEncodingHeaderName = "Transfer-Encoding"
 
 const maxPubChannels = 10
@@ -1734,38 +1738,58 @@ func (prov *amqp091provider) WaitForConnect(ctx context.Context) bool {
 func (bd *BrokerDetails) updateStatsForStream(source *pb.Source, stats *pb.SourceStats) {
 	// create a new consumer with a fake consumer group name so we can find the offset at 'last'
 	fakeConsumerName := "arkeSourceStatsConsumer"
+
+	// synchronizes with handleMessages so we don't read the offset back
+	// before it's actually delivered/stored for this call.
+	deliveredOffset := make(chan int64, 1)
 	handleMessages := func(cc stream.ConsumerContext, _ *amqp.Message) {
 		if cc.Consumer != nil {
+			offset := cc.Consumer.GetOffset()
 			// store the offset so requests to QueryOffset will be correct
-			_ = bd.StreamConnection.StoreOffset(source.GetName(), fakeConsumerName, cc.Consumer.GetOffset())
+			_ = bd.StreamConnection.StoreOffset(source.GetName(), fakeConsumerName, offset)
+			select {
+			case deliveredOffset <- offset:
+			default:
+			}
 		}
 	}
 
 	cons, err := bd.StreamConnection.NewConsumer(source.GetName(), fakeConsumerName, "last", handleMessages, false)
-
-	if err == nil {
-		defer cons.Close()
-		offset, oErr := bd.StreamConnection.GetLastOffset(source.GetName(), fakeConsumerName)
-		stats.LastOffset = offset
-		if oErr != nil {
-			stats.Error = &pb.Error{
-				Message: oErr.Error(),
-			}
-			return
-		}
-
-		consumerName, cErr := bd.getConsumerName(source)
-		if cErr != nil {
-			stats.Error = cErr
-			return
-		}
-		// Ignore the error here, we will get an error if we have never stored
-		// an offset(aka. never consumed)
-		offset, _ = bd.StreamConnection.GetLastOffset(source.GetName(), consumerName)
-		stats.CurrentOffset = offset
-	} else {
+	if err != nil {
 		util.Logger.Debugf("failed to create new arkeSourceStatsConsumer for stats: %s", err.Error())
+		return
 	}
+	defer cons.Close()
+
+	select {
+	case offset := <-deliveredOffset:
+		// use the offset delivered by the handler directly instead of
+		// racing a subsequent broker query
+		stats.LastOffset = offset
+	case <-time.After(streamStatsOffsetWaitTimeout):
+		// handler hasn't fired yet; fall back to the last stored offset,
+		// which may be stale relative to this collection cycle
+		offset, oErr := bd.StreamConnection.GetLastOffset(source.GetName(), fakeConsumerName)
+		if oErr != nil {
+			stats.Error = &pb.Error{Message: oErr.Error()}
+			return
+		}
+		stats.LastOffset = offset
+	}
+
+	consumerName, cErr := bd.getConsumerName(source)
+	if cErr != nil {
+		stats.Error = cErr
+		return
+	}
+	offset, oErr := bd.StreamConnection.GetLastOffset(source.GetName(), consumerName)
+	if oErr != nil {
+		// no offset ever stored (never consumed); surface this instead of
+		// silently defaulting CurrentOffset to 0
+		stats.Error = &pb.Error{Message: oErr.Error()}
+		return
+	}
+	stats.CurrentOffset = offset
 }
 
 func (bd *BrokerDetails) getConsumerName(source *pb.Source) (string, *pb.Error) {

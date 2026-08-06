@@ -3010,7 +3010,6 @@ func Test_SourceStats(t *testing.T) {
 				smock.On("Connect").Return(nil).Once()
 
 				smock.On("NewConsumer", src.GetName(), "arkeSourceStatsConsumer", "last", mock.Anything, mock.AnythingOfType("bool")).Return(pmock, nil).Once()
-				smock.On("GetLastOffset", src.GetName(), "arkeSourceStatsConsumer").Return(int(test.fakeConsLastOffset), nil).Once()
 				if test.singleActive {
 					smock.On("GetLastOffset", src.GetName(), "GroupName").Return(int(test.consLastOffset), nil).Once()
 				} else {
