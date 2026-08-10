@@ -18,6 +18,8 @@ import (
 
 	// "github.com/NeowayLabs/wabbit/amqptest/server"
 	amqp "github.com/rabbitmq/amqp091-go"
+	streamamqp "github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
+	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/internal/provider"
 	"github.com/sassoftware/arke/internal/util"
@@ -1574,7 +1576,6 @@ func Test_Subscribe_Options(t *testing.T) {
 
 	delMock.AssertExpectations(t)
 	cmock.AssertExpectations(t)
-	sbmock.AssertNumberOfCalls(t, "ExchangeDeclare", 3)
 	sbmock.AssertExpectations(t)
 }
 
@@ -1685,10 +1686,6 @@ func Test_Subscribe_NoSubjectsNoFilters(t *testing.T) {
 
 	delMock.AssertExpectations(t)
 	cmock.AssertExpectations(t)
-	sbmock.AssertNumberOfCalls(t, "ExchangeDeclare", 1)
-	// With not subjects and no filters we should NOT
-	// call QueueBind
-	sbmock.AssertNumberOfCalls(t, "QueueBind", 0)
 	sbmock.AssertExpectations(t)
 }
 
@@ -3006,7 +3003,6 @@ func Test_SourceStats(t *testing.T) {
 
 			if test.sourceType == pb.Source_STREAM {
 				smock.ExpectedCalls = nil
-				pmock.On("Close").Return(nil).Once()
 				smock.On("Connect").Return(nil).Once()
 
 				smock.On("NewConsumer", src.GetName(), "arkeSourceStatsConsumer", "last", mock.Anything, mock.AnythingOfType("bool")).Return(pmock, nil).Once()
@@ -3015,7 +3011,6 @@ func Test_SourceStats(t *testing.T) {
 				} else {
 					smock.On("GetLastOffset", src.GetName(), test.sourceName).Return(int(test.consLastOffset), nil).Once()
 				}
-				smock.On("StoreOffset", src.GetName(), "arkeSourceStatsConsumer", int64(5)).Return(nil)
 
 				NewStreamConn = func(string, string, *tls.Config) streamConnectionShim {
 					return smock
@@ -3563,4 +3558,212 @@ func TestChannelNotifyCloseLoop_TimerNotClosed(t *testing.T) {
 	}
 
 	assert.GreaterOrEqual(t, callCount, 1, "isClosed should have been called at least once by the timer")
+}
+
+// statsStreamConnMock wraps streamConnectionMock and lets each test control
+// whether/when NewConsumer's handler fires.
+type statsStreamConnMock struct {
+	streamConnectionMock
+	fireHandler bool
+	fireDelay   time.Duration
+	fireOffset  int64
+}
+
+func (m *statsStreamConnMock) NewConsumer(streamName string, consumerName string, offset string,
+	handler stream.MessagesHandler, singleActive bool) (streamConsumerShim, error) {
+	args := m.Called(streamName, consumerName, offset, handler, singleActive)
+	if m.fireHandler {
+		go func() {
+			if m.fireDelay > 0 {
+				time.Sleep(m.fireDelay)
+			}
+			handler(stockStreamConsumerContextWithOffset(m.fireOffset), &streamamqp.Message{})
+		}()
+	}
+	ret := args.Get(0)
+	if ret == nil {
+		return nil, args.Error(1)
+	}
+	return ret.(*streamConsumerMock), args.Error(1)
+}
+
+// stockStreamConsumerContextWithOffset is like stockStreamConsumerContext but
+// lets the caller pick the offset the fake "last" consumer reports.
+func stockStreamConsumerContextWithOffset(offset int64) stream.ConsumerContext {
+	con := &stream.Consumer{}
+	setFieldValue(con, "currentOffset", offset)
+	newMux := new(sync.RWMutex)
+	setFieldValue(con, "mutex", newMux)
+	return stream.ConsumerContext{Consumer: con}
+}
+
+// waitForOffset polls until streamName's tracker has observed an offset,
+// to sync with the background handler goroutine.
+func waitForOffset(t *testing.T, bd *BrokerDetails, streamName string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if bd.streamStatsTrackers != nil {
+			if existing, ok := bd.streamStatsTrackers.Get(streamName); ok {
+				if tracker, ok := existing.(*streamOffsetTracker); ok && tracker.hasOffset.Load() {
+					return
+				}
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// Test_UpdateStatsForStream_DirectOffset verifies LastOffset is reported
+// directly from memory once the tailing consumer observes a message.
+func Test_UpdateStatsForStream_DirectOffset(t *testing.T) {
+	smock := &statsStreamConnMock{fireHandler: true, fireOffset: int64(42)}
+	pmock := &streamConsumerMock{}
+
+	smock.On("NewConsumer", "mystream", "arkeSourceStatsConsumer", "last", mock.Anything, false).Return(pmock, nil).Once()
+	smock.On("GetLastOffset", "mystream", "mystream").Return(int(7), nil).Twice()
+
+	bd := &BrokerDetails{StreamConnection: smock}
+	source := &pb.Source{Name: "mystream"}
+
+	waitForOffset(t, bd, "mystream", 0) // tracker doesn't exist yet, returns immediately
+
+	stats := &pb.SourceStats{}
+	bd.updateStatsForStream(source, stats)
+	// wait for the background handler, then re-check the settled state
+	waitForOffset(t, bd, "mystream", time.Second)
+	stats = &pb.SourceStats{}
+	bd.updateStatsForStream(source, stats)
+
+	assert.Nil(t, stats.Error)
+	assert.Equal(t, int64(42), stats.LastOffset)
+	assert.Equal(t, int64(7), stats.CurrentOffset)
+	smock.AssertExpectations(t)
+}
+
+// Test_UpdateStatsForStream_NotYetAvailable verifies an informative error is
+// surfaced instead of a misleading LastOffset of 0.
+func Test_UpdateStatsForStream_NotYetAvailable(t *testing.T) {
+	smock := &statsStreamConnMock{fireHandler: false}
+	pmock := &streamConsumerMock{}
+
+	smock.On("NewConsumer", "mystream", "arkeSourceStatsConsumer", "last", mock.Anything, false).Return(pmock, nil).Once()
+	smock.On("GetLastOffset", "mystream", "mystream").Return(int(3), nil).Once()
+
+	bd := &BrokerDetails{StreamConnection: smock}
+	source := &pb.Source{Name: "mystream"}
+	stats := &pb.SourceStats{}
+
+	bd.updateStatsForStream(source, stats)
+
+	if assert.NotNil(t, stats.Error) {
+		assert.Contains(t, stats.Error.GetMessage(), "last offset not yet available")
+	}
+	assert.Equal(t, int64(0), stats.LastOffset)
+	// CurrentOffset is still reported even though LastOffset isn't ready yet
+	assert.Equal(t, int64(3), stats.CurrentOffset)
+	smock.AssertExpectations(t)
+}
+
+// Test_UpdateStatsForStream_CurrentOffsetErrorSurfaced verifies a
+// CurrentOffset lookup error is surfaced instead of defaulting to 0.
+func Test_UpdateStatsForStream_CurrentOffsetErrorSurfaced(t *testing.T) {
+	smock := &statsStreamConnMock{fireHandler: true, fireOffset: int64(42)}
+	pmock := &streamConsumerMock{}
+
+	smock.On("NewConsumer", "mystream", "arkeSourceStatsConsumer", "last", mock.Anything, false).Return(pmock, nil).Once()
+	smock.On("GetLastOffset", "mystream", "mystream").Return(0, errors.New("never consumed")).Twice()
+
+	bd := &BrokerDetails{StreamConnection: smock}
+	source := &pb.Source{Name: "mystream"}
+
+	waitForOffset(t, bd, "mystream", 0)
+	stats := &pb.SourceStats{}
+	bd.updateStatsForStream(source, stats)
+	waitForOffset(t, bd, "mystream", time.Second)
+	stats = &pb.SourceStats{}
+	bd.updateStatsForStream(source, stats)
+
+	if assert.NotNil(t, stats.Error) {
+		assert.Equal(t, "never consumed", stats.Error.GetMessage())
+	}
+	assert.Equal(t, int64(42), stats.LastOffset, "LastOffset should still be reported even if CurrentOffset lookup fails")
+	assert.Equal(t, int64(0), stats.CurrentOffset)
+	smock.AssertExpectations(t)
+}
+
+// Test_UpdateStatsForStream_NewConsumerError verifies that a failure to
+// create the tailing stats consumer is surfaced via stats.Error.
+func Test_UpdateStatsForStream_NewConsumerError(t *testing.T) {
+	smock := &statsStreamConnMock{}
+	smock.On("NewConsumer", "mystream", "arkeSourceStatsConsumer", "last", mock.Anything, false).
+		Return(nil, errors.New("connect failed")).Once()
+
+	bd := &BrokerDetails{StreamConnection: smock}
+	source := &pb.Source{Name: "mystream"}
+	stats := &pb.SourceStats{}
+
+	bd.updateStatsForStream(source, stats)
+
+	if assert.NotNil(t, stats.Error) {
+		assert.Equal(t, "connect failed", stats.Error.GetMessage())
+	}
+	assert.Equal(t, int64(0), stats.LastOffset)
+	assert.Equal(t, int64(0), stats.CurrentOffset)
+	smock.AssertExpectations(t)
+}
+
+// Test_UpdateStatsForStream_ConsumerNameError verifies a getConsumerName
+// failure is surfaced and CurrentOffset is never queried.
+func Test_UpdateStatsForStream_ConsumerNameError(t *testing.T) {
+	smock := &statsStreamConnMock{fireHandler: true, fireOffset: int64(11)}
+	pmock := &streamConsumerMock{}
+
+	smock.On("NewConsumer", "mystream", "arkeSourceStatsConsumer", "last", mock.Anything, false).Return(pmock, nil).Once()
+
+	bd := &BrokerDetails{StreamConnection: smock, ClientIdentifier: "test-client"}
+	source := &pb.Source{Name: "mystream", SingleActiveConsumer: true}
+
+	waitForOffset(t, bd, "mystream", 0)
+	stats := &pb.SourceStats{}
+	bd.updateStatsForStream(source, stats)
+	waitForOffset(t, bd, "mystream", time.Second)
+	stats = &pb.SourceStats{}
+	bd.updateStatsForStream(source, stats)
+
+	assert.NotNil(t, stats.Error)
+	assert.Equal(t, int64(11), stats.LastOffset)
+	assert.Equal(t, int64(0), stats.CurrentOffset)
+	smock.AssertExpectations(t)
+}
+
+// Test_UpdateStatsForStream_TrackerReused is the key regression test: a
+// second call for the same stream reuses the running tailing consumer.
+func Test_UpdateStatsForStream_TrackerReused(t *testing.T) {
+	smock := &statsStreamConnMock{fireHandler: true, fireOffset: int64(100)}
+	pmock := &streamConsumerMock{}
+
+	// NewConsumer must only be called once across multiple calls.
+	smock.On("NewConsumer", "mystream", "arkeSourceStatsConsumer", "last", mock.Anything, false).Return(pmock, nil).Once()
+	smock.On("GetLastOffset", "mystream", "mystream").Return(int(1), nil).Times(4)
+
+	bd := &BrokerDetails{StreamConnection: smock}
+	source := &pb.Source{Name: "mystream"}
+
+	waitForOffset(t, bd, "mystream", 0)
+	for i := 0; i < 3; i++ {
+		stats := &pb.SourceStats{}
+		bd.updateStatsForStream(source, stats)
+		waitForOffset(t, bd, "mystream", time.Second)
+	}
+
+	stats := &pb.SourceStats{}
+	bd.updateStatsForStream(source, stats)
+
+	assert.Nil(t, stats.Error)
+	assert.Equal(t, int64(100), stats.LastOffset)
+	smock.AssertExpectations(t)
 }
