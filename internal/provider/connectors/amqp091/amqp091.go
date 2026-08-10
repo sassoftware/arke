@@ -120,20 +120,6 @@ type BrokerDetails struct {
 	// used for RabbitMQ management API requests.
 	mgmtClientOnce sync.Once
 	mgmtClient     *http.Client
-
-	// streamStatsTrackers holds one long-lived "last offset" tailing
-	// consumer per stream, reused across SourceStats calls instead of
-	// recreating/racing one every collection cycle.
-	streamStatsTrackers     *util.ConcurrentMap
-	streamStatsTrackersOnce sync.Once
-}
-
-// streamOffsetTracker tracks a stream's most recently observed offset via a
-// long-lived "last" offset consumer updated in the background.
-type streamOffsetTracker struct {
-	offset    atomic.Int64
-	hasOffset atomic.Bool
-	consumer  streamConsumerShim
 }
 
 func init() {
@@ -1421,7 +1407,6 @@ func (prov *amqp091provider) disconnectClientByIdentifier(clientIdentifier strin
 	}
 
 	if bd.StreamConnection != nil {
-		bd.closeStreamStatsTrackers()
 		bd.StreamConnection.Close()
 	}
 	prov.connections.Delete(clientIdentifier)
@@ -1747,85 +1732,28 @@ func (prov *amqp091provider) WaitForConnect(ctx context.Context) bool {
 }
 
 func (bd *BrokerDetails) updateStatsForStream(source *pb.Source, stats *pb.SourceStats) {
-	tracker, err := bd.getStreamOffsetTracker(source)
+	brokerOffset, err := bd.StreamConnection.GetBrokerOffset(source.GetName())
 	if err != nil {
-		stats.Error = &pb.Error{Message: err.Error()}
+		stats.Error = &pb.Error{
+			Message: err.Error(),
+		}
 		return
 	}
-
-	if tracker.hasOffset.Load() {
-		stats.LastOffset = tracker.offset.Load()
-	} else {
-		// tailing consumer hasn't observed a message yet; it keeps
-		// running so a later collection cycle will pick up a real value
-		stats.Error = &pb.Error{Message: fmt.Sprintf("last offset not yet available for stream %s", source.GetName())}
-	}
+	stats.LastOffset = brokerOffset
 
 	consumerName, cErr := bd.getConsumerName(source)
 	if cErr != nil {
 		stats.Error = cErr
 		return
 	}
-	offset, oErr := bd.StreamConnection.GetLastOffset(source.GetName(), consumerName)
-	if oErr != nil {
-		// no offset ever stored (never consumed); surface this instead of
-		// silently defaulting CurrentOffset to 0
-		stats.Error = &pb.Error{Message: oErr.Error()}
-		return
-	}
-	stats.CurrentOffset = offset
-}
-
-// getStreamOffsetTracker returns source's long-lived "last offset" tracker,
-// lazily creating its background tailing consumer on first use.
-func (bd *BrokerDetails) getStreamOffsetTracker(source *pb.Source) (*streamOffsetTracker, error) {
-	bd.streamStatsTrackersOnce.Do(func() {
-		bd.streamStatsTrackers = util.NewConcurrentMap()
-	})
-
-	streamName := source.GetName()
-	if existing, ok := bd.streamStatsTrackers.Get(streamName); ok {
-		return existing.(*streamOffsetTracker), nil
-	}
-
-	bd.Lock()
-	defer bd.Unlock()
-	// re-check under lock: another goroutine may have created it first
-	if existing, ok := bd.streamStatsTrackers.Get(streamName); ok {
-		return existing.(*streamOffsetTracker), nil
-	}
-
-	tracker := &streamOffsetTracker{}
-	handleMessages := func(cc stream.ConsumerContext, _ *amqp.Message) {
-		if cc.Consumer != nil {
-			tracker.offset.Store(cc.Consumer.GetOffset())
-			tracker.hasOffset.Store(true)
-		}
-	}
-
-	cons, err := bd.StreamConnection.NewConsumer(streamName, "arkeSourceStatsConsumer", "last", handleMessages, false)
+	consumerOffset, err := bd.StreamConnection.GetConsumerOffset(source.GetName(), consumerName)
 	if err != nil {
-		return nil, err
-	}
-	tracker.consumer = cons
-	bd.streamStatsTrackers.Add(streamName, tracker)
-	return tracker, nil
-}
-
-// closeStreamStatsTrackers closes every tailing consumer created by
-// getStreamOffsetTracker so we don't leak stream subscriptions.
-func (bd *BrokerDetails) closeStreamStatsTrackers() {
-	if bd.streamStatsTrackers == nil {
+		stats.Error = &pb.Error{
+			Message: err.Error(),
+		}
 		return
 	}
-	for _, streamName := range bd.streamStatsTrackers.GetList() {
-		if existing, ok := bd.streamStatsTrackers.Get(streamName); ok {
-			if tracker, ok := existing.(*streamOffsetTracker); ok && tracker.consumer != nil {
-				_ = tracker.consumer.Close()
-			}
-		}
-		bd.streamStatsTrackers.Delete(streamName)
-	}
+	stats.CurrentOffset = consumerOffset
 }
 
 func (bd *BrokerDetails) getConsumerName(source *pb.Source) (string, *pb.Error) {
