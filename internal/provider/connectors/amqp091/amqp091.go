@@ -1732,14 +1732,14 @@ func (prov *amqp091provider) WaitForConnect(ctx context.Context) bool {
 }
 
 func (bd *BrokerDetails) updateStatsForStream(source *pb.Source, stats *pb.SourceStats) {
-	brokerOffset, err := bd.StreamConnection.GetBrokerOffset(source.GetName())
+	streamOffset, err := bd.StreamConnection.GetStreamOffset(source.GetName())
 	if err != nil {
 		stats.Error = &pb.Error{
 			Message: err.Error(),
 		}
 		return
 	}
-	stats.LastOffset = brokerOffset
+	stats.LastOffset = streamOffset
 
 	consumerName, cErr := bd.getConsumerName(source)
 	if cErr != nil {

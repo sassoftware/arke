@@ -97,7 +97,7 @@ func (m *streamConnectionMock) StoreOffset(streamName string, consumerName strin
 	return args.Error(0)
 }
 
-func (m *streamConnectionMock) GetBrokerOffset(streamName string) (int64, error) {
+func (m *streamConnectionMock) GetStreamOffset(streamName string) (int64, error) {
 	args := m.Called(streamName)
 	return int64(args.Int(0)), args.Error(1)
 }

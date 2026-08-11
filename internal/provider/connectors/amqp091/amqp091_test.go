@@ -2930,12 +2930,12 @@ func Test_SourceStats(t *testing.T) {
 		addressType         pb.Address_TargetType
 		sourceType          pb.Source_TargetType
 		expectedConsumerCnt int32
-		expectedMessageCnt  int64 // should be brokerOffset+1
+		expectedMessageCnt  int64 // should be streamOffset+1
 		expectedLastOffset  int64
 		addressName         string
 		sourceName          string
 		singleActive        bool
-		brokerOffset        int64
+		streamOffset        int64
 		consumerOffset      int64
 		expectedPublishRate float32
 	}{
@@ -2948,7 +2948,7 @@ func Test_SourceStats(t *testing.T) {
 			addressName:         "addressQueue",
 			sourceName:          "sourceQueue",
 			singleActive:        false,
-			brokerOffset:        int64(0),
+			streamOffset:        int64(0),
 			consumerOffset:      int64(0),
 			expectedPublishRate: float32(1.5),
 		},
@@ -2961,7 +2961,7 @@ func Test_SourceStats(t *testing.T) {
 			addressName:         "addressStream",
 			sourceName:          "sourceStream",
 			singleActive:        false,
-			brokerOffset:        int64(5),
+			streamOffset:        int64(5),
 			consumerOffset:      int64(5),
 			expectedPublishRate: float32(0), // should be missing in source stats, so zero
 		},
@@ -2974,7 +2974,7 @@ func Test_SourceStats(t *testing.T) {
 			addressName:         "addressStream2",
 			sourceName:          "sourceStream2",
 			singleActive:        true,
-			brokerOffset:        int64(5),
+			streamOffset:        int64(5),
 			consumerOffset:      int64(5),
 			expectedPublishRate: float32(5.00),
 		},
@@ -3005,7 +3005,7 @@ func Test_SourceStats(t *testing.T) {
 				smock.ExpectedCalls = nil
 				smock.On("Connect").Return(nil).Once()
 
-				smock.On("GetBrokerOffset", src.GetName()).Return(int(test.brokerOffset), nil).Once()
+				smock.On("GetStreamOffset", src.GetName()).Return(int(test.streamOffset), nil).Once()
 				if test.singleActive {
 					smock.On("GetConsumerOffset", src.GetName(), "GroupName").Return(int(test.consumerOffset), nil).Once()
 				} else {
