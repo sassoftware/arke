@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/ha"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/message"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
@@ -282,21 +281,11 @@ func (sc *streamConnection) StoreOffset(streamName string, consumerName string, 
 
 func (sc *streamConnection) GetStreamOffset(streamName string) (int64, error) {
 	util.Logger.Debugf("GetStreamOffset (%s)", streamName)
-	// create a new consumer with a fake consumer group name so we can find the offset at 'last'
-	fakeConsumerName := "arkeSourceStatsConsumer"
-	handleMessages := func(cc stream.ConsumerContext, _ *amqp.Message) {
-		if cc.Consumer != nil {
-			// store the offset so requests to QueryOffset will be correct
-			_ = sc.StoreOffset(streamName, fakeConsumerName, cc.Consumer.GetOffset())
-		}
-	}
-
-	cons, err := sc.NewConsumer(streamName, fakeConsumerName, "last", handleMessages, false)
+	stats, err := sc.env.StreamStats(streamName)
 	if err != nil {
 		return 0, err
 	}
-	defer cons.Close()
-	return sc.GetConsumerOffset(streamName, fakeConsumerName)
+	return stats.CommittedChunkId()
 }
 
 func (sc *streamConnection) getMaxProducers() int {
