@@ -1732,6 +1732,11 @@ func (prov *amqp091provider) WaitForConnect(ctx context.Context) bool {
 }
 
 func (bd *BrokerDetails) updateStatsForStream(source *pb.Source, stats *pb.SourceStats) {
+	bd.updateCurrentOffsetStat(source, stats)
+	bd.updateLastOffsetStat(source, stats)
+}
+
+func (bd *BrokerDetails) updateCurrentOffsetStat(source *pb.Source, stats *pb.SourceStats) {
 	consumerName, cErr := bd.getConsumerName(source)
 	if cErr != nil {
 		stats.Error = cErr
@@ -1741,7 +1746,9 @@ func (bd *BrokerDetails) updateStatsForStream(source *pb.Source, stats *pb.Sourc
 	// an offset (aka. never consumed)
 	consumerOffset, _ := bd.StreamConnection.GetConsumerOffset(source.GetName(), consumerName)
 	stats.CurrentOffset = consumerOffset
+}
 
+func (bd *BrokerDetails) updateLastOffsetStat(source *pb.Source, stats *pb.SourceStats) {
 	streamOffset, err := bd.StreamConnection.GetStreamOffset(source.GetName())
 	if err != nil {
 		stats.Error = &pb.Error{
