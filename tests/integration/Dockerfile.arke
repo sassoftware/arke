@@ -3,4 +3,5 @@ FROM rockylinux:9
 COPY arke /
 RUN chmod +x /arke
 
+ENV ARKE_MAX_ACQUIRED_COUNT=3
 ENTRYPOINT ["/arke"]

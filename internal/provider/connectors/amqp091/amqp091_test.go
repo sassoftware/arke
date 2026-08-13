@@ -1752,6 +1752,105 @@ func Test_Subscribe_UnsupportedOptions(t *testing.T) {
 	sbmock.AssertExpectations(t)
 }
 
+func Test_Subscribe_ExceedsAcquiredCount(t *testing.T) {
+	prov := NewAMQP091Provider()
+
+	oldGetClientIdentifier := GetClientIdentifier
+	GetClientIdentifier = func(context.Context) (string, error) {
+		return "acquired-count-client", nil
+	}
+
+	cmock := &amqpChannelMock{}
+	sbmock := &amqpChannelMock{}
+	msgs := make(chan amqp091Message, 2)
+
+	delMock1 := mock.Mock{}
+	delMock1.On("Nack", false, false).Return(nil)
+
+	// Poison message exceeding delivery limit
+	msg1 := amqp091Message{
+		DeliveryTag: 1,
+		Headers: amqp091Table{
+			"x-acquired-count": int32(25),
+		},
+	}
+	msg1.SetDelivery(&delMock1)
+
+	// Normal valid message
+	msg2 := amqp091Message{
+		DeliveryTag: 2,
+		Body:        []byte("hello"),
+	}
+
+	msgs <- msg1
+	msgs <- msg2
+
+	cancels := make(chan amqp091Error)
+	cmock.On("NotifyClose").Return(cancels)
+	cmock.On("Close").Return(nil)
+	cmock.On("Consume", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(msgs, nil)
+
+	amock := &amqpConnectionMock{}
+	amock.On("Connect").Return(nil)
+	amock.On("IsClosed").Return(false)
+
+	errs := make(chan amqp091Error)
+	amock.On("NotifyClose").Return(errs)
+	amock.On("NewChannel", false).Return(cmock, nil)
+
+	sbmock.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	sbmock.On("QueueDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	sbmock.On("QueueBind", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	amock.On("StandbyChannel").Return(sbmock, nil)
+
+	oldNewAmqpConn091 := NewAmqpConn091
+	NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
+		return amock
+	}
+
+	defer func() {
+		GetClientIdentifier = oldGetClientIdentifier
+		NewAmqpConn091 = oldNewAmqpConn091
+	}()
+
+	msrv := mockManagementRequestServer()
+	defer msrv.Close()
+	u, serr := url.Parse(msrv.URL)
+	assert.Nil(t, serr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cc := &pb.ConnectionConfiguration{}
+	cc.Tenant = testTenant
+	cc.Host = u.Hostname()
+	i, _ := strconv.Atoi(u.Port())
+	cc.AdminPort = int32(i) //nolint:gosec
+
+	err := prov.Connect(ctx, cc, false)
+	defer stopWatcher(ctx, prov)
+	assert.Nil(t, err)
+
+	src := &pb.Source{Name: "queue", Address: &pb.Address{Name: "address", Subjects: []string{"#"}}}
+	mc := make(chan *pb.Message, 10)
+
+	go func() {
+		suberr := prov.Subscribe(ctx, src, mc)
+		assert.Nil(t, suberr)
+	}()
+
+	select {
+	case receivedMsg := <-mc:
+		// msg1 should be dropped/nacked due to exceeding x-acquired-count limit,
+		// so the first message delivered on mc should be msg2.
+		assert.Equal(t, []byte("hello"), receivedMsg.GetBody())
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for message")
+	}
+
+	delMock1.AssertExpectations(t)
+}
+
 // Disconnect does not return anything so there isn't much to test
 func Test_Disconnect(t *testing.T) {
 	prov := NewAMQP091Provider()

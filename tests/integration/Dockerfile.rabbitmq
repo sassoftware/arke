@@ -1,6 +1,6 @@
-FROM rabbitmq:4.2-management
-COPY ./docker-entrypoint-rabbit.sh /
-RUN chmod +x /docker-entrypoint-rabbit.sh
+FROM rabbitmq:4.3-management
+COPY --chmod=0755 ./docker-entrypoint-rabbit.sh /
+COPY ./rabbitmq-failover.conf /etc/rabbitmq/conf.d/01-rabbitmq.conf
 RUN rabbitmq-plugins enable --offline rabbitmq_stream rabbitmq_stream_management rabbitmq_management
 
 ENTRYPOINT ["/docker-entrypoint-rabbit.sh"]

@@ -17,6 +17,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -80,6 +81,71 @@ func (m *rabbitManagementClient) doRequest(method, path string) (*http.Response,
 	req.SetBasicAuth(m.username, m.password)
 	req.Header.Set("X-Reason", "arke failover test")
 	return m.hc.Do(req)
+}
+
+// doRequestWithBody performs an authenticated management API request with a
+// JSON-encoded body.
+func (m *rabbitManagementClient) doRequestWithBody(method, path string, body interface{}) (*http.Response, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(context.Background(), method, m.baseURL+path, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(m.username, m.password)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Reason", "arke failover test")
+	return m.hc.Do(req)
+}
+
+// setQuorumQueuePolicy applies an arbitrary policy definition to a quorum
+// queue (matched by exact name) in the default vhost.
+func (m *rabbitManagementClient) setQuorumQueuePolicy(policyName, queueName string, definition map[string]interface{}) error {
+	definition["delayed-retry-type"] = "all"
+	definition["delayed-retry-min"] = 200
+	definition["delayed-retry-max"] = 10000
+	body := map[string]interface{}{
+		"pattern":    "^" + queueName + "$",
+		"definition": definition,
+		"priority":   10,
+		"apply-to":   "quorum_queues",
+	}
+	resp, err := m.doRequestWithBody("PUT", "/api/policies/%2F/"+url.PathEscape(policyName), body)
+	if err != nil {
+		return fmt.Errorf("management API PUT policy %q: %w", policyName, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
+		data, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("management API PUT policy %q returned %d: %s", policyName, resp.StatusCode, data)
+	}
+	return nil
+}
+
+// setDeliveryLimitPolicy applies a delivery-limit policy to a specific quorum
+// queue in the default vhost.  The policy is applied after the queue already
+// exists so arke's QueueDeclare arguments are not affected.
+func (m *rabbitManagementClient) setDeliveryLimitPolicy(policyName, queueName string, limit int) error {
+	return m.setQuorumQueuePolicy(policyName, queueName, map[string]interface{}{
+		"delivery-limit": limit,
+	})
+}
+
+// deletePolicy removes a policy from the default vhost.  A 404 is treated as
+// a no-op so it is safe to call in cleanup.
+func (m *rabbitManagementClient) deletePolicy(policyName string) error {
+	resp, err := m.doRequest("DELETE", "/api/policies/%2F/"+url.PathEscape(policyName))
+	if err != nil {
+		return fmt.Errorf("management API DELETE policy %q: %w", policyName, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound {
+		data, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("management API DELETE policy %q returned %d: %s", policyName, resp.StatusCode, data)
+	}
+	return nil
 }
 
 // listConnectionNames returns the names of all current AMQP connections as
@@ -597,4 +663,234 @@ func TestConnectionWatcher_Fallback30s(t *testing.T) {
 		time.Sleep(2 * time.Second)
 	}
 	assert.NoError(t, lastErr, "publish should recover via the 30 s fallback mechanism")
+}
+
+// ---------------------------------------------------------------------------
+// x-acquired-count / delivery-limit regression tests
+// ---------------------------------------------------------------------------
+// TestDeliveryLimit_ConnectionClosed verifies the deliver-limit is enforced
+// when the arke to broker connection is reset when a message is in-flight.
+func TestDeliveryLimit_ConnectionClosed(t *testing.T) {
+	const deliveryLimit = 5
+	const srcName = "sas.test.failover.xdl.RetryNack"
+	const routingKey = "sas.test.failover.xdl.retrynack"
+	const policyName = "xdl-retrynack-policy"
+
+	mgmt := newRabbitManagementClient()
+
+	consumerConn := connect()
+	defer consumerConn.Close()
+	c := pb.NewConsumerClient(consumerConn)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	defer c.Disconnect(ctx, &pb.Empty{})
+
+	connConfig := connectConfig(t.Name())
+	authResp, err := c.Connect(ctx, connConfig)
+	require.NoError(t, err)
+	require.True(t, authResp.GetSuccess())
+
+	address := &pb.Address{
+		Name:     "amq.topic",
+		Subjects: []string{routingKey},
+		Type:     pb.Address_TOPIC,
+	}
+	source := &pb.Source{
+		Name:          srcName,
+		Address:       address,
+		PrefetchCount: 1,
+		Type:          pb.Source_QUEUE,
+	}
+
+	// openStream subscribes to the source via a fresh Consume stream.
+	openStream := func() pb.Consumer_ConsumeClient {
+		s, sErr := c.Consume(ctx)
+		require.NoError(t, sErr, "Consume stream must open")
+		require.NoError(t, s.Send(&pb.Consume{Msg: &pb.Consume_Src{Src: source}}))
+		time.Sleep(500 * time.Millisecond) // let arke complete the subscribe setup
+		return s
+	}
+
+	stream := openStream()
+	defer stream.CloseSend()
+
+	// Allow arke to declare the quorum queue before we attach the policy.
+	time.Sleep(500 * time.Millisecond)
+
+	require.NoError(t,
+		mgmt.setDeliveryLimitPolicy(policyName, srcName+".quorum", deliveryLimit),
+		"set delivery-limit=%d policy on %s.quorum", deliveryLimit, srcName)
+	t.Cleanup(func() { _ = mgmt.deletePolicy(policyName) })
+
+	require.NoError(t, publishOneMessage(t, address, t.Name()), "publish test message")
+
+	deliveryCount := 0
+
+loop:
+	for i := 0; i < deliveryLimit+2; i++ {
+		// Recv from the stream; use a goroutine so we can apply a per-iteration
+		// timeout to detect when the broker has stopped redelivering.
+		type recvResult struct {
+			resp *pb.ConsumeResponse
+			err  error
+		}
+		ch := make(chan recvResult, 1)
+		go func() {
+			r, e := stream.Recv()
+			ch <- recvResult{r, e}
+		}()
+
+		var gotMsg bool
+		select {
+		case result := <-ch:
+			if result.err != nil {
+				t.Logf("stream ended on iteration %d: %v", i, result.err)
+				break loop
+			}
+			if result.resp.GetMsg() != nil {
+				deliveryCount++
+				t.Logf("delivery #%d  x-acquired-count=%v  x-delivery-count=%v",
+					deliveryCount,
+					result.resp.GetMsg().GetHeaders()["x-acquired-count"],
+					result.resp.GetMsg().GetHeaders()["x-delivery-count"])
+				gotMsg = true
+			}
+		case <-time.After(5 * time.Second):
+			t.Logf("no delivery on iteration %d – delivery-limit likely enforced", i)
+			break loop
+		}
+
+		if !gotMsg || deliveryCount > deliveryLimit+2 {
+			break loop
+		}
+
+		// Leave the message unacked and disrupt the broker connection.  The
+		// broker will internally requeue the unacked message, incrementing the
+		// quorum queue's delivery count, arke's connectionWatcher reconnects
+		// automatically; we then re-subscribe.
+		_ = stream.CloseSend()
+		require.NoError(t, mgmt.closeAllConnections(),
+			"management API must be reachable to run failover tests")
+
+		_, reconnErr := mgmt.waitForConnections(1, 15*time.Second)
+		require.NoError(t, reconnErr, "arke must reconnect to the broker after connection close")
+
+		stream = openStream()
+	}
+
+	// The delivery-limit policy stops the cycle at deliveryLimit
+	assert.LessOrEqual(t, deliveryCount, deliveryLimit+1,
+		"quorum queue delivery-limit=%d should cap redeliveries; got %d",
+		deliveryLimit, deliveryCount)
+}
+
+// TestDeliveryLimit_ConsumerTimeout verifies that arke is checking the
+// x-acquired-count header and preventing an infinite loop if the client
+// times out while processing.
+func TestDeliveryLimit_ConsumerTimeout(t *testing.T) {
+	const deliveryLimit = 3
+	const consumerTimeoutMs = 2000
+	const srcName = "sas.test.failover.xdl.ConsumerTO"
+	const routingKey = "sas.test.failover.xdl.consumerto"
+	const policyName = "xdl-consumerto-policy"
+
+	mgmt := newRabbitManagementClient()
+
+	consumerConn := connect()
+	defer consumerConn.Close()
+	c := pb.NewConsumerClient(consumerConn)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	defer c.Disconnect(ctx, &pb.Empty{})
+
+	connConfig := connectConfig(t.Name())
+	authResp, err := c.Connect(ctx, connConfig)
+	require.NoError(t, err)
+	require.True(t, authResp.GetSuccess())
+
+	address := &pb.Address{
+		Name:     "amq.topic",
+		Subjects: []string{routingKey},
+		Type:     pb.Address_TOPIC,
+	}
+	source := &pb.Source{
+		Name:          srcName,
+		Address:       address,
+		PrefetchCount: 1,
+		Type:          pb.Source_QUEUE,
+	}
+
+	openStream := func() pb.Consumer_ConsumeClient {
+		s, sErr := c.Consume(ctx)
+		require.NoError(t, sErr)
+		require.NoError(t, s.Send(&pb.Consume{Msg: &pb.Consume_Src{Src: source}}))
+		time.Sleep(500 * time.Millisecond)
+		return s
+	}
+
+	stream := openStream()
+	defer stream.CloseSend()
+
+	// Let arke declare the quorum queue before applying the policy.
+	time.Sleep(500 * time.Millisecond)
+
+	// consumer-timeout (ms) triggers channel close + requeue on each hold;
+	// delivery-limit caps how many times the broker will redeliver.
+	require.NoError(t, mgmt.setQuorumQueuePolicy(policyName, srcName+".quorum", map[string]interface{}{
+		"delivery-limit":   deliveryLimit,
+		"consumer-timeout": consumerTimeoutMs,
+	}))
+	t.Cleanup(func() { _ = mgmt.deletePolicy(policyName) })
+
+	// let policy propagate before publishing
+	time.Sleep(500 * time.Millisecond)
+
+	require.NoError(t, publishOneMessage(t, address, t.Name()))
+
+	type recvResult struct {
+		resp *pb.ConsumeResponse
+		err  error
+	}
+
+	deliveryCount := 0
+	// recvTimeout must exceed consumerTimeoutMs so we can distinguish "no more
+	// deliveries" (limit enforced) from "waiting for requeue".
+	recvTimeout := time.Duration(consumerTimeoutMs+3000) * time.Millisecond
+
+outer:
+	for deliveryCount <= deliveryLimit+1 {
+		ch := make(chan recvResult, 1)
+		go func() {
+			r, e := stream.Recv()
+			ch <- recvResult{r, e}
+		}()
+
+		select {
+		case res := <-ch:
+			if res.err != nil {
+				// Channel closed by consumer-timeout; re-subscribe so the broker
+				// can redeliver the requeued message on a fresh AMQP channel.
+				t.Logf("stream ended after delivery #%d: %v - reopening", deliveryCount, res.err)
+				stream = openStream()
+				continue
+			}
+			if res.resp.GetMsg() != nil {
+				deliveryCount++
+				t.Logf("delivery #%d  x-acquired-count=%v",
+					deliveryCount,
+					res.resp.GetMsg().GetHeaders()["x-acquired-count"])
+				t.Logf("%v - MESSAGE HEADERS : %+v", time.Now(), res.resp.GetMsg().GetHeaders())
+				// Hold the message unacked until consumer-timeout fires and the
+				// broker requeues it, incrementing x-acquired-count.
+				time.Sleep(time.Duration(consumerTimeoutMs+500) * time.Millisecond)
+			}
+		case <-time.After(recvTimeout):
+			t.Logf("no delivery after %s – delivery-limit=%d likely enforced", recvTimeout, deliveryLimit)
+			break outer
+		}
+	}
+
+	assert.LessOrEqual(t, deliveryCount, deliveryLimit+1,
+		"delivery-limit=%d should cap consumer-timeout redeliveries; got %d",
+		deliveryLimit, deliveryCount)
 }
