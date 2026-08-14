@@ -8,6 +8,8 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -16,6 +18,21 @@ import (
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/stretchr/testify/mock"
 )
+
+// maxAcquiredCount is the x-acquired-count threshold above which Nack forces
+// requeue=false regardless of the caller's argument.  Override via
+// ARKE_MAX_ACQUIRED_COUNT.
+var maxAcquiredCount int32
+
+func init() {
+	maxAcquiredCount = 20
+	if v := os.Getenv("ARKE_MAX_ACQUIRED_COUNT"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 32); err == nil && n > 0 {
+			maxAcquiredCount = int32(n)
+		}
+	}
+	util.Logger.Debugf("ARKE_MAX_ACQUIRED_COUNT set to : %d\n", maxAcquiredCount)
+}
 
 // amqp091ConnectionShim Shim so we can do unit testing
 type amqp091ConnectionShim interface {
@@ -406,6 +423,14 @@ func (msg *amqp091Message) Ack() error {
 
 // Nack Nack a message
 func (msg *amqp091Message) Nack(requeue bool) error {
+	if requeue {
+		// Cap redelivery: if x-acquired-count already exceeds the threshold the
+		// broker (4.3+) will not enforce delivery-limit, so force a dead-letter.
+		if maxAcquiredCountHit(msg.Headers) {
+			util.Logger.Debug("message exceeds delivery-limit, can not be retried")
+			requeue = false
+		}
+	}
 	// For unit testing
 	switch msg.delivery.(type) { //nolint:gocritic
 	case amqp.Delivery:
@@ -415,6 +440,23 @@ func (msg *amqp091Message) Nack(requeue bool) error {
 		return args.Error(0)
 	}
 	return nil
+}
+
+func maxAcquiredCountHit(headers amqp091Table) bool {
+	maxed := false
+	if c, ok := headers["x-acquired-count"]; ok {
+		var count int32
+		switch n := c.(type) {
+		case int32:
+			count = n
+		case int64:
+			count = int32(n) //nolint:gosec
+		}
+		if count > maxAcquiredCount {
+			maxed = true
+		}
+	}
+	return maxed
 }
 
 // Error Error

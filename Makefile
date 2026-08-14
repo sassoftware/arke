@@ -183,6 +183,8 @@ integration_tls_off: compose integration_test ## Runs compose and integration_te
 integration_tls_on: compose integration_test_tls ## Runs compose and integration_test_tls
 
 failover_test: ## Runs connection-resilience and failover integration tests (requires a running arke + RabbitMQ with management API)
+	export ARKE_BROKER_USERNAME=admin ; \
+	export ARKE_BROKER_PASSWORD=admin ; \
 	cd tests/integration ; go test -count=1 -v -timeout 3m -tags=failover ./
 
 help: ## Lists the makefile's targets
