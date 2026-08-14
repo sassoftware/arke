@@ -426,18 +426,9 @@ func (msg *amqp091Message) Nack(requeue bool) error {
 	if requeue {
 		// Cap redelivery: if x-acquired-count already exceeds the threshold the
 		// broker (4.3+) will not enforce delivery-limit, so force a dead-letter.
-		if c, ok := msg.Headers["x-acquired-count"]; ok {
-			var count int32
-			switch n := c.(type) {
-			case int32:
-				count = n
-			case int64:
-				count = int32(n) //nolint:gosec
-			}
-			if count > maxAcquiredCount {
-				util.Logger.Info("message exceeds delivery-limit, can not be retried")
-				requeue = false
-			}
+		if maxAcquiredCountHit(msg.Headers) {
+			util.Logger.Debug("message exceeds delivery-limit, can not be retried")
+			requeue = false
 		}
 	}
 	// For unit testing
@@ -449,6 +440,23 @@ func (msg *amqp091Message) Nack(requeue bool) error {
 		return args.Error(0)
 	}
 	return nil
+}
+
+func maxAcquiredCountHit(headers amqp091Table) bool {
+	maxed := false
+	if c, ok := headers["x-acquired-count"]; ok {
+		var count int32
+		switch n := c.(type) {
+		case int32:
+			count = n
+		case int64:
+			count = int32(n) //nolint:gosec
+		}
+		if count > maxAcquiredCount {
+			maxed = true
+		}
+	}
+	return maxed
 }
 
 // Error Error

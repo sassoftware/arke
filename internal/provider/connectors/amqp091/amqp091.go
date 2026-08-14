@@ -1207,21 +1207,12 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 
 			// Cap redelivery: if x-acquired-count already exceeds the threshold the
 			// broker (4.3+) will not enforce delivery-limit, so force a dead-letter.
-			if c, ok := msg.Headers["x-acquired-count"]; ok {
-				var count int32
-				switch n := c.(type) {
-				case int32:
-					count = n
-				case int64:
-					count = int32(n) //nolint:gosec
-				}
-				if count > maxAcquiredCount {
-					span.AddEvent("message exceeds delivery-limit, can not be redelivered")
-					util.Logger.Info("message exceeds delivery-limit, can not be redelivered")
-					msg.Nack(false) // poison message, exceeds threashold
-					span.End()
-					continue
-				}
+			if maxAcquiredCountHit(msg.Headers) {
+				span.AddEvent("message exceeds delivery-limit, can not be redelivered")
+				util.Logger.Debugf("%s : message exceeds delivery-limit for %s, can not be redelivered", bd.ClientIdentifier, source.GetName())
+				_ = msg.Nack(false) // poison message, exceeds threashold
+				span.End()
+				continue
 			}
 
 			span.AddEvent("sending message from provider to server for consume")

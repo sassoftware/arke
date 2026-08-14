@@ -70,6 +70,14 @@ func Test_Amqp091Message_Nack_AcquiredCount(t *testing.T) {
 			},
 			expectedRequeue: true,
 		},
+		{
+			name:           "x-acquired-count is a string(invalid) should be true",
+			initialRequeue: true,
+			headers: amqp091Table{
+				"x-acquired-count": "25",
+			},
+			expectedRequeue: true,
+		},
 	}
 
 	for _, tt := range tests {
