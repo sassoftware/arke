@@ -3190,7 +3190,7 @@ func TestConsumeSourceStats(t *testing.T) {
 		assert.Nil(t, ssErr)
 		assert.NotNil(t, stats)
 		if dot.publishMessageCount == 0 && dot.addressType == pb.Address_STREAM {
-			assert.Contains(t, stats.GetError().GetMessage(), "CommittedChunkId not found")
+			assert.Equal(t, "Offset not found", stats.GetError().GetMessage())
 		} else {
 			assert.Nil(t, stats.Error)
 		}
@@ -3287,11 +3287,11 @@ func TestConsumeSourceStats(t *testing.T) {
 			expectedOffset--
 			assert.Nil(t, stats.Error)
 		} else {
-			assert.Contains(t, stats.GetError().GetMessage(), "CommittedChunkId not found")
+			assert.Equal(t, "Offset not found", stats.GetError().GetMessage())
 		}
-		assert.GreaterOrEqual(t, stats.LastOffset, int64(expectedOffset), dot.name)
+		assert.Equal(t, int64(expectedOffset), stats.LastOffset, dot.name)
 		assert.Equal(t, int64(expectedOffset), stats.GetCurrentOffset(), dot.name)
-		assert.GreaterOrEqual(t, stats.GetLastOffset(), stats.GetCurrentOffset(), dot.name)
+		assert.Equal(t, stats.GetLastOffset(), stats.GetCurrentOffset(), dot.name)
 	}
 
 	for _, dot := range declareOnlyTests {
@@ -3455,7 +3455,7 @@ func TestConsumeSourceStatsGroup(t *testing.T) {
 		assert.NotNil(t, statsCollection)
 		for _, stats := range statsCollection.Stats {
 			if dot.publishMessageCount == 0 && dot.addressType == pb.Address_STREAM {
-				assert.Contains(t, stats.GetError().GetMessage(), "CommittedChunkId not found")
+				assert.Equal(t, "Offset not found", stats.GetError().GetMessage())
 			} else {
 				assert.Nil(t, stats.Error)
 			}
@@ -3566,11 +3566,11 @@ func TestConsumeSourceStatsGroup(t *testing.T) {
 				expectedOffset--
 				assert.Nil(t, stats.Error)
 			} else {
-				assert.Contains(t, stats.GetError().GetMessage(), "CommittedChunkId not found")
+				assert.Equal(t, "Offset not found", stats.GetError().GetMessage())
 			}
-			assert.GreaterOrEqual(t, stats.LastOffset, int64(expectedOffset), dot.name)
+			assert.Equal(t, int64(expectedOffset), stats.LastOffset, dot.name)
 			assert.Equal(t, int64(expectedOffset), stats.GetCurrentOffset(), dot.name)
-			assert.GreaterOrEqual(t, stats.GetLastOffset(), stats.GetCurrentOffset(), dot.name)
+			assert.Equal(t, stats.GetLastOffset(), stats.GetCurrentOffset(), dot.name)
 		}
 	}
 
@@ -3722,7 +3722,7 @@ func Test_SourceStatsNoStream(t *testing.T) {
 			time.Sleep(1 * time.Second)
 			continue
 		}
-		assert.Contains(t, stats.GetError().GetMessage(), "CommittedChunkId not found")
+		assert.Equal(t, "Offset not found", stats.GetError().GetMessage())
 		break
 	}
 }
