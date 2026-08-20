@@ -37,11 +37,15 @@ func TestNotifyHealthRegistersAndReplacesReceiver(t *testing.T) {
 	second := make(chan pb.HealthStatus_Code, 1)
 	notifyHealth(addr, second)
 
-	// Registering a second notifier for the same client must close the prior one.
-	_, open := <-first
-	assert.False(t, open, "prior receiver channel should be closed on replacement")
+	// Registering a second notifier for the same client must leave only the
+	// new receiver registered, without closing the prior channel: the prior
+	// owner (a still-running Check() call) is responsible for closing it.
+	select {
+	case _, open := <-first:
+		assert.True(t, open, "prior receiver channel should not be closed by replacement")
+	default:
+	}
 
-	// ...and leave only the new receiver registered.
 	got, ok = healthNotifiers.Get(addr)
 	assert.True(t, ok)
 	assert.Equal(t, second, got)
