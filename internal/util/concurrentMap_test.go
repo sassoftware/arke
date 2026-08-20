@@ -52,6 +52,30 @@ func TestConcurrentMapDelete(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestConcurrentMapDeleteIfEqual(t *testing.T) {
+	cMap := NewConcurrentMap()
+	testItem := TestItem{"test item"}
+	staleItem := TestItem{"stale item"}
+	cMap.Add("testItem", testItem)
+
+	// a stale expected value must not delete the entry
+	cMap.DeleteIfEqual("testItem", staleItem)
+	cItem, ok := cMap.Get("testItem")
+	assert.True(t, ok)
+	assert.Equal(t, testItem, cItem)
+
+	// a matching expected value deletes the entry
+	cMap.DeleteIfEqual("testItem", testItem)
+	cItem, ok = cMap.Get("testItem")
+	assert.Nil(t, cItem)
+	assert.False(t, ok)
+
+	// deleting a missing key is a no-op
+	cMap.DeleteIfEqual("missingItem", testItem)
+	_, ok = cMap.Get("missingItem")
+	assert.False(t, ok)
+}
+
 func TestConcurrentMapGetList(t *testing.T) {
 	cMap := NewConcurrentMap()
 	assert.NotNil(t, cMap)
