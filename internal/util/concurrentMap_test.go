@@ -52,6 +52,39 @@ func TestConcurrentMapDelete(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestConcurrentMapDeleteIfEqual(t *testing.T) {
+	cMap := NewConcurrentMap()
+	testItem := TestItem{"test item"}
+	staleItem := TestItem{"stale item"}
+	replacementItem := TestItem{"replacement item"}
+
+	cMap.Add("testItem", testItem)
+
+	// a stale expected value must not delete the entry
+	assert.False(t, cMap.DeleteIfEqual("testItem", staleItem))
+	cItem, ok := cMap.Get("testItem")
+	assert.True(t, ok)
+	assert.Equal(t, testItem, cItem)
+
+	// a newer value must not be removed by an old expected value
+	cMap.Add("testItem", replacementItem)
+	assert.False(t, cMap.DeleteIfEqual("testItem", testItem))
+	cItem, ok = cMap.Get("testItem")
+	assert.True(t, ok)
+	assert.Equal(t, replacementItem, cItem)
+
+	// a matching expected value deletes the entry
+	assert.True(t, cMap.DeleteIfEqual("testItem", replacementItem))
+	cItem, ok = cMap.Get("testItem")
+	assert.Nil(t, cItem)
+	assert.False(t, ok)
+
+	// deleting a missing key is a no-op
+	assert.False(t, cMap.DeleteIfEqual("missingItem", testItem))
+	_, ok = cMap.Get("missingItem")
+	assert.False(t, ok)
+}
+
 func TestConcurrentMapGetList(t *testing.T) {
 	cMap := NewConcurrentMap()
 	assert.NotNil(t, cMap)

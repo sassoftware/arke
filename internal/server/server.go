@@ -768,12 +768,9 @@ func clientExists(ctx context.Context) bool {
 }
 
 func notifyHealth(clientAddr string, receiver chan pb.HealthStatus_Code) {
-	// only allow one notifier per client
-	if recInt, ok := healthNotifiers.Get(clientAddr); ok {
-		rec := recInt.(chan pb.HealthStatus_Code)
-		close(rec)
-		healthNotifiers.Delete(clientAddr)
-	}
+	// only allow one notifier per client; replacing the map entry (rather than
+	// closing the previous channel) avoids racing with the prior Check() call,
+	// which still owns that channel and closes it itself once its stream ends.
 	healthNotifiers.Add(clientAddr, receiver)
 }
 
@@ -800,7 +797,9 @@ func (s *HealthzServer) Check(stream pb.Healthz_CheckServer) error {
 	notifyHealthChan := make(chan pb.HealthStatus_Code)
 	notifyHealth(clientAddr, notifyHealthChan)
 	defer func() {
-		healthNotifiers.Delete(clientAddr)
+		// Only remove our own registration; a newer Check() call for the same
+		// clientAddr may have already replaced it.
+		_ = healthNotifiers.DeleteIfEqual(clientAddr, notifyHealthChan)
 		close(notifyHealthChan)
 	}()
 
