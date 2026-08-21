@@ -35,13 +35,17 @@ func (cm *ConcurrentMap) Delete(key string) {
 }
 
 // DeleteIfEqual deletes key only if its current value is still expected,
-// avoiding removal of an entry that was replaced concurrently.
-func (cm *ConcurrentMap) DeleteIfEqual(key string, expected interface{}) {
+// avoiding removal of an entry that was replaced concurrently. Returns
+// true if the key was deleted, false if it was not present or its value was
+// not equal to expected.
+func (cm *ConcurrentMap) DeleteIfEqual(key string, expected interface{}) bool {
 	cm.Lock()
 	defer cm.Unlock()
-	if cm.items[key] == expected {
+	if item, ok := cm.items[key]; ok && item == expected {
 		delete(cm.items, key)
+		return true
 	}
+	return false
 }
 
 // Get Return the value for a given key in the map

@@ -799,7 +799,7 @@ func (s *HealthzServer) Check(stream pb.Healthz_CheckServer) error {
 	defer func() {
 		// Only remove our own registration; a newer Check() call for the same
 		// clientAddr may have already replaced it.
-		healthNotifiers.DeleteIfEqual(clientAddr, notifyHealthChan)
+		_ = healthNotifiers.DeleteIfEqual(clientAddr, notifyHealthChan)
 		close(notifyHealthChan)
 	}()
 
