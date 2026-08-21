@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/ha"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/message"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
@@ -25,8 +26,9 @@ type streamConnectionShim interface {
 	PutPublisher(confirm bool, publisher streamPublisherShim)
 	NewConsumer(streamName string, consumerName string, offset string, handler stream.MessagesHandler, singleActive bool) (streamConsumerShim, error)
 	DeclareStream(streamName string, ttl int64) error
-	GetLastOffset(streamName string, consumerName string) (int64, error)
+	GetConsumerOffset(streamName string, consumerName string) (int64, error)
 	StoreOffset(streamName string, consumerName string, offset int64) error
+	GetStreamOffset(streamName string) (int64, error)
 }
 
 type streamConnection struct {
@@ -267,15 +269,34 @@ func (sc *streamConnection) DeclareStream(streamName string, ttl int64) error {
 	return sc.env.DeclareStream(streamName, opts)
 }
 
-func (sc *streamConnection) GetLastOffset(streamName string, consumerName string) (int64, error) {
+func (sc *streamConnection) GetConsumerOffset(streamName string, consumerName string) (int64, error) {
 	offset, qErr := sc.env.QueryOffset(consumerName, streamName)
-	util.Logger.Debugf("GetLastOffset (%s)(%s)(%d) [%v]", consumerName, streamName, offset, qErr)
+	util.Logger.Debugf("GetConsumerOffset (%s)(%s)(%d) [%v]", consumerName, streamName, offset, qErr)
 	return offset, qErr
 }
 
 func (sc *streamConnection) StoreOffset(streamName string, consumerName string, offset int64) error {
 	util.Logger.Tracef("StoreOffset (%s)(%s)(%d)", consumerName, streamName, offset)
 	return sc.env.StoreOffset(consumerName, streamName, offset)
+}
+
+func (sc *streamConnection) GetStreamOffset(streamName string) (int64, error) {
+	util.Logger.Debugf("GetStreamOffset (%s)", streamName)
+	// create a new consumer with a fake consumer group name so we can find the offset at 'last'
+	fakeConsumerName := "arkeSourceStatsConsumer"
+	handleMessages := func(cc stream.ConsumerContext, _ *amqp.Message) {
+		if cc.Consumer != nil {
+			// store the offset so requests to QueryOffset will be correct
+			_ = sc.StoreOffset(streamName, fakeConsumerName, cc.Consumer.GetOffset())
+		}
+	}
+
+	cons, err := sc.NewConsumer(streamName, fakeConsumerName, "last", handleMessages, false)
+	if err != nil {
+		return 0, err
+	}
+	defer cons.Close()
+	return sc.GetConsumerOffset(streamName, fakeConsumerName)
 }
 
 func (sc *streamConnection) getMaxProducers() int {

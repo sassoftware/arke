@@ -87,7 +87,7 @@ func (m *streamConnectionMock) GetPublisherName() string {
 	return ""
 }
 
-func (m *streamConnectionMock) GetLastOffset(streamName string, clientName string) (int64, error) {
+func (m *streamConnectionMock) GetConsumerOffset(streamName string, clientName string) (int64, error) {
 	args := m.Called(streamName, clientName)
 	return int64(args.Int(0)), args.Error(1)
 }
@@ -95,6 +95,11 @@ func (m *streamConnectionMock) GetLastOffset(streamName string, clientName strin
 func (m *streamConnectionMock) StoreOffset(streamName string, consumerName string, offset int64) error {
 	args := m.Called(streamName, consumerName, offset)
 	return args.Error(0)
+}
+
+func (m *streamConnectionMock) GetStreamOffset(streamName string) (int64, error) {
+	args := m.Called(streamName)
+	return int64(args.Int(0)), args.Error(1)
 }
 
 type streamPublisherMock struct {

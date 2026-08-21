@@ -1732,40 +1732,31 @@ func (prov *amqp091provider) WaitForConnect(ctx context.Context) bool {
 }
 
 func (bd *BrokerDetails) updateStatsForStream(source *pb.Source, stats *pb.SourceStats) {
-	// create a new consumer with a fake consumer group name so we can find the offset at 'last'
-	fakeConsumerName := "arkeSourceStatsConsumer"
-	handleMessages := func(cc stream.ConsumerContext, _ *amqp.Message) {
-		if cc.Consumer != nil {
-			// store the offset so requests to QueryOffset will be correct
-			_ = bd.StreamConnection.StoreOffset(source.GetName(), fakeConsumerName, cc.Consumer.GetOffset())
-		}
+	bd.updateCurrentOffsetStat(source, stats)
+	bd.updateStreamOffsetStat(source, stats)
+}
+
+func (bd *BrokerDetails) updateCurrentOffsetStat(source *pb.Source, stats *pb.SourceStats) {
+	consumerName, cErr := bd.getConsumerName(source)
+	if cErr != nil {
+		stats.Error = cErr
+		return
 	}
+	// Ignore the error here, we will get an error if we have never stored
+	// an offset (aka. never consumed)
+	consumerOffset, _ := bd.StreamConnection.GetConsumerOffset(source.GetName(), consumerName)
+	stats.CurrentOffset = consumerOffset
+}
 
-	cons, err := bd.StreamConnection.NewConsumer(source.GetName(), fakeConsumerName, "last", handleMessages, false)
-
-	if err == nil {
-		defer cons.Close()
-		offset, oErr := bd.StreamConnection.GetLastOffset(source.GetName(), fakeConsumerName)
-		stats.LastOffset = offset
-		if oErr != nil {
-			stats.Error = &pb.Error{
-				Message: oErr.Error(),
-			}
-			return
+func (bd *BrokerDetails) updateStreamOffsetStat(source *pb.Source, stats *pb.SourceStats) {
+	streamOffset, err := bd.StreamConnection.GetStreamOffset(source.GetName())
+	if err != nil {
+		stats.Error = &pb.Error{
+			Message: err.Error(),
 		}
-
-		consumerName, cErr := bd.getConsumerName(source)
-		if cErr != nil {
-			stats.Error = cErr
-			return
-		}
-		// Ignore the error here, we will get an error if we have never stored
-		// an offset(aka. never consumed)
-		offset, _ = bd.StreamConnection.GetLastOffset(source.GetName(), consumerName)
-		stats.CurrentOffset = offset
-	} else {
-		util.Logger.Debugf("failed to create new arkeSourceStatsConsumer for stats: %s", err.Error())
+		return
 	}
+	stats.LastOffset = streamOffset
 }
 
 func (bd *BrokerDetails) getConsumerName(source *pb.Source) (string, *pb.Error) {
