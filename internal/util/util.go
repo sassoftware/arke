@@ -5,7 +5,7 @@ package util
 
 import (
 	"context"
-	"crypto/sha1" //nolint:gosec
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -26,8 +26,7 @@ func SetClientIdentifier(ctx context.Context, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// deepcode ignore InsecureHash: no sensitive data-only hashing for a unique client identifier
-	h := fmt.Sprintf("%x", sha1.Sum([]byte(clientAddr)))[:8] //nolint:gosec
+	h := fmt.Sprintf("%x", sha256.Sum256([]byte(clientAddr)))[:8]
 	clientIdentifier := fmt.Sprintf("%s-%s", name, h)
 	clientMap.Add(clientAddr, clientIdentifier)
 	return clientIdentifier, err
