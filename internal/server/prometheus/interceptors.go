@@ -31,10 +31,11 @@ var methodMap = map[string]string{
 	api.Producer_Disconnect_FullMethodName: "arke.Producer.Disconnect",
 	api.Producer_PublishOne_FullMethodName: "arke.Producer.PublishOne",
 
-	api.Consumer_Consume_FullMethodName:     "arke.Consumer.Consume",
-	api.Consumer_Connect_FullMethodName:     "arke.Consumer.Connect",
-	api.Consumer_Disconnect_FullMethodName:  "arke.Consumer.Disconnect",
-	api.Consumer_SourceStats_FullMethodName: "arke.Consumer.SourceStats",
+	api.Consumer_Consume_FullMethodName:          "arke.Consumer.Consume",
+	api.Consumer_Connect_FullMethodName:          "arke.Consumer.Connect",
+	api.Consumer_Disconnect_FullMethodName:       "arke.Consumer.Disconnect",
+	api.Consumer_SourceStats_FullMethodName:      "arke.Consumer.SourceStats",
+	api.Consumer_SourceStatsGroup_FullMethodName: "arke.Consumer.SourceStatsGroup",
 
 	api.Healthz_Check_FullMethodName: "arke.Healthz.Check",
 

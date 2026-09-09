@@ -22,6 +22,7 @@ import (
 	metrics "github.com/sassoftware/arke/internal/metrics/prometheus"
 	_ "github.com/sassoftware/arke/internal/provider/connectors" // initializes providers
 	"github.com/sassoftware/arke/internal/server"
+	"github.com/sassoftware/arke/internal/server/interceptors"
 	"github.com/sassoftware/arke/internal/server/prometheus"
 	"github.com/sassoftware/arke/internal/server/ratelimiter"
 	"github.com/sassoftware/arke/internal/util"
@@ -128,6 +129,13 @@ func (a *Arke) WithCertKeyPath(path string) *Arke {
 
 func (a *Arke) WithHpaName(name string) *Arke {
 	a.hpaName = name
+	return a
+}
+
+func (a *Arke) WithAllowedRPCs(allowedRPCs ...string) *Arke {
+	a.interceptors.chainUnary = append(a.interceptors.chainUnary, interceptors.UnaryInterceptor)
+	a.interceptors.chainStream = append(a.interceptors.chainStream, interceptors.StreamInterceptor)
+	interceptors.SetAllowedRPCs(allowedRPCs)
 	return a
 }
 
