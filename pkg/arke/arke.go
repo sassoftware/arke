@@ -133,8 +133,8 @@ func (a *Arke) WithHpaName(name string) *Arke {
 }
 
 func (a *Arke) WithAllowedRPCs(allowedRPCs ...string) *Arke {
-	a.interceptors.chainUnary = append(a.interceptors.chainUnary, interceptors.UnaryInterceptor)
-	a.interceptors.chainStream = append(a.interceptors.chainStream, interceptors.StreamInterceptor)
+	a.interceptors.chainUnary = append(a.interceptors.chainUnary, interceptors.AllowedRPCUnaryInterceptor)
+	a.interceptors.chainStream = append(a.interceptors.chainStream, interceptors.AllowedRPCStreamInterceptor)
 	interceptors.SetAllowedRPCs(allowedRPCs)
 	return a
 }

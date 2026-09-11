@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -13,13 +12,14 @@ import (
 
 	pb "github.com/sassoftware/arke/api"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	creds := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true}) //nolint:gosec
+	// creds := credentials.NewTLS(&tls.Config{InsecureSkipVerify: true}) //nolint:gosec
+	creds := insecure.NewCredentials()
 	// or insecure.NewCredentials() if not using tls
 
 	arkeAddress := "localhost:50051"
