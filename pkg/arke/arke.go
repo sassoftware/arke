@@ -66,12 +66,14 @@ func (a *Arke) Build() *Arke {
 	return a
 }
 
+// WithPrometheus enables arke specific metrics collection
 func (a *Arke) WithPrometheus() *Arke {
 	a.interceptors.chainUnary = append(a.interceptors.chainUnary, prometheus.UnaryInterceptor)
 	a.interceptors.chainStream = append(a.interceptors.chainStream, prometheus.StreamInterceptor)
 	return a
 }
 
+// WithRateLimit enables rate limiting for the arke server with the passed RateLimitParameters.
 func (a *Arke) WithRateLimit(rlp *RateLimitParameters) *Arke {
 	if rlp == nil {
 		util.Logger.Warn(i18n.InvalidRateParameters)
@@ -106,28 +108,45 @@ func (a *Arke) WithRateLimit(rlp *RateLimitParameters) *Arke {
 	return a
 }
 
+// WithTLSSkipVerify allows skipping TLS certificate verification.
 func (a *Arke) WithTLSSkipVerify(tlsSkipVerify bool) *Arke {
 	a.tlsSkipVerify = tlsSkipVerify
 	return a
 }
 
+// WithPort allows overriding the default arke port (50051).
 func (a *Arke) WithPort(port int) *Arke {
 	a.port = port
 	return a
 }
 
+// WithCertFilePath sets the path to the TLS certificate file.
 func (a *Arke) WithCertFilePath(path string) *Arke {
 	a.certFile = path
 	return a
 }
 
+// WithCertKeyPath sets the path to the TLS certificate key file.
 func (a *Arke) WithCertKeyPath(path string) *Arke {
 	a.certKey = path
 	return a
 }
 
+// WithHpaName sets the name of the Horizontal Pod Autoscaler (HPA) associated with arke..
 func (a *Arke) WithHpaName(name string) *Arke {
 	a.hpaName = name
+	return a
+}
+
+// WithUnaryInterceptor adds a custom unary server interceptor.
+func (a *Arke) WithUnaryInterceptor(interceptor grpc.UnaryServerInterceptor) *Arke {
+	a.interceptors.chainUnary = append(a.interceptors.chainUnary, interceptor)
+	return a
+}
+
+// WithStreamInterceptor adds a custom stream server interceptor.
+func (a *Arke) WithStreamInterceptor(interceptor grpc.StreamServerInterceptor) *Arke {
+	a.interceptors.chainStream = append(a.interceptors.chainStream, interceptor)
 	return a
 }
 
@@ -196,6 +215,7 @@ func defaultKeepAliveEnforcementPolicy() keepalive.EnforcementPolicy {
 	}
 }
 
+// DefaultArkeServer returns a minimal Arke instance.
 func DefaultArkeServer() *Arke {
 	a := &Arke{
 		port:    50051,

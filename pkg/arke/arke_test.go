@@ -243,3 +243,23 @@ func Test_GetRateLimitParameters(t *testing.T) {
 		})
 	}
 }
+
+func Test_WithUnaryInterceptor(t *testing.T) {
+	a := &Arke{}
+	interceptor := func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		return handler(ctx, req)
+	}
+	assert.Equal(t, len(a.interceptors.chainUnary), 0)
+	a = a.WithUnaryInterceptor(interceptor)
+	assert.Equal(t, len(a.interceptors.chainUnary), 1)
+}
+
+func Test_WithStreamInterceptor(t *testing.T) {
+	a := &Arke{}
+	interceptor := func(_ any, _ grpc.ServerStream, _ *grpc.StreamServerInfo, _ grpc.StreamHandler) error {
+		return nil
+	}
+	assert.Equal(t, len(a.interceptors.chainStream), 0)
+	a = a.WithStreamInterceptor(interceptor)
+	assert.Equal(t, len(a.interceptors.chainStream), 1)
+}
