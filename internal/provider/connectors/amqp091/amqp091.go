@@ -1981,6 +1981,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	}
 
 	bd.Connection = conn
+	bd.RetryChannel = nil
 	bd.ErrorChannel = make(chan amqp091Error, 1)
 	bd.ErrorChannel = bd.Connection.NotifyClose(bd.ErrorChannel) // this looks unneeded but it aids in unit testing
 	bd.state.Store(provider.CONNECTED)

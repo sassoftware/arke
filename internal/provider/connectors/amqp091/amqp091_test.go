@@ -951,6 +951,117 @@ func Test_Retry(t *testing.T) {
 	sbmock.AssertNumberOfCalls(t, "ExchangeDeclare", 2)
 }
 
+func Test_connect_clearsRetryChannel(t *testing.T) {
+	bd := BrokerDetails{}
+	bd.ClientIdentifier = "1234"
+	bd.connectionConfig = &pb.ConnectionConfiguration{}
+	bd.RetryChannel = new(amqp091ChannelShim)
+
+	amock := &amqpConnectionMock{}
+	amock.On("Connect").Return(nil)
+	errs := make(chan amqp091Error)
+	amock.On("NotifyClose").Return(errs)
+
+	oldNewAmqpConn091 := NewAmqpConn091
+	NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
+		return amock
+	}
+	defer func() {
+		NewAmqpConn091 = oldNewAmqpConn091
+	}()
+
+	ok, err := bd.connect()
+
+	assert.True(t, ok)
+	assert.Nil(t, err)
+	assert.Nil(t, bd.RetryChannel)
+	amock.AssertExpectations(t)
+}
+
+func Test_RetryAfterReconnectUsesNewConnection(t *testing.T) {
+	oldConnection := &amqpConnectionMock{}
+	newConnection := &amqpConnectionMock{}
+	oldRetryChannel := &amqpChannelMock{}
+	newRetryChannel := &amqpChannelMock{}
+	oldStandbyChannel := &amqpChannelMock{}
+	newStandbyChannel := &amqpChannelMock{}
+
+	for _, standbyChannel := range []*amqpChannelMock{oldStandbyChannel, newStandbyChannel} {
+		standbyChannel.On("ExchangeDeclare", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		standbyChannel.On("QueueDeclare", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		standbyChannel.On("QueueBind", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	}
+	oldConnection.On("StandbyChannel").Return(oldStandbyChannel, nil).Times(3)
+	newConnection.On("StandbyChannel").Return(newStandbyChannel, nil).Times(3)
+	oldConnection.On("NewChannel", true).Return(oldRetryChannel, nil).Once()
+	newConnection.On("NewChannel", true).Return(newRetryChannel, nil).Once()
+	oldRetryChannel.On("Publish", mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+	newRetryChannel.On("Publish", mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+
+	oldDelivery := &mock.Mock{}
+	oldDelivery.On("Ack").Return(nil).Once()
+	oldMessage := amqp091Message{DeliveryTag: 1, Headers: amqp091Table{}}
+	oldMessage.SetDelivery(oldDelivery)
+	newDelivery := &mock.Mock{}
+	newDelivery.On("Ack").Return(nil).Once()
+	newMessage := amqp091Message{DeliveryTag: 2, Headers: amqp091Table{}}
+	newMessage.SetDelivery(newDelivery)
+
+	bd := &BrokerDetails{
+		Connection:       oldConnection,
+		ClientIdentifier: "1234",
+		activeMessages:   util.NewConcurrentMap(),
+		knownExchanges:   util.NewConcurrentMap(),
+		knownQueues:      util.NewConcurrentMap(),
+		knownBindings:    util.NewConcurrentMap(),
+		connectionConfig: &pb.ConnectionConfiguration{},
+	}
+	bd.activeMessages.Add("old-message", oldMessage)
+
+	prov := &amqp091provider{connections: util.NewConcurrentMap()}
+	prov.connections.Add("1234", bd)
+
+	oldGetClientIdentifier := GetClientIdentifier
+	GetClientIdentifier = func(context.Context) (string, error) { return "1234", nil }
+	oldNewAmqpConn091 := NewAmqpConn091
+	NewAmqpConn091 = func(string, string, *tls.Config) amqp091ConnectionShim {
+		return newConnection
+	}
+	defer func() {
+		GetClientIdentifier = oldGetClientIdentifier
+		NewAmqpConn091 = oldNewAmqpConn091
+	}()
+
+	source := &pb.Source{Address: &pb.Address{Name: "address"}}
+	assert.Nil(t, prov.Retry(context.Background(), source, "old-message", 1))
+
+	bd.state.Store(provider.DISCONNECTED)
+	newConnection.On("Connect").Return(nil).Once()
+	newErrors := make(chan amqp091Error)
+	newConnection.On("NotifyClose").Return(newErrors).Once()
+	msrv := mockManagementRequestServer()
+	defer msrv.Close()
+	u, err := url.Parse(msrv.URL)
+	assert.Nil(t, err)
+	port, err := strconv.Atoi(u.Port())
+	assert.Nil(t, err)
+	bd.connectionConfig.Host = u.Hostname()
+	bd.connectionConfig.Port = int32(port)      //nolint:gosec
+	bd.connectionConfig.AdminPort = int32(port) //nolint:gosec
+
+	ok, err := bd.connect()
+	assert.True(t, ok)
+	assert.Nil(t, err)
+	assert.Nil(t, bd.RetryChannel)
+	bd.activeMessages.Add("new-message", newMessage)
+
+	assert.Nil(t, prov.Retry(context.Background(), source, "new-message", 1))
+	oldConnection.AssertExpectations(t)
+	newConnection.AssertExpectations(t)
+	oldRetryChannel.AssertExpectations(t)
+	newRetryChannel.AssertExpectations(t)
+}
+
 func Test_RetryFailure(t *testing.T) {
 	prov := NewAMQP091Provider()
 
