@@ -996,6 +996,7 @@ func Test_RetryAfterReconnectUsesNewConnection(t *testing.T) {
 	oldConnection.On("NewChannel", true).Return(oldRetryChannel, nil).Once()
 	newConnection.On("NewChannel", true).Return(newRetryChannel, nil).Once()
 	oldRetryChannel.On("Publish", mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+	oldRetryChannel.On("Publish", mock.Anything, mock.Anything, mock.Anything).Return(errors.New("channel/connection is not open")).Maybe()
 	newRetryChannel.On("Publish", mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
 
 	oldDelivery := &mock.Mock{}
@@ -1004,6 +1005,7 @@ func Test_RetryAfterReconnectUsesNewConnection(t *testing.T) {
 	oldMessage.SetDelivery(oldDelivery)
 	newDelivery := &mock.Mock{}
 	newDelivery.On("Ack").Return(nil).Once()
+	newDelivery.On("Nack", false, true).Return(nil).Maybe()
 	newMessage := amqp091Message{DeliveryTag: 2, Headers: amqp091Table{}}
 	newMessage.SetDelivery(newDelivery)
 
@@ -1053,13 +1055,18 @@ func Test_RetryAfterReconnectUsesNewConnection(t *testing.T) {
 	assert.True(t, ok)
 	assert.Nil(t, err)
 	assert.Nil(t, bd.RetryChannel)
+	_, oldMessagePresent := bd.activeMessages.Get("old-message")
+	assert.False(t, oldMessagePresent)
 	bd.activeMessages.Add("new-message", newMessage)
 
 	assert.Nil(t, prov.Retry(context.Background(), source, "new-message", 1))
 	oldConnection.AssertExpectations(t)
 	newConnection.AssertExpectations(t)
 	oldRetryChannel.AssertExpectations(t)
+	oldRetryChannel.AssertNumberOfCalls(t, "Publish", 1)
 	newRetryChannel.AssertExpectations(t)
+	oldDelivery.AssertNotCalled(t, "Nack", false, true)
+	newDelivery.AssertNotCalled(t, "Nack", false, true)
 }
 
 func Test_RetryFailure(t *testing.T) {
