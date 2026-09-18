@@ -1145,7 +1145,7 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 				return &pb.Error{Message: cancelErr.Error()}
 			} else if s := bd.state.Load(); s != provider.CONNECTED {
 				// The connection was closed without an error on the channel, so this was expected.
-				// TODO: Should we check for DISCONNECTED/CONNECTING as well?
+				// TODO: Issue 187 - Should we check for DISCONNECTED/CONNECTING as well?
 				util.Logger.Debugf("Received channel state not connected during subscribe %v : %v", bd.ClientIdentifier, s)
 				return nil
 			}
@@ -1160,7 +1160,7 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 				return &pb.Error{Message: chanErr.Error()}
 			} else if s := bd.state.Load(); s != provider.CONNECTED {
 				// The connection was closed without an error on the channel, so this was expected.
-				// TODO: Should we check for DISCONNECTED/CONNECTING as well?
+				// TODO: Issue 187 - Should we check for DISCONNECTED/CONNECTING as well?
 				util.Logger.Debugf("Received connection state not connected during subscribe %v : %v", bd.ClientIdentifier, s)
 				return nil
 			}
@@ -1467,7 +1467,7 @@ func (prov *amqp091provider) Publish(ctx context.Context, messageChannel <-chan 
 				return &pb.Error{Message: cancelErr.Error()}
 			} else if s := bd.state.Load(); s != provider.CONNECTED {
 				// The connection was closed without an error on the channel, so this was expected.
-				// TODO: Should we check for DISCONNECTED/CONNECTING as well?
+				// TODO: Issue 187 - Should we check for DISCONNECTED/CONNECTING as well?
 				util.Logger.Debugf("Received channel state not connected during publish %v : %v", bd.ClientIdentifier, s)
 				return nil
 			}
@@ -1483,7 +1483,7 @@ func (prov *amqp091provider) Publish(ctx context.Context, messageChannel <-chan 
 				return retError
 			} else if s := bd.state.Load(); s != provider.CONNECTED {
 				// The connection was closed without an error on the channel, so this was expected.
-				// TODO: Should we check for DISCONNECTED/CONNECTING as well?
+				// TODO: Issue 187 - Should we check for DISCONNECTED/CONNECTING as well?
 				util.Logger.Debugf("Received connection state not connected during publish %v : %v", bd.ClientIdentifier, s)
 				return nil
 			}

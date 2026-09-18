@@ -153,7 +153,7 @@ func defaultHandler(msg *pb.Message) (int, error) {
 	return 0, nil
 }
 
-// TODO: pass in a message handler to control ack/nack
+// TODO: Issue 187 - pass in a message handler to control ack/nack
 func consumeMessages(conn *grpc.ClientConn, c pb.ConsumerClient, ctx context.Context, messages chan<- *pb.Message, done chan bool, clientConnected chan bool, source *pb.Source, handler MsgHandler, t *testing.T) error { //nolint
 
 	defer c.Disconnect(ctx, &pb.Empty{})
@@ -221,7 +221,7 @@ func consumeMessages(conn *grpc.ClientConn, c pb.ConsumerClient, ctx context.Con
 					return
 				}
 				message := resp.GetMsg()
-				// TODO: err is not used inside this for loop except down
+				// TODO: Issue 187 - err is not used inside this for loop except down
 				// below and it returns. I think it is safe to remove this code.
 				if err == io.EOF {
 					log.Panicf("error: %s", err.Error())
@@ -605,7 +605,7 @@ func TestProduceOneFailsWithoutConnect(t *testing.T) {
 	assert.NotNil(t, err)
 	assert.Contains(t, err.Error(), "could not find client identifier")
 
-	// TODO: Why is the MessageResponse nil?
+	// TODO: Issue 187 - Why is the MessageResponse nil?
 	//assert.NotNil(t, resp)
 	//assert.False(t, resp.GetSuccess())
 	//assert.Contains(t, resp.GetError(), "Could not find client identifier")
@@ -3786,7 +3786,7 @@ func TestStreamHeaderReceivedTimeEqualsTimestampInMs(t *testing.T) {
 }
 
 func TestMismatchedExchangeParams(t *testing.T) {
-	// PSEVT-73 / PSEVT-78: When a second producer declares an already-existing
+	// When a second producer declares an already-existing
 	// exchange with different parameters, RabbitMQ returns a 406 PRECONDITION_FAILED.
 	// Arke should ignore that error and allow publishing to continue
 	//
