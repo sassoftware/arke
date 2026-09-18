@@ -340,21 +340,22 @@ func (prov *amqp091provider) Retry(ctx context.Context, origSource *pb.Source, m
 			}
 
 			bd.Lock()
-			var amqpChannel amqp091ChannelShim
-			if bd.RetryChannel == nil {
-				connection := bd.Connection
-				bd.Unlock()
+			retryChannel := bd.RetryChannel
+			connection := bd.Connection
+			bd.Unlock()
 
-				retryChannel, err := connection.NewChannel(true)
+			if retryChannel == nil {
+				newRetryChannel, err := connection.NewChannel(true)
 				if err != nil {
 					return &pb.Error{Message: err.Error()}
 				}
 
 				bd.Lock()
-				bd.RetryChannel = &retryChannel
+				bd.RetryChannel = &newRetryChannel
+				retryChannel = bd.RetryChannel
+				bd.Unlock()
 			}
-			amqpChannel = *bd.RetryChannel
-			bd.Unlock()
+			amqpChannel := *retryChannel
 
 			defer func(bd *BrokerDetails) *pb.Error {
 				if err := recover(); err != nil {
