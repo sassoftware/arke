@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	rabbitmqamqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/internal/provider"
 	"github.com/stretchr/testify/assert"
@@ -24,6 +25,10 @@ func (m *amqp10ConnectionMock) Close(ctx context.Context) error {
 	m.closeCount++
 	m.closeCtx = ctx
 	return m.closeErr
+}
+
+func (m *amqp10ConnectionMock) WatchConnection(_ chan *rabbitmqamqp.StateChanged) {
+	// Mock implementation does nothing
 }
 
 func (m *amqp10ConnectionMock) IsClosed() bool {

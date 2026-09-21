@@ -79,8 +79,6 @@ type BrokerDetails struct {
 
 // TODO: Issue 204 - implement connection watcher to handle state changes and reconnections. See https://github.com/rabbitmq/rabbitmq-amqp-go-client/blob/101a3222e9e3b440b815286c1e5635595817fb6f/docs/examples/reliable/reliable.go#L80 for an example of how this should be implemented. See https://github.com/sassoftware/arke/blob/d386f6817d75e3e4964fe924345e1b6b5e243953/internal/provider/connectors/amqp091/amqp091.go#L1851-L1852 for existing logic to be handled. Below is a bare minimum for testing, so save the review for issue 204.
 func (bd *BrokerDetails) watchConnection() {
-	// buf of 5 to account for possible quick state changes and avoid blocking
-	bd.stateChannel = make(chan *rabbitmqamqp.StateChanged, 5)
 	for change := range bd.stateChannel {
 		switch change.String() {
 		case "open":
@@ -89,8 +87,10 @@ func (bd *BrokerDetails) watchConnection() {
 			bd.state.Store(provider.CONNECTING)
 		case "closed":
 			bd.state.Store(provider.CLOSED)
+			return
 		case "closing": // TODO: Issue 204 - provider does not have a distinct CLOSING state, so we treat it as CLOSED (do we need a CLOSING state?)
 			bd.state.Store(provider.CLOSED)
+			return
 		}
 	}
 }
@@ -163,10 +163,15 @@ func (bd *BrokerDetails) connect() (bool, error) {
 		bd.state.Store(provider.CLOSED)
 		return false, err
 	}
-
-	bd.Connection = conn
-
 	bd.state.Store(provider.CONNECTED)
+
+	// buf of 5 to account for possible quick state changes and avoid blocking
+	bd.Connection = conn
+	bd.stateChannel = make(chan *rabbitmqamqp.StateChanged, 5)
+	bd.Connection.WatchConnection(bd.stateChannel)
+
+	go bd.watchConnection()
+
 	util.Logger.Info(i18n.ClientConnected, bd.ClientIdentifier)
 
 	// TODO: Issue 203

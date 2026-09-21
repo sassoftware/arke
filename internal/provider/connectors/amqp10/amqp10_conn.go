@@ -15,6 +15,7 @@ import (
 // amqp10ConnectionShim Shim so we can do unit testing
 type amqp10ConnectionShim interface {
 	Close(context.Context) error
+	WatchConnection(ch chan *rabbitmqamqp.StateChanged)
 	IsClosed() bool
 	State() int
 }
@@ -70,6 +71,6 @@ func (a *amqp10Connection) State() int {
 // TODO: Issue 204 - cancel context used by state channel (i.e., make sure connection watcher channel shuts down) and close state channel
 // TODO: Issue 187 - Should we be saving the connection ctx (as here) instead of passing it in to Close?
 func (a *amqp10Connection) Close(_ context.Context) error {
-	a.connectionCancel()
+	defer a.connectionCancel()
 	return a.connection.Close(a.connectionCtx)
 }

@@ -23,6 +23,12 @@ func (m *amqp10EnvironmentMock) NewConnection(ctx context.Context) (amqp10Connec
 	return m.conn, m.err
 }
 
+func (m *amqp10EnvironmentMock) WatchConnection(ch chan *rabbitmqamqp.StateChanged) {
+	if m.conn != nil {
+		m.conn.WatchConnection(ch)
+	}
+}
+
 func (m *amqp10EnvironmentMock) Close(ctx context.Context) error {
 	return nil
 }

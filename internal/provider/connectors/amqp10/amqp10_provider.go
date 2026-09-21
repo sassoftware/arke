@@ -121,7 +121,6 @@ func (prov *amqp10provider) Connect(ctx context.Context, cf *pb.ConnectionConfig
 		pubChCancel()
 		return &pb.Error{Message: err.Error()}
 	}
-	go bd.watchConnection()
 
 	// TODO: Issue 204 - setup lifecycle management to listen for state change
 	prov.connections.Add(clientIdentifier, bd)
@@ -196,6 +195,10 @@ func (prov *amqp10provider) WaitForConnect(ctx context.Context) bool {
 		bd, err = prov.getBrokerDetails(ctx)
 		if err != nil {
 			util.Logger.Info(i18n.ClientDetailsGone, clientIdentifier)
+			return false
+		}
+		if bd.state.Load() == provider.CLOSED || bd.state.Load() == provider.DISCONNECTED {
+			util.Logger.Info(i18n.ClientDisconnect, clientIdentifier)
 			return false
 		}
 
