@@ -75,7 +75,7 @@ func (prov *amqp10provider) Connect(ctx context.Context, cf *pb.ConnectionConfig
 	var tlsConfig *tls.Config
 	if cf.GetTls() {
 		tlsConfig = &tls.Config{
-			InsecureSkipVerify: tlsSkipVerify,
+			InsecureSkipVerify: tlsSkipVerify, // nolint:gosec
 		}
 		caBundlePath := os.Getenv(trustedCerts)
 		if caBundlePath != "" {
@@ -87,22 +87,21 @@ func (prov *amqp10provider) Connect(ctx context.Context, cf *pb.ConnectionConfig
 		}
 	}
 	pubChCtx := context.WithValue(context.Background(), clientIdentifierCtxKey, clientIdentifier)
-	pubChCtx, pubChCancel := context.WithCancel(pubChCtx) //nolint:gosec
-	bdCtx := context.Context(ctx)
-	opts, err := getAmqp10ConnOptions(bdCtx, cf, tlsConfig)
+	pubChCtx, pubChCancel := context.WithCancel(pubChCtx)
+	opts, err := getAmqp10ConnOptions(ctx, cf, tlsConfig)
 	if err != nil {
 		pubChCancel()
 		return &pb.Error{Message: err.Error()}
 	}
 	util.Logger.Debugf("Env options: %+v", opts)
 	connUrl := getConnURL(cf)
-	env, err := newAmqp10EnvironmentFunc(bdCtx, cf, tlsConfig, connUrl, opts)
+	env, err := newAmqp10EnvironmentFunc(ctx, cf, tlsConfig, connUrl, opts)
 	if err != nil {
 		pubChCancel()
 		return &pb.Error{Message: err.Error()}
 	}
 	bd := &BrokerDetails{
-		ctx:              bdCtx,
+		ctx:              ctx,
 		provider:         prov,
 		Env:              env,
 		ClientIdentifier: clientIdentifier,

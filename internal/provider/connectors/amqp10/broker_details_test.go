@@ -143,7 +143,7 @@ func Test_BrokerDetails_waitWhileConnecting(t *testing.T) {
 			bd := newTestBrokerDetails()
 			bd.state.Store(state)
 
-			assert.Equal(t, uint32(state), bd.waitWhileConnecting())
+			assert.Equal(t, int32(state), bd.waitWhileConnecting())
 		}
 	})
 

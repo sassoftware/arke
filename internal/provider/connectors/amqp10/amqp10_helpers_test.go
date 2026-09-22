@@ -13,12 +13,12 @@ func Test_getConnURL(t *testing.T) {
 		config   *pb.ConnectionConfiguration
 		expected string
 	}{
-		{
+		{ // nolint:gosec
 			name:     "amqp connection URL",
 			config:   newTestConnectionConfig(),
 			expected: "amqp://guest:guest@localhost:5672",
 		},
-		{
+		{ // nolint:gosec
 			name: "amqps connection URL",
 			config: &pb.ConnectionConfiguration{
 				Host: "broker.example.com",
