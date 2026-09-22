@@ -4,6 +4,6 @@
 package connectors
 
 import (
-	_ "github.com/sassoftware/arke/internal/provider/connectors/amqp091" // Import the AMQP091 plugin
-	_ "github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/amqp10"  // Import the rabbitmq/AMQP10 plugin
+	_ "github.com/sassoftware/arke/internal/provider/connectors/amqp091"         // Import the AMQP091 plugin
+	_ "github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/amqp10" // Import the rabbitmq/AMQP10 plugin
 )

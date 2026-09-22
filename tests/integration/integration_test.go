@@ -24,8 +24,7 @@ import (
 	"github.com/sassoftware/arke/internal/provider"
 
 	// TODO: Issue 187 - should not have to do this
-	_ "github.com/sassoftware/arke/internal/provider/connectors/amqp091"
-	_ "github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/amqp10"
+	_ "github.com/sassoftware/arke/internal/provider/connectors"
 
 	"github.com/sassoftware/arke/internal/util"
 	cfg "github.com/sassoftware/arke/test/config"
