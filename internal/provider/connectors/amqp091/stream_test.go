@@ -20,6 +20,7 @@ import (
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/message"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
 	pb "github.com/sassoftware/arke/api"
+	"github.com/sassoftware/arke/internal/provider/connectors/amqp/track"
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -136,6 +137,24 @@ func (m *streamPublisherMock) Close() error {
 
 type streamConsumerMock struct {
 	mock.Mock
+}
+
+func Test_declareStreamSkipsKnownAndDoesNotCacheFailure(t *testing.T) {
+	streamConnection := &streamConnectionMock{}
+	streamConnection.On("DeclareStream").Return(nil).Once()
+	bd := &BrokerDetails{StreamConnection: streamConnection, tracker: track.New()}
+
+	assert.NoError(t, bd.declareStream("stream", 0))
+	assert.NoError(t, bd.declareStream("stream", 0))
+	assert.True(t, bd.streamKnown("stream"))
+
+	failingConnection := &streamConnectionMock{}
+	failingConnection.On("DeclareStream").Return(errors.New("stream failed")).Twice()
+	failingBD := &BrokerDetails{StreamConnection: failingConnection, tracker: track.New()}
+
+	assert.EqualError(t, failingBD.declareStream("failed", 0), "stream failed")
+	assert.EqualError(t, failingBD.declareStream("failed", 0), "stream failed")
+	assert.False(t, failingBD.streamKnown("failed"))
 }
 
 func (m *streamConsumerMock) Close() error {
