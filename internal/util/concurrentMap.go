@@ -4,7 +4,6 @@
 package util
 
 import (
-	"fmt"
 	"sync"
 )
 
@@ -63,7 +62,6 @@ func (cm *ConcurrentMap) Get(key string) (interface{}, bool) {
 func (cm *ConcurrentMap) GetList() []string {
 	cm.RLock()
 	defer cm.RUnlock()
-	fmt.Printf("provider keys: %v\n", cm.items)
 	var items []string
 	for k := range cm.items {
 		items = append(items, k)

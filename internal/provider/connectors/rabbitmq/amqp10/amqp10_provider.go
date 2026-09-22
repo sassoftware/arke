@@ -27,7 +27,6 @@ type amqp10provider struct {
 }
 
 func init() {
-	fmt.Printf("Registering AMQP 1.0 provider: %s\n", providerName)
 	provider.Register(providerName, NewAMQP10Provider)
 }
 
