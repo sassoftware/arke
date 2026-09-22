@@ -111,7 +111,7 @@ func (prov *rabbitmqAmqp10provider) Connect(ctx context.Context, cf *pb.Connecti
 		tlsSkipVerify:    tlsSkipVerify,
 		ActiveStreams:    0,
 		lastPubSubEvent:  time.Now(),
-		shutdownChan:     make(chan bool, 1),
+		shutdownChan:     make(chan struct{}),
 		pubChannelCtx:    pubChCtx,
 		pubChannelCancel: pubChCancel,
 	}

@@ -69,7 +69,8 @@ type BrokerDetails struct {
 	tlsEnabled       bool
 
 	// TODO: Issue 204 - used by connection watcher and connection cleaner
-	shutdownChan chan bool
+	shutdownChan chan struct{}
+	shutdownOnce sync.Once
 
 	// watcherWG tracks the connectionWatcher goroutine so callers (notably
 	// tests) can wait for it to exit after a Disconnect, rather than letting
@@ -157,7 +158,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	}
 
 	bd.state.Store(provider.CONNECTING)
-	bd.shutdownChan = make(chan bool, 1)
+	bd.shutdownChan = make(chan struct{})
 
 	// Reinitialize these maps early, we especially want to
 	// ensure activeMessages gets cleared out before an Ack/Nacks
@@ -205,10 +206,9 @@ func (bd *BrokerDetails) disconnect() {
 	}
 
 	if bd.shutdownChan != nil {
-		select {
-		case bd.shutdownChan <- true:
-		default:
-		}
+		bd.shutdownOnce.Do(func() {
+			close(bd.shutdownChan)
+		})
 	}
 
 	// We don't call bd.Env.Close because all it does is close the connection, and
