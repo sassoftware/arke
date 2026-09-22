@@ -75,7 +75,7 @@ func (prov *amqp10provider) Connect(ctx context.Context, cf *pb.ConnectionConfig
 	var tlsConfig *tls.Config
 	if cf.GetTls() {
 		tlsConfig = &tls.Config{
-			InsecureSkipVerify: tlsSkipVerify, // nolint:gosec
+			InsecureSkipVerify: tlsSkipVerify, //nolint:gosec
 		}
 		caBundlePath := os.Getenv(trustedCerts)
 		if caBundlePath != "" {
