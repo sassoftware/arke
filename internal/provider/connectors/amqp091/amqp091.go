@@ -464,7 +464,7 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 
 	activeMessages := util.NewConcurrentMap()
 	pubChCtx := context.WithValue(context.Background(), CtxKey{name: "clientIdentifier"}, clientIdentifier)
-	pubChCtx, pubChCancel := context.WithCancel(pubChCtx) //nolint:gosec
+	pubChCtx, pubChCancel := context.WithCancel(pubChCtx)
 	// Allocate BrokerDetails as a pointer so closures and the connections map
 	// all share the same intentional heap object.  Previously, declaring bd as
 	// a value caused the compiler to detect 5 separate escape flows and emit 5

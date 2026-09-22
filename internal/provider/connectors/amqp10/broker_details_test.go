@@ -70,7 +70,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 		assert.True(t, conn.closeCalled)
 		assert.Equal(t, 1, conn.closeCount)
 		assert.Nil(t, bd.Connection)
-		assert.Equal(t, int32(provider.DISCONNECTED), bd.state.Load())
+		assert.Equal(t, provider.DISCONNECTED, bd.state.Load())
 		assert.True(t, bd.clientDisconnect.Load())
 		assert.ErrorIs(t, pubCtx.Err(), context.Canceled)
 	})
@@ -85,7 +85,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 		require.NotPanics(t, bd.disconnect)
 
 		assert.Nil(t, bd.Connection)
-		assert.Equal(t, int32(provider.DISCONNECTED), bd.state.Load())
+		assert.Equal(t, provider.DISCONNECTED, bd.state.Load())
 		assert.True(t, bd.clientDisconnect.Load())
 		assert.ErrorIs(t, pubCtx.Err(), context.Canceled)
 	})
@@ -101,7 +101,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 
 		assert.Equal(t, 1, conn.closeCount)
 		assert.Nil(t, bd.Connection)
-		assert.Equal(t, int32(provider.DISCONNECTED), bd.state.Load())
+		assert.Equal(t, provider.DISCONNECTED, bd.state.Load())
 	})
 
 	t.Run("close error still disconnects lifecycle", func(t *testing.T) {
@@ -114,12 +114,12 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 
 		assert.True(t, conn.closeCalled)
 		assert.Nil(t, bd.Connection)
-		assert.Equal(t, int32(provider.DISCONNECTED), bd.state.Load())
+		assert.Equal(t, provider.DISCONNECTED, bd.state.Load())
 		assert.True(t, bd.clientDisconnect.Load())
 	})
 
 	t.Run("already disconnected or closed broker details are noops", func(t *testing.T) {
-		states := []int32{provider.DISCONNECTED, provider.CLOSED}
+		states := []uint32{provider.DISCONNECTED, provider.CLOSED}
 		for _, state := range states {
 			conn := &amqp10ConnectionMock{}
 			bd := newTestBrokerDetails()
@@ -138,19 +138,19 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 
 func Test_BrokerDetails_waitWhileConnecting(t *testing.T) {
 	t.Run("returns immediately for terminal states", func(t *testing.T) {
-		states := []int32{provider.CONNECTED, provider.CLOSED, provider.DISCONNECTED}
+		states := []uint32{provider.CONNECTED, provider.CLOSED, provider.DISCONNECTED}
 		for _, state := range states {
 			bd := newTestBrokerDetails()
 			bd.state.Store(state)
 
-			assert.Equal(t, int32(state), bd.waitWhileConnecting())
+			assert.Equal(t, state, bd.waitWhileConnecting())
 		}
 	})
 
 	t.Run("waits for a connecting broker to become connected", func(t *testing.T) {
 		bd := newTestBrokerDetails()
 		bd.state.Store(provider.CONNECTING)
-		result := make(chan uint32, 1)
+		result := make(chan int, 1)
 
 		go func() {
 			result <- bd.waitWhileConnecting()
@@ -161,7 +161,7 @@ func Test_BrokerDetails_waitWhileConnecting(t *testing.T) {
 
 		select {
 		case got := <-result:
-			assert.Equal(t, uint32(provider.CONNECTED), got)
+			assert.Equal(t, provider.CONNECTED, got)
 		case <-time.After(time.Second):
 			t.Fatal("waitWhileConnecting did not return after connection state changed")
 		}
@@ -170,7 +170,7 @@ func Test_BrokerDetails_waitWhileConnecting(t *testing.T) {
 	t.Run("waits for a connecting broker to close", func(t *testing.T) {
 		bd := newTestBrokerDetails()
 		bd.state.Store(provider.CONNECTING)
-		result := make(chan uint32, 1)
+		result := make(chan int, 1)
 
 		go func() {
 			result <- bd.waitWhileConnecting()
@@ -181,7 +181,7 @@ func Test_BrokerDetails_waitWhileConnecting(t *testing.T) {
 
 		select {
 		case got := <-result:
-			assert.Equal(t, uint32(provider.CLOSED), got)
+			assert.Equal(t, provider.CLOSED, got)
 		case <-time.After(time.Second):
 			t.Fatal("waitWhileConnecting did not return after connection closed")
 		}

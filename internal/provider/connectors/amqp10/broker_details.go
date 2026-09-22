@@ -55,7 +55,7 @@ type BrokerDetails struct {
 	knownBindings    *util.ConcurrentMap
 	activeMessages   *util.ConcurrentMap
 
-	state        atomic.Int32
+	state        atomic.Uint32
 	stateChannel chan *rabbitmqamqp.StateChanged
 
 	connectionConfig *pb.ConnectionConfiguration
@@ -110,7 +110,7 @@ func (bd *BrokerDetails) decrementStreamCount() {
 	bd.updateLastPubSubEvent()
 }
 
-func (bd *BrokerDetails) waitWhileConnecting() uint32 {
+func (bd *BrokerDetails) waitWhileConnecting() int {
 	for start := time.Now(); time.Since(start) < 30*time.Second; {
 		switch bd.state.Load() {
 		case provider.CONNECTED:
