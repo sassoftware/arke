@@ -24,3 +24,14 @@ func Test_SupportedSourceOptions(t *testing.T) {
 
 	assert.Equal(t, expected, opts)
 }
+
+func Test_SupportedStreamSourceOptions(t *testing.T) {
+	assert.NotNil(t, supportedStreamSourceOptions)
+	expected := map[string]bool{
+		"Offset":        true,
+		"MessageTTL":    true,
+		"ConsumerGroup": true,
+	}
+
+	assert.Equal(t, expected, supportedStreamSourceOptions)
+}

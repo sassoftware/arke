@@ -11,6 +11,7 @@ var supportedSourceOptions = map[string]bool{
 	"Offset":            true,
 	"ConsumerGroup":     true,
 }
+var supportedStreamSourceOptions = map[string]bool{"Offset": true, "MessageTTL": true, "ConsumerGroup": true}
 
 // TODO - Issue 187 - Implement the remaining Provider methods and register the AMQP 1.0 provider.
 type amqp10provider struct{}
