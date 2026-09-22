@@ -36,17 +36,17 @@ type BrokerDetails struct {
 	// TODO: Issue 199 - it's not clear that pubChannelCtx/pubChannelCancel will
 	// 		be needed given how connections are managed.
 	// Ctx used by both pubChannels and pubPCChannels
-	pubChannelCtx context.Context
+	// pubChannelCtx context.Context
 
 	// Ctx cancellation function used by both pubChannels and pubPCChannels
-	pubChannelCancel context.CancelFunc
+	// pubChannelCancel context.CancelFunc
 
 	// TODO: Issue 199 - consider if blocking pool is the right approach for
 	//		managing publishers.
-	pubChannels   *util.BlockingPool
-	pubPCChannels *util.BlockingPool
+	// pubChannels   *util.BlockingPool
+	// pubPCChannels *util.BlockingPool
 
-	// TODO: Issue 187 - Create streamConnectionShim
+	// TODO: Issue 216 - Create streamConnectionShim
 	// StreamConnection streamConnectionShim
 
 	ClientIdentifier string
@@ -201,9 +201,6 @@ func (bd *BrokerDetails) disconnect() {
 	}
 
 	bd.clientDisconnect.Store(true)
-	if bd.pubChannelCancel != nil {
-		bd.pubChannelCancel()
-	}
 
 	if bd.shutdownChan != nil {
 		bd.shutdownOnce.Do(func() {

@@ -86,18 +86,14 @@ func (prov *rabbitmqAmqp10provider) Connect(ctx context.Context, cf *pb.Connecti
 			}
 		}
 	}
-	pubChCtx := context.WithValue(context.Background(), clientIdentifierCtxKey, clientIdentifier)
-	pubChCtx, pubChCancel := context.WithCancel(pubChCtx)
 	opts, err := getRabbitmqAmqp10ConnOptions(ctx, cf, tlsConfig)
 	if err != nil {
-		pubChCancel()
 		return &pb.Error{Message: err.Error()}
 	}
 	util.Logger.Debugf("Env options: %+v", opts)
 	connUrl := getConnURL(cf)
 	env, err := newRabbitmqAmqp10EnvironmentFunc(ctx, cf, tlsConfig, connUrl, opts)
 	if err != nil {
-		pubChCancel()
 		return &pb.Error{Message: err.Error()}
 	}
 	bd := &BrokerDetails{
@@ -112,12 +108,9 @@ func (prov *rabbitmqAmqp10provider) Connect(ctx context.Context, cf *pb.Connecti
 		ActiveStreams:    0,
 		lastPubSubEvent:  time.Now(),
 		shutdownChan:     make(chan struct{}),
-		pubChannelCtx:    pubChCtx,
-		pubChannelCancel: pubChCancel,
 	}
 	ok, err := bd.connect()
 	if !ok {
-		pubChCancel()
 		return &pb.Error{Message: err.Error()}
 	}
 

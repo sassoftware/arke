@@ -57,12 +57,9 @@ func newTestBrokerDetails() *BrokerDetails {
 
 func Test_BrokerDetails_disconnect(t *testing.T) {
 	t.Run("connected broker details disconnects lifecycle", func(t *testing.T) {
-		pubCtx, pubCancel := context.WithCancel(context.Background())
 		conn := &rabbitmqAmqp10ConnectionMock{}
 		bd := newTestBrokerDetails()
 		bd.Connection = conn
-		bd.pubChannelCtx = pubCtx
-		bd.pubChannelCancel = pubCancel
 		bd.state.Store(provider.CONNECTED)
 
 		bd.disconnect()
@@ -72,14 +69,10 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 		assert.Nil(t, bd.Connection)
 		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
 		assert.True(t, bd.clientDisconnect.Load())
-		assert.ErrorIs(t, pubCtx.Err(), context.Canceled)
 	})
 
 	t.Run("nil connection still disconnects lifecycle", func(t *testing.T) {
-		pubCtx, pubCancel := context.WithCancel(context.Background())
 		bd := newTestBrokerDetails()
-		bd.pubChannelCtx = pubCtx
-		bd.pubChannelCancel = pubCancel
 		bd.state.Store(provider.CONNECTED)
 
 		require.NotPanics(t, bd.disconnect)
@@ -87,7 +80,6 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 		assert.Nil(t, bd.Connection)
 		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
 		assert.True(t, bd.clientDisconnect.Load())
-		assert.ErrorIs(t, pubCtx.Err(), context.Canceled)
 	})
 
 	t.Run("disconnect is idempotent", func(t *testing.T) {

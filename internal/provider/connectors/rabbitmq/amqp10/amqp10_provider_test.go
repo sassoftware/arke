@@ -233,8 +233,7 @@ func Test_amqp10provider_Disconnect(t *testing.T) {
 		ctx, clientIdentifier := newTestProviderContext(t, "disconnect")
 		prov := newTestAMQP10Provider()
 		conn := &rabbitmqAmqp10ConnectionMock{}
-		pubCtx, pubCancel := context.WithCancel(context.Background())
-		bd := &BrokerDetails{ClientIdentifier: clientIdentifier, Connection: conn, pubChannelCtx: pubCtx, pubChannelCancel: pubCancel}
+		bd := &BrokerDetails{ClientIdentifier: clientIdentifier, Connection: conn}
 		bd.state.Store(provider.CONNECTED)
 		prov.connections.Add(clientIdentifier, bd)
 
@@ -243,7 +242,6 @@ func Test_amqp10provider_Disconnect(t *testing.T) {
 		assert.True(t, conn.closeCalled)
 		assert.False(t, prov.ClientExists(clientIdentifier))
 		assert.True(t, bd.clientDisconnect.Load())
-		assert.ErrorIs(t, pubCtx.Err(), context.Canceled)
 
 		// Second disconnect should not panic and should not close the connection again
 		prov.Disconnect(ctx)
