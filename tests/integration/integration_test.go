@@ -173,7 +173,6 @@ func defaultHandler(msg *pb.Message) (int, error) {
 	return 0, nil
 }
 
-// TODO: Issue 187 - pass in a message handler to control ack/nack
 func consumeMessages(conn *grpc.ClientConn, c pb.ConsumerClient, ctx context.Context, messages chan<- *pb.Message, done chan bool, clientConnected chan bool, source *pb.Source, handler MsgHandler, t *testing.T) error { //nolint
 
 	defer c.Disconnect(ctx, &pb.Empty{})
@@ -241,7 +240,7 @@ func consumeMessages(conn *grpc.ClientConn, c pb.ConsumerClient, ctx context.Con
 					return
 				}
 				message := resp.GetMsg()
-				// TODO: Issue 187 - err is not used inside this for loop except down
+				// TODO: err is not used inside this for loop except down
 				// below and it returns. I think it is safe to remove this code.
 				if err == io.EOF {
 					log.Panicf("error: %s", err.Error())
