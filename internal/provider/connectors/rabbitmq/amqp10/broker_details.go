@@ -79,23 +79,28 @@ type BrokerDetails struct {
 
 // TODO: Issue 204 - implement connection watcher to handle state changes and reconnections. See https://github.com/rabbitmq/rabbitmq-amqp-go-client/blob/101a3222e9e3b440b815286c1e5635595817fb6f/docs/examples/reliable/reliable.go#L80 for an example of how this should be implemented. See https://github.com/sassoftware/arke/blob/d386f6817d75e3e4964fe924345e1b6b5e243953/internal/provider/connectors/amqp091/amqp091.go#L1851-L1852 for existing logic to be handled. Below is a bare minimum for testing, so save the review for issue 204.
 func (bd *BrokerDetails) watchConnection() {
-	for change := range bd.stateChannel {
-		if change == nil || change.To == nil {
-			continue
-		}
+	for {
+		select {
+		case <-bd.shutdownChan:
+			return
+		case change, ok := <-bd.stateChannel:
+			if !ok || change == nil || change.To == nil {
+				return
+			}
 
-		switch change.To.(type) {
-		case *rabbitmqamqp.StateOpen:
-			bd.state.Store(provider.CONNECTED)
-		case *rabbitmqamqp.StateReconnecting:
-			bd.state.Store(provider.CONNECTING)
-		case *rabbitmqamqp.StateClosed:
-			bd.state.Store(provider.CLOSED)
-			return
-		case *rabbitmqamqp.StateClosing:
-			// TODO: Issue 204 - provider does not have a distinct CLOSING state, so we treat it as CLOSED (do we need a CLOSING state?)
-			bd.state.Store(provider.CLOSED)
-			return
+			switch change.To.(type) {
+			case *rabbitmqamqp.StateOpen:
+				bd.state.Store(provider.CONNECTED)
+			case *rabbitmqamqp.StateReconnecting:
+				bd.state.Store(provider.CONNECTING)
+			case *rabbitmqamqp.StateClosed:
+				bd.state.Store(provider.CLOSED)
+				return
+			case *rabbitmqamqp.StateClosing:
+				// TODO: Issue 204 - provider does not have a distinct CLOSING state, so we treat it as CLOSED (do we need a CLOSING state?)
+				bd.state.Store(provider.CLOSED)
+				return
+			}
 		}
 	}
 }
@@ -152,6 +157,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	}
 
 	bd.state.Store(provider.CONNECTING)
+	bd.shutdownChan = make(chan bool, 1)
 
 	// Reinitialize these maps early, we especially want to
 	// ensure activeMessages gets cleared out before an Ack/Nacks
@@ -196,6 +202,13 @@ func (bd *BrokerDetails) disconnect() {
 	bd.clientDisconnect.Store(true)
 	if bd.pubChannelCancel != nil {
 		bd.pubChannelCancel()
+	}
+
+	if bd.shutdownChan != nil {
+		select {
+		case bd.shutdownChan <- true:
+		default:
+		}
 	}
 
 	// We don't call bd.Env.Close because all it does is close the connection, and
