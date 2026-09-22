@@ -70,7 +70,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 		assert.True(t, conn.closeCalled)
 		assert.Equal(t, 1, conn.closeCount)
 		assert.Nil(t, bd.Connection)
-		assert.Equal(t, provider.DISCONNECTED, bd.state.Load())
+		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
 		assert.True(t, bd.clientDisconnect.Load())
 		assert.ErrorIs(t, pubCtx.Err(), context.Canceled)
 	})
@@ -85,7 +85,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 		require.NotPanics(t, bd.disconnect)
 
 		assert.Nil(t, bd.Connection)
-		assert.Equal(t, provider.DISCONNECTED, bd.state.Load())
+		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
 		assert.True(t, bd.clientDisconnect.Load())
 		assert.ErrorIs(t, pubCtx.Err(), context.Canceled)
 	})
@@ -101,7 +101,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 
 		assert.Equal(t, 1, conn.closeCount)
 		assert.Nil(t, bd.Connection)
-		assert.Equal(t, provider.DISCONNECTED, bd.state.Load())
+		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
 	})
 
 	t.Run("close error still disconnects lifecycle", func(t *testing.T) {
@@ -114,7 +114,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 
 		assert.True(t, conn.closeCalled)
 		assert.Nil(t, bd.Connection)
-		assert.Equal(t, provider.DISCONNECTED, bd.state.Load())
+		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
 		assert.True(t, bd.clientDisconnect.Load())
 	})
 
@@ -130,7 +130,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 
 			assert.Equal(t, 0, conn.closeCount)
 			assert.Same(t, conn, bd.Connection)
-			assert.Equal(t, state, bd.state.Load())
+			assert.Equal(t, uint32(state), bd.state.Load())
 			assert.False(t, bd.clientDisconnect.Load())
 		}
 	})
@@ -143,7 +143,7 @@ func Test_BrokerDetails_waitWhileConnecting(t *testing.T) {
 			bd := newTestBrokerDetails()
 			bd.state.Store(state)
 
-			assert.Equal(t, state, bd.waitWhileConnecting())
+			assert.Equal(t, int(state), bd.waitWhileConnecting())
 		}
 	})
 

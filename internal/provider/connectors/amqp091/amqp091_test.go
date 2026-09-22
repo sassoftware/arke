@@ -330,7 +330,7 @@ func TestConnect_TLS(t *testing.T) {
 			assert.Nil(t, err)
 
 			amock.AssertExpectations(t)
-			// TODO: Issue 187 - figure out a good way to get tlsConfig and see if the cert is set
+			// TODO: Figure out a good way to get tlsConfig and see if the cert is set
 		})
 	}
 }
