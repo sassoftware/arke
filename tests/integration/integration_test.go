@@ -657,7 +657,7 @@ func TestProduceOneFailsWithoutConnect(t *testing.T) {
 	assert.NotNil(t, err)
 	assert.Contains(t, err.Error(), "could not find client identifier")
 
-	// TODO: Issue 187 - Why is the MessageResponse nil?
+	// TODO: Why is the MessageResponse nil?
 	//assert.NotNil(t, resp)
 	//assert.False(t, resp.GetSuccess())
 	//assert.Contains(t, resp.GetError(), "Could not find client identifier")
