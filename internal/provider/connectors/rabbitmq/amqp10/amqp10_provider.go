@@ -21,24 +21,24 @@ const (
 	trustedCerts string = "ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE"
 )
 
-type amqp10provider struct {
+type rabbitmqAmqp10provider struct {
 	tlsConfig   *tls.Config
 	connections *util.ConcurrentMap
 }
 
 func init() {
-	provider.Register(providerName, NewAMQP10Provider)
+	provider.Register(providerName, NewRabbitmqAMQP10Provider)
 }
 
-func NewAMQP10Provider() provider.Provider {
-	prov := &amqp10provider{
+func NewRabbitmqAMQP10Provider() provider.Provider {
+	prov := &rabbitmqAmqp10provider{
 		connections: util.NewConcurrentMap(),
 	}
 
 	return prov
 }
 
-func (prov *amqp10provider) getBrokerDetails(ctx context.Context) (*BrokerDetails, error) {
+func (prov *rabbitmqAmqp10provider) getBrokerDetails(ctx context.Context) (*BrokerDetails, error) {
 	clientIdentifier, err := util.GetClientIdentifier(ctx)
 	if err != nil {
 		return nil, err
@@ -56,7 +56,7 @@ func (prov *amqp10provider) getBrokerDetails(ctx context.Context) (*BrokerDetail
 	return bd, nil
 }
 
-func (prov *amqp10provider) Connect(ctx context.Context, cf *pb.ConnectionConfiguration, tlsSkipVerify bool) *pb.Error {
+func (prov *rabbitmqAmqp10provider) Connect(ctx context.Context, cf *pb.ConnectionConfiguration, tlsSkipVerify bool) *pb.Error {
 	if cf == nil {
 		// TODO: Issue 187 - i18n
 		return &pb.Error{Message: "connection configuration is required"}
@@ -88,14 +88,14 @@ func (prov *amqp10provider) Connect(ctx context.Context, cf *pb.ConnectionConfig
 	}
 	pubChCtx := context.WithValue(context.Background(), clientIdentifierCtxKey, clientIdentifier)
 	pubChCtx, pubChCancel := context.WithCancel(pubChCtx)
-	opts, err := getAmqp10ConnOptions(ctx, cf, tlsConfig)
+	opts, err := getRabbitmqAmqp10ConnOptions(ctx, cf, tlsConfig)
 	if err != nil {
 		pubChCancel()
 		return &pb.Error{Message: err.Error()}
 	}
 	util.Logger.Debugf("Env options: %+v", opts)
 	connUrl := getConnURL(cf)
-	env, err := newAmqp10EnvironmentFunc(ctx, cf, tlsConfig, connUrl, opts)
+	env, err := newRabbitmqAmqp10EnvironmentFunc(ctx, cf, tlsConfig, connUrl, opts)
 	if err != nil {
 		pubChCancel()
 		return &pb.Error{Message: err.Error()}
@@ -126,41 +126,41 @@ func (prov *amqp10provider) Connect(ctx context.Context, cf *pb.ConnectionConfig
 	return nil
 }
 
-func (prov *amqp10provider) ClientExists(clientIdentifier string) bool {
+func (prov *rabbitmqAmqp10provider) ClientExists(clientIdentifier string) bool {
 	// TODO: Issue 201 - not sure anything else needs to be done here
 	_, ok := prov.connections.Get(clientIdentifier)
 	return ok
 }
 
-func (prov *amqp10provider) Publish(context.Context, <-chan *pb.Message, chan<- *pb.Error) *pb.Error {
+func (prov *rabbitmqAmqp10provider) Publish(context.Context, <-chan *pb.Message, chan<- *pb.Error) *pb.Error {
 	return nil
 }
 
-func (prov *amqp10provider) PublishOne(context.Context, *pb.Message) *pb.Error {
+func (prov *rabbitmqAmqp10provider) PublishOne(context.Context, *pb.Message) *pb.Error {
 	return nil
 }
 
-func (prov *amqp10provider) Subscribe(context.Context, *pb.Source, chan<- *pb.Message) *pb.Error {
+func (prov *rabbitmqAmqp10provider) Subscribe(context.Context, *pb.Source, chan<- *pb.Message) *pb.Error {
 	return nil
 }
 
-func (prov *amqp10provider) Ack(context.Context, string) *pb.Error {
+func (prov *rabbitmqAmqp10provider) Ack(context.Context, string) *pb.Error {
 	return nil
 }
 
-func (prov *amqp10provider) Nack(context.Context, string) *pb.Error {
+func (prov *rabbitmqAmqp10provider) Nack(context.Context, string) *pb.Error {
 	return nil
 }
 
-func (prov *amqp10provider) Retry(context.Context, *pb.Source, string, int32) *pb.Error {
+func (prov *rabbitmqAmqp10provider) Retry(context.Context, *pb.Source, string, int32) *pb.Error {
 	return nil
 }
 
-func (prov *amqp10provider) DeadLetter(context.Context, *pb.Source, string) *pb.Error {
+func (prov *rabbitmqAmqp10provider) DeadLetter(context.Context, *pb.Source, string) *pb.Error {
 	return nil
 }
 
-func (prov *amqp10provider) Disconnect(ctx context.Context) {
+func (prov *rabbitmqAmqp10provider) Disconnect(ctx context.Context) {
 	bd, err := prov.getBrokerDetails(ctx)
 	if err != nil {
 		return
@@ -170,11 +170,11 @@ func (prov *amqp10provider) Disconnect(ctx context.Context) {
 	prov.connections.DeleteIfEqual(bd.ClientIdentifier, bd)
 }
 
-func (prov *amqp10provider) SupportedSourceOptions() map[string]bool {
+func (prov *rabbitmqAmqp10provider) SupportedSourceOptions() map[string]bool {
 	return map[string]bool{}
 }
 
-func (prov *amqp10provider) WaitForConnect(ctx context.Context) bool {
+func (prov *rabbitmqAmqp10provider) WaitForConnect(ctx context.Context) bool {
 	bd, err := prov.getBrokerDetails(ctx)
 	if err != nil {
 		return false
@@ -206,12 +206,12 @@ func (prov *amqp10provider) WaitForConnect(ctx context.Context) bool {
 	return false
 }
 
-func (prov *amqp10provider) Stats() *provider.Stats {
+func (prov *rabbitmqAmqp10provider) Stats() *provider.Stats {
 	// TODO: Issue 193
 	return &provider.Stats{}
 }
 
-func (prov *amqp10provider) SourceStats(context.Context, *pb.Source) *pb.SourceStats {
+func (prov *rabbitmqAmqp10provider) SourceStats(context.Context, *pb.Source) *pb.SourceStats {
 	// TODO: Issue 193
 	return &pb.SourceStats{}
 }

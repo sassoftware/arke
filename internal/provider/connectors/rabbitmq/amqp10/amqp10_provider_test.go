@@ -18,22 +18,22 @@ import (
 	"google.golang.org/grpc/peer"
 )
 
-type amqp10ProviderAddr struct {
+type rabbitmqAmqp10ProviderAddr struct {
 	addr string
 }
 
-func (a amqp10ProviderAddr) Network() string {
+func (a rabbitmqAmqp10ProviderAddr) Network() string {
 	return "tcp"
 }
 
-func (a amqp10ProviderAddr) String() string {
+func (a rabbitmqAmqp10ProviderAddr) String() string {
 	return a.addr
 }
 
 func newTestProviderContext(t *testing.T, clientName string) (context.Context, string) {
 	t.Helper()
 
-	ctx := peer.NewContext(context.Background(), &peer.Peer{Addr: amqp10ProviderAddr{addr: fmt.Sprintf("%s-%d", clientName, time.Now().UnixNano())}})
+	ctx := peer.NewContext(context.Background(), &peer.Peer{Addr: rabbitmqAmqp10ProviderAddr{addr: fmt.Sprintf("%s-%d", clientName, time.Now().UnixNano())}})
 	clientIdentifier, err := util.SetClientIdentifier(ctx, clientName)
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -43,8 +43,8 @@ func newTestProviderContext(t *testing.T, clientName string) (context.Context, s
 	return ctx, clientIdentifier
 }
 
-func newTestAMQP10Provider() *amqp10provider {
-	return &amqp10provider{
+func newTestAMQP10Provider() *rabbitmqAmqp10provider {
+	return &rabbitmqAmqp10provider{
 		tlsConfig:   &tls.Config{},
 		connections: util.NewConcurrentMap(),
 	}
@@ -54,10 +54,10 @@ func Test_NewAMQP10Provider(t *testing.T) {
 	t.Run("initializes provider", func(t *testing.T) {
 		t.Setenv(trustedCerts, "")
 
-		prov := NewAMQP10Provider()
+		prov := NewRabbitmqAMQP10Provider()
 
-		require.IsType(t, &amqp10provider{}, prov)
-		amqp10Prov := prov.(*amqp10provider)
+		require.IsType(t, &rabbitmqAmqp10provider{}, prov)
+		amqp10Prov := prov.(*rabbitmqAmqp10provider)
 		assert.NotNil(t, amqp10Prov.connections)
 		assert.Equal(t, 0, amqp10Prov.connections.Length())
 	})
@@ -65,10 +65,10 @@ func Test_NewAMQP10Provider(t *testing.T) {
 	t.Run("ignores unreadable CA bundle", func(t *testing.T) {
 		t.Setenv(trustedCerts, "does-not-exist.pem")
 
-		prov := NewAMQP10Provider()
+		prov := NewRabbitmqAMQP10Provider()
 
-		require.IsType(t, &amqp10provider{}, prov)
-		amqp10Prov := prov.(*amqp10provider)
+		require.IsType(t, &rabbitmqAmqp10provider{}, prov)
+		amqp10Prov := prov.(*rabbitmqAmqp10provider)
 		assert.NotNil(t, amqp10Prov.connections)
 	})
 }
@@ -117,7 +117,7 @@ func Test_amqp10provider_getBrokerDetails(t *testing.T) {
 	})
 }
 
-type amqp10EnvironmentCall struct {
+type rabbitmqAmqp10EnvironmentCall struct {
 	ctx       context.Context
 	tlsConfig *tls.Config
 	cf        *pb.ConnectionConfiguration
@@ -125,21 +125,21 @@ type amqp10EnvironmentCall struct {
 	options   *rabbitmqamqp.AmqpConnOptions
 }
 
-func stubAmqp10Environment(t *testing.T) *amqp10EnvironmentCall {
+func stubAmqp10Environment(t *testing.T) *rabbitmqAmqp10EnvironmentCall {
 	t.Helper()
 
-	gotCall := &amqp10EnvironmentCall{}
-	originalNewAmqp10Environment := newAmqp10EnvironmentFunc
-	newAmqp10EnvironmentFunc = func(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config, connURL string, options *rabbitmqamqp.AmqpConnOptions) (amqp10EnvironmentShim, error) {
+	gotCall := &rabbitmqAmqp10EnvironmentCall{}
+	originalNewAmqp10Environment := newRabbitmqAmqp10EnvironmentFunc
+	newRabbitmqAmqp10EnvironmentFunc = func(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config, connURL string, options *rabbitmqamqp.AmqpConnOptions) (rabbitmqAmqp10EnvironmentShim, error) {
 		gotCall.ctx = ctx
 		gotCall.cf = cf
 		gotCall.tlsConfig = tlsConfig
 		gotCall.connURL = connURL
 		gotCall.options = options
-		return &amqp10EnvironmentMock{conn: &amqp10ConnectionMock{}}, nil
+		return &rabbitmqAmqp10EnvironmentMock{conn: &rabbitmqAmqp10ConnectionMock{}}, nil
 	}
 	t.Cleanup(func() {
-		newAmqp10EnvironmentFunc = originalNewAmqp10Environment
+		newRabbitmqAmqp10EnvironmentFunc = originalNewAmqp10Environment
 	})
 
 	return gotCall
@@ -232,7 +232,7 @@ func Test_amqp10provider_Disconnect(t *testing.T) {
 	t.Run("closes connection and removes matching broker details", func(t *testing.T) {
 		ctx, clientIdentifier := newTestProviderContext(t, "disconnect")
 		prov := newTestAMQP10Provider()
-		conn := &amqp10ConnectionMock{}
+		conn := &rabbitmqAmqp10ConnectionMock{}
 		pubCtx, pubCancel := context.WithCancel(context.Background())
 		bd := &BrokerDetails{ClientIdentifier: clientIdentifier, Connection: conn, pubChannelCtx: pubCtx, pubChannelCancel: pubCancel}
 		bd.state.Store(provider.CONNECTED)

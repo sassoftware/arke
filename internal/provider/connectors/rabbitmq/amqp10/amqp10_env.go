@@ -10,23 +10,23 @@ import (
 	"github.com/sassoftware/arke/internal/util"
 )
 
-var newAmqp10EnvironmentFunc = newAmqp10Environment
+var newRabbitmqAmqp10EnvironmentFunc = newRabbitmqAmqp10Environment
 
-type amqp10EnvironmentShim interface {
-	NewConnection(context.Context) (amqp10ConnectionShim, error)
+type rabbitmqAmqp10EnvironmentShim interface {
+	NewConnection(context.Context) (rabbitmqAmqp10ConnectionShim, error)
 	Close(context.Context) error
 }
 
-type amqp10Environment struct {
+type rabbitmqAmqp10Environment struct {
 	ctx              context.Context
 	environment      *rabbitmqamqp.Environment
 	connectionConfig *pb.ConnectionConfiguration
 	tlsConfig        *tls.Config
 }
 
-func newAmqp10Environment(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config, connURL string, options *rabbitmqamqp.AmqpConnOptions) (amqp10EnvironmentShim, error) {
+func newRabbitmqAmqp10Environment(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config, connURL string, options *rabbitmqamqp.AmqpConnOptions) (rabbitmqAmqp10EnvironmentShim, error) {
 	util.Logger.Debugf("Creating new AMQP 1.0 environment with URL: ->%s<-", connURL)
-	return &amqp10Environment{
+	return &rabbitmqAmqp10Environment{
 		ctx:              ctx,
 		connectionConfig: cf,
 		tlsConfig:        tlsConfig,
@@ -34,14 +34,14 @@ func newAmqp10Environment(ctx context.Context, cf *pb.ConnectionConfiguration, t
 	}, nil
 }
 
-func (e *amqp10Environment) NewConnection(ctx context.Context) (amqp10ConnectionShim, error) {
+func (e *rabbitmqAmqp10Environment) NewConnection(ctx context.Context) (rabbitmqAmqp10ConnectionShim, error) {
 	connCtx, connCancel := context.WithCancel(ctx)
 	conn, err := e.environment.NewConnection(connCtx)
 	if err != nil {
 		connCancel()
 		return nil, err
 	}
-	return &amqp10Connection{
+	return &rabbitmqAmqp10Connection{
 		connStr:          getConnURL(e.connectionConfig),
 		connection:       conn,
 		connectionCtx:    connCtx,
@@ -51,6 +51,6 @@ func (e *amqp10Environment) NewConnection(ctx context.Context) (amqp10Connection
 	}, nil
 }
 
-func (e *amqp10Environment) Close(ctx context.Context) error {
+func (e *rabbitmqAmqp10Environment) Close(ctx context.Context) error {
 	return e.environment.CloseConnections(e.ctx)
 }
