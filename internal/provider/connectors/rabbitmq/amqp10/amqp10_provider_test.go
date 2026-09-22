@@ -10,7 +10,7 @@ import (
 )
 
 func Test_SupportedSourceOptions(t *testing.T) {
-	prov := NewAMQP10Provider()
+	prov := NewRabbitMQProvider()
 	opts := prov.SupportedSourceOptions()
 	assert.NotNil(t, opts)
 	expected := map[string]bool{

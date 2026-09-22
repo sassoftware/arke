@@ -13,15 +13,15 @@ var supportedSourceOptions = map[string]bool{
 }
 var supportedStreamSourceOptions = map[string]bool{"Offset": true, "MessageTTL": true, "ConsumerGroup": true}
 
-// TODO - Issue 187 - Implement the remaining Provider methods and register the AMQP 1.0 provider.
-type amqp10provider struct{}
+// TODO - Issue 187 - Implement the remaining Provider methods and register the RabbitMQ provider.
+type rabbitMQProvider struct{}
 
-// NewAMQP10Provider returns an AMQP 1.0 provider instance.
-func NewAMQP10Provider() *amqp10provider {
-	return &amqp10provider{}
+// NewRabbitMQProvider returns a RabbitMQ provider instance.
+func NewRabbitMQProvider() *rabbitMQProvider {
+	return &rabbitMQProvider{}
 }
 
 // SupportedSourceOptions returns the source options supported by AMQP 1.0.
-func (prov *amqp10provider) SupportedSourceOptions() map[string]bool {
+func (prov *rabbitMQProvider) SupportedSourceOptions() map[string]bool {
 	return supportedSourceOptions
 }
