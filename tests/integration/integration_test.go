@@ -307,7 +307,9 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 	connectErr := prov.Connect(ctx, &connConfig, false)
 	require.Nil(t, connectErr, "provider connect failed: %v", connectErr)
 	assert.True(t, prov.ClientExists(clientIdentifier))
-
+	assert.Eventually(t, func() bool {
+		return prov.WaitForConnect(ctx)
+	}, 2*time.Second, 100*time.Millisecond)
 	prov.Disconnect(ctx)
 	assert.False(t, prov.ClientExists(clientIdentifier))
 }
