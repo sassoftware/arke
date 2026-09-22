@@ -21,9 +21,19 @@ import (
 
 	"github.com/google/uuid"
 	pb "github.com/sassoftware/arke/api"
+	"github.com/sassoftware/arke/internal/provider"
+
+	// TODO: Issue 187 - should not have to do this
+	_ "github.com/sassoftware/arke/internal/provider/connectors/amqp091"
+	_ "github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/amqp10"
+
+	"github.com/sassoftware/arke/internal/util"
+	cfg "github.com/sassoftware/arke/test/config"
 	mf "github.com/sassoftware/arke/test/messagefunctions"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/peer"
 	"gopkg.in/yaml.v2"
 )
 
@@ -52,6 +62,17 @@ func readCompose(composeFile string) (*ComposeFile, error) {
 		return nil, err
 	}
 	return &compose, nil
+}
+
+type mockPeerAddr struct {
+	clientAddr string
+}
+
+func (m mockPeerAddr) Network() string {
+	return "tcp"
+}
+func (m mockPeerAddr) String() string {
+	return m.clientAddr
 }
 
 func GetEnvMapFromList(nameEqualValue []string) map[string]string {
@@ -260,6 +281,36 @@ func consumeMessages(conn *grpc.ClientConn, c pb.ConsumerClient, ctx context.Con
 	wg.Wait()
 	done <- true
 	return err
+}
+
+func Test_ProviderConnectsToBroker(t *testing.T) {
+	hostname := os.Getenv("ARKE_BROKER_HOSTNAME")
+	if hostname == "" {
+		hostname = "localhost"
+	}
+	t.Setenv("ARKE_BROKER_HOSTNAME", hostname)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	clientAddr := fmt.Sprintf("test-connect-integration-%d", time.Now().UnixNano())
+	ctx = peer.NewContext(ctx, &peer.Peer{Addr: mockPeerAddr{clientAddr: clientAddr}})
+
+	clientIdentifier, err := util.SetClientIdentifier(ctx, "test-connect-integration")
+	require.NoError(t, err)
+	defer util.RemoveClientIdentifier(ctx)
+
+	connConfig := cfg.ConnectionConfigurationFromEnv()
+	t.Logf("cf: %+v", connConfig)
+	connConfig.ClientName = clientIdentifier
+	prov, err := provider.NewProvider(cfg.ConnectionConfigurationFromEnv().Provider)
+	require.NoError(t, err)
+
+	connectErr := prov.Connect(ctx, &connConfig, false)
+	require.Nil(t, connectErr, "provider connect failed: %v", connectErr)
+	assert.True(t, prov.ClientExists(clientIdentifier))
+
+	prov.Disconnect(ctx)
+	assert.False(t, prov.ClientExists(clientIdentifier))
 }
 
 func TestProduceTwoStreamConsumeTwoCompressed(t *testing.T) {

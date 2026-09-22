@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	providerName string = "amqp10"
+	providerName string = "rabbitmq-amqp10"
 	trustedCerts string = "ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE"
 )
 
@@ -27,6 +27,7 @@ type amqp10provider struct {
 }
 
 func init() {
+	fmt.Printf("Registering AMQP 1.0 provider: %s\n", providerName)
 	provider.Register(providerName, NewAMQP10Provider)
 }
 
