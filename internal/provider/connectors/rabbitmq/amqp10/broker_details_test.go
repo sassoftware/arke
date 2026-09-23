@@ -10,34 +10,9 @@ import (
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/internal/provider"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
-
-type rabbitmqAmqp10ConnectionMock struct {
-	closeCalled bool
-	closeCount  int
-	closeCtx    context.Context
-	closeErr    error
-}
-
-func (m *rabbitmqAmqp10ConnectionMock) Close(ctx context.Context) error {
-	m.closeCalled = true
-	m.closeCount++
-	m.closeCtx = ctx
-	return m.closeErr
-}
-
-func (m *rabbitmqAmqp10ConnectionMock) WatchConnection(_ chan *rabbitmqamqp.StateChanged) {
-	// Mock implementation does nothing
-}
-
-func (m *rabbitmqAmqp10ConnectionMock) IsClosed() bool {
-	return false
-}
-
-func (m *rabbitmqAmqp10ConnectionMock) State() int {
-	return 0
-}
 
 func newTestBrokerDetails() *BrokerDetails {
 	return &BrokerDetails{
@@ -59,13 +34,13 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 	t.Run("connected broker details disconnects lifecycle", func(t *testing.T) {
 		conn := &rabbitmqAmqp10ConnectionMock{}
 		bd := newTestBrokerDetails()
+		conn.On("Close", bd.ctx).Return(nil).Once()
 		bd.Connection = conn
 		bd.state.Store(provider.CONNECTED)
 
 		bd.disconnect()
 
-		assert.True(t, conn.closeCalled)
-		assert.Equal(t, 1, conn.closeCount)
+		conn.AssertExpectations(t)
 		assert.Nil(t, bd.Connection)
 		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
 		assert.True(t, bd.clientDisconnect.Load())
@@ -85,26 +60,28 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 	t.Run("disconnect is idempotent", func(t *testing.T) {
 		conn := &rabbitmqAmqp10ConnectionMock{}
 		bd := newTestBrokerDetails()
+		conn.On("Close", bd.ctx).Return(nil).Once()
 		bd.Connection = conn
 		bd.state.Store(provider.CONNECTED)
 
 		bd.disconnect()
 		bd.disconnect()
 
-		assert.Equal(t, 1, conn.closeCount)
+		conn.AssertExpectations(t)
 		assert.Nil(t, bd.Connection)
 		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
 	})
 
 	t.Run("close error still disconnects lifecycle", func(t *testing.T) {
-		conn := &rabbitmqAmqp10ConnectionMock{closeErr: errors.New("close failed")}
+		conn := &rabbitmqAmqp10ConnectionMock{}
 		bd := newTestBrokerDetails()
+		conn.On("Close", bd.ctx).Return(errors.New("close failed")).Once()
 		bd.Connection = conn
 		bd.state.Store(provider.CONNECTED)
 
 		bd.disconnect()
 
-		assert.True(t, conn.closeCalled)
+		conn.AssertExpectations(t)
 		assert.Nil(t, bd.Connection)
 		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
 		assert.True(t, bd.clientDisconnect.Load())
@@ -120,7 +97,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 
 			bd.disconnect()
 
-			assert.Equal(t, 0, conn.closeCount)
+			conn.AssertNotCalled(t, "Close", mock.Anything)
 			assert.Same(t, conn, bd.Connection)
 			assert.Equal(t, state, bd.state.Load())
 			assert.False(t, bd.clientDisconnect.Load())

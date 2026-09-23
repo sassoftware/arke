@@ -18,10 +18,11 @@ type rabbitmqAmqp10EnvironmentShim interface {
 }
 
 type rabbitmqAmqp10Environment struct {
-	ctx              context.Context
-	environment      *rabbitmqamqp.Environment
-	connectionConfig *pb.ConnectionConfiguration
-	tlsConfig        *tls.Config
+	rabbitmqAmqp10EnvironmentShim //nolint:unused
+	ctx                           context.Context
+	environment                   *rabbitmqamqp.Environment
+	connectionConfig              *pb.ConnectionConfiguration
+	tlsConfig                     *tls.Config
 }
 
 func newRabbitmqAmqp10Environment(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config, connURL string, options *rabbitmqamqp.AmqpConnOptions) (rabbitmqAmqp10EnvironmentShim, error) {

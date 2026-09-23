@@ -14,6 +14,7 @@ import (
 	"github.com/sassoftware/arke/internal/provider"
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/peer"
 )
@@ -129,6 +130,10 @@ func stubAmqp10Environment(t *testing.T) *rabbitmqAmqp10EnvironmentCall {
 	t.Helper()
 
 	gotCall := &rabbitmqAmqp10EnvironmentCall{}
+	conn := &rabbitmqAmqp10ConnectionMock{}
+	conn.On("WatchConnection", mock.Anything).Return().Once()
+	env := &rabbitmqAmqp10EnvironmentMock{}
+	env.On("NewConnection", mock.Anything).Return(conn, nil).Once()
 	originalNewAmqp10Environment := newRabbitmqAmqp10EnvironmentFunc
 	newRabbitmqAmqp10EnvironmentFunc = func(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config, connURL string, options *rabbitmqamqp.AmqpConnOptions) (rabbitmqAmqp10EnvironmentShim, error) {
 		gotCall.ctx = ctx
@@ -136,10 +141,12 @@ func stubAmqp10Environment(t *testing.T) *rabbitmqAmqp10EnvironmentCall {
 		gotCall.tlsConfig = tlsConfig
 		gotCall.connURL = connURL
 		gotCall.options = options
-		return &rabbitmqAmqp10EnvironmentMock{conn: &rabbitmqAmqp10ConnectionMock{}}, nil
+		return env, nil
 	}
 	t.Cleanup(func() {
 		newRabbitmqAmqp10EnvironmentFunc = originalNewAmqp10Environment
+		conn.AssertExpectations(t)
+		env.AssertExpectations(t)
 	})
 
 	return gotCall
@@ -233,20 +240,21 @@ func Test_amqp10provider_Disconnect(t *testing.T) {
 		ctx, clientIdentifier := newTestProviderContext(t, "disconnect")
 		prov := newTestAMQP10Provider()
 		conn := &rabbitmqAmqp10ConnectionMock{}
-		bd := &BrokerDetails{ClientIdentifier: clientIdentifier, Connection: conn}
+		conn.On("Close", ctx).Return(nil).Once()
+		bd := &BrokerDetails{ctx: ctx, ClientIdentifier: clientIdentifier, Connection: conn}
 		bd.state.Store(provider.CONNECTED)
 		prov.connections.Add(clientIdentifier, bd)
 
 		prov.Disconnect(ctx)
 
-		assert.True(t, conn.closeCalled)
+		conn.AssertExpectations(t)
 		assert.False(t, prov.ClientExists(clientIdentifier))
 		assert.True(t, bd.clientDisconnect.Load())
 
 		// Second disconnect should not panic and should not close the connection again
 		prov.Disconnect(ctx)
 
-		assert.Equal(t, 1, conn.closeCount)
+		conn.AssertNumberOfCalls(t, "Close", 1)
 		assert.False(t, prov.ClientExists(clientIdentifier))
 	})
 }

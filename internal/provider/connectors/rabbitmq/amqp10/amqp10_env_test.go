@@ -10,29 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type rabbitmqAmqp10EnvironmentMock struct {
-	newConnectionCalled bool
-	newConnectionCtx    context.Context
-	conn                rabbitmqAmqp10ConnectionShim
-	err                 error
-}
-
-func (m *rabbitmqAmqp10EnvironmentMock) NewConnection(ctx context.Context) (rabbitmqAmqp10ConnectionShim, error) {
-	m.newConnectionCalled = true
-	m.newConnectionCtx = ctx
-	return m.conn, m.err
-}
-
-func (m *rabbitmqAmqp10EnvironmentMock) WatchConnection(ch chan *rabbitmqamqp.StateChanged) {
-	if m.conn != nil {
-		m.conn.WatchConnection(ch)
-	}
-}
-
-func (m *rabbitmqAmqp10EnvironmentMock) Close(ctx context.Context) error {
-	return nil
-}
-
 func Test_newRabbitmqAmqp10Environment(t *testing.T) {
 	ctx := context.Background()
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}

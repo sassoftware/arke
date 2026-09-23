@@ -22,14 +22,15 @@ type rabbitmqAmqp10ConnectionShim interface {
 
 // rabbitmqAmqp10Connection A connection to the broker
 type rabbitmqAmqp10Connection struct {
-	provider         provider.Provider
-	connStr          string
-	connection       *ramqp.AmqpConnection
-	connectionCtx    context.Context
-	connectionCancel context.CancelFunc
-	tlsCfg           *tls.Config
-	state            int
-	stateChannel     chan *ramqp.StateChanged
+	rabbitmqAmqp10ConnectionShim //nolint:unused
+	provider                     provider.Provider
+	connStr                      string
+	connection                   *ramqp.AmqpConnection
+	connectionCtx                context.Context
+	connectionCancel             context.CancelFunc
+	tlsCfg                       *tls.Config
+	state                        int
+	stateChannel                 chan *ramqp.StateChanged
 }
 
 func getRabbitmqAmqp10ConnOptions(ctx context.Context, cf *pb.ConnectionConfiguration, tlsCfg *tls.Config) (*ramqp.AmqpConnOptions, error) {
