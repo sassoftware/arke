@@ -65,13 +65,21 @@ func (prov *rabbitmqAmqp10provider) Connect(ctx context.Context, cf *pb.Connecti
 		return &pb.Error{Message: "connection configuration is required"}
 	}
 
+	if cf.GetCredentials() == nil {
+		return &pb.Error{Message: "missing broker credentials"}
+	}
+
 	clientIdentifier, err := util.GetClientIdentifier(ctx)
 	if err != nil {
+		util.Logger.Warn(i18n.NoClientUUIDError, err.Error())
 		return &pb.Error{Message: err.Error()}
 	}
 
-	if cf.GetCredentials() == nil {
-		return &pb.Error{Message: "missing broker credentials"}
+	// Check if we already have an active connection for this client
+	bd := prov.getBrokerDetailsByIdentifier(clientIdentifier)
+	if bd != nil && bd.Connection != nil && !bd.Connection.IsClosed() {
+		util.Logger.Debugf("client already connected: %s", clientIdentifier)
+		return nil
 	}
 
 	var tlsConfig *tls.Config
@@ -98,7 +106,7 @@ func (prov *rabbitmqAmqp10provider) Connect(ctx context.Context, cf *pb.Connecti
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
-	bd := &BrokerDetails{
+	bd = &BrokerDetails{
 		ctx:              ctx,
 		provider:         prov,
 		Env:              env,
@@ -182,6 +190,12 @@ func (prov *rabbitmqAmqp10provider) WaitForConnect(ctx context.Context) bool {
 	defer bd.decrementStreamCount()
 
 	for start := time.Now(); time.Since(start) < provider.CONNECTTIMEOUT*time.Second; {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+		}
+
 		if bd.state.Load() == provider.CONNECTED {
 			util.Logger.Info(i18n.ClientConnected, bd.ClientIdentifier)
 			return true

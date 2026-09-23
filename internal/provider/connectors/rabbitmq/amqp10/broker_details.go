@@ -64,8 +64,11 @@ type BrokerDetails struct {
 	consumed         int64
 	produced         int64
 	clientDisconnect atomic.Bool
-	lastPubSubEvent  time.Time
-	tlsEnabled       bool
+
+	lastPubSubEvent      time.Time
+	lastPubSubEventMutex sync.Mutex
+
+	tlsEnabled bool
 
 	// TODO: Issue 204 - used by connection watcher and connection cleaner
 	shutdownChan chan struct{}
@@ -106,7 +109,8 @@ func (bd *BrokerDetails) watchConnection() {
 }
 
 func (bd *BrokerDetails) updateLastPubSubEvent() {
-	// TODO: Issue 187 - Should this be protected by a mutex?
+	bd.lastPubSubEventMutex.Lock()
+	defer bd.lastPubSubEventMutex.Unlock()
 	bd.lastPubSubEvent = time.Now()
 }
 
@@ -210,9 +214,6 @@ func (bd *BrokerDetails) disconnect() {
 	// We don't call bd.Env.Close because all it does is close the connection, and
 	// we have a connection shim. The shim will do other stuff in addition to closing
 	// the actual connection.
-	//
-	// We also leave b.Env alone because it's just a factory for new connections
-	// and does not have any sort of actual connection to the broker.
 	if bd.Connection != nil {
 		err := bd.Connection.Close(bd.ctx)
 		if err != nil {
