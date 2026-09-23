@@ -4,6 +4,7 @@
 package track
 
 import (
+	"strconv"
 	"sync"
 	"testing"
 
@@ -50,7 +51,7 @@ func TestTrackerConcurrentAccess(t *testing.T) {
 		go func(worker int) {
 			defer waitGroup.Done()
 			for iteration := 0; iteration < iterations; iteration++ {
-				name := string(rune(worker)) + string(rune(iteration))
+				name := strconv.Itoa(worker) + "-" + strconv.Itoa(iteration)
 				tracker.AddExchange(name)
 				tracker.AddQueue(name)
 				tracker.AddStream(name)
