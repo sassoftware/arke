@@ -46,7 +46,6 @@ func newTestProviderContext(t *testing.T, clientName string) (context.Context, s
 
 func newTestAMQP10Provider() *rabbitmqAmqp10provider {
 	return &rabbitmqAmqp10provider{
-		tlsConfig:   &tls.Config{},
 		connections: util.NewConcurrentMap(),
 	}
 }
@@ -103,18 +102,22 @@ func Test_amqp10provider_getBrokerDetails(t *testing.T) {
 		got, err := prov.getBrokerDetails(ctx)
 
 		assert.Nil(t, got)
-		assert.EqualError(t, err, fmt.Sprintf("broker details not found for client identifier: %s", clientIdentifier))
+		assert.EqualError(t, err, fmt.Sprintf("Broker details not found for client identifier: %s", clientIdentifier))
 	})
 
-	t.Run("returns error when broker details have wrong type", func(t *testing.T) {
-		ctx, clientIdentifier := newTestProviderContext(t, "invalid-broker-details")
-		prov := newTestAMQP10Provider()
-		prov.connections.Add(clientIdentifier, "not broker details")
+}
 
-		got, err := prov.getBrokerDetails(ctx)
+func Test_amqp10provider_getBrokerDetailsByIdentifier(t *testing.T) {
+	prov := newTestAMQP10Provider()
+	brokerDetails := &BrokerDetails{ClientIdentifier: "client"}
+	prov.connections.Add("client", brokerDetails)
 
-		assert.Nil(t, got)
-		assert.EqualError(t, err, fmt.Sprintf("invalid broker details type for client identifier: %s", clientIdentifier))
+	t.Run("returns broker details for an existing identifier", func(t *testing.T) {
+		assert.Same(t, brokerDetails, prov.getBrokerDetailsByIdentifier("client"))
+	})
+
+	t.Run("returns nil for a missing identifier", func(t *testing.T) {
+		assert.Nil(t, prov.getBrokerDetailsByIdentifier("missing"))
 	})
 }
 
@@ -126,7 +129,7 @@ type rabbitmqAmqp10EnvironmentCall struct {
 	options   *rabbitmqamqp.AmqpConnOptions
 }
 
-func stubAmqp10Environment(t *testing.T) *rabbitmqAmqp10EnvironmentCall {
+func mockSpyAmqp10Environment(t *testing.T) *rabbitmqAmqp10EnvironmentCall {
 	t.Helper()
 
 	gotCall := &rabbitmqAmqp10EnvironmentCall{}
@@ -166,7 +169,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		ctx, _ := newTestProviderContext(t, "connect-non-tls")
 		prov := newTestAMQP10Provider()
 		config := newTestConnectionConfig()
-		gotCall := stubAmqp10Environment(t)
+		gotCall := mockSpyAmqp10Environment(t)
 
 		err := prov.Connect(ctx, config, true)
 
@@ -179,7 +182,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		prov := newTestAMQP10Provider()
 		config := newTestConnectionConfig()
 		config.Tls = true
-		gotCall := stubAmqp10Environment(t)
+		gotCall := mockSpyAmqp10Environment(t)
 
 		err := prov.Connect(ctx, config, false)
 
@@ -193,7 +196,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		prov := newTestAMQP10Provider()
 		config := newTestConnectionConfig()
 		config.Tls = true
-		gotCall := stubAmqp10Environment(t)
+		gotCall := mockSpyAmqp10Environment(t)
 
 		err := prov.Connect(ctx, config, true)
 
@@ -208,7 +211,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		prov := newTestAMQP10Provider()
 		config := newTestConnectionConfig()
 		config.Tls = true
-		gotCall := stubAmqp10Environment(t)
+		gotCall := mockSpyAmqp10Environment(t)
 
 		err := prov.Connect(ctx, config, false)
 

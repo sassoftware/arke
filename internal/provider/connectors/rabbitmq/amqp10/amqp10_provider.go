@@ -22,7 +22,6 @@ const (
 )
 
 type rabbitmqAmqp10provider struct {
-	tlsConfig   *tls.Config
 	connections *util.ConcurrentMap
 }
 
@@ -41,24 +40,28 @@ func NewRabbitmqAMQP10Provider() provider.Provider {
 func (prov *rabbitmqAmqp10provider) getBrokerDetails(ctx context.Context) (*BrokerDetails, error) {
 	clientIdentifier, err := util.GetClientIdentifier(ctx)
 	if err != nil {
+		util.Logger.Warn(i18n.NoClientUUIDError, err.Error())
 		return nil, err
 	}
-	bdInterface, ok := prov.connections.Get(clientIdentifier)
-	if !ok {
-		// TODO: Issue 187 - i18n
-		return nil, fmt.Errorf("broker details not found for client identifier: %s", clientIdentifier)
+	if bd := prov.getBrokerDetailsByIdentifier(clientIdentifier); bd != nil {
+		return bd, nil
 	}
-	bd, ok := bdInterface.(*BrokerDetails)
-	if !ok {
-		// TODO: Issue 187 - i18n
-		return nil, fmt.Errorf("invalid broker details type for client identifier: %s", clientIdentifier)
+
+	return nil, fmt.Errorf("Broker details not found for client identifier: %s", clientIdentifier)
+}
+
+func (prov *rabbitmqAmqp10provider) getBrokerDetailsByIdentifier(clientIdentifier string) *BrokerDetails {
+	if bd, ok := prov.connections.Get(clientIdentifier); ok {
+		brokerDetails, ok := bd.(*BrokerDetails)
+		if ok {
+			return brokerDetails
+		}
 	}
-	return bd, nil
+	return nil
 }
 
 func (prov *rabbitmqAmqp10provider) Connect(ctx context.Context, cf *pb.ConnectionConfiguration, tlsSkipVerify bool) *pb.Error {
 	if cf == nil {
-		// TODO: Issue 187 - i18n
 		return &pb.Error{Message: "connection configuration is required"}
 	}
 
@@ -68,7 +71,6 @@ func (prov *rabbitmqAmqp10provider) Connect(ctx context.Context, cf *pb.Connecti
 	}
 
 	if cf.GetCredentials() == nil {
-		// TODO: Issue 187 - i18n
 		return &pb.Error{Message: "missing broker credentials"}
 	}
 

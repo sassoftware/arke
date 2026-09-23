@@ -3,7 +3,6 @@ package amqp10
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -217,8 +216,7 @@ func (bd *BrokerDetails) disconnect() {
 	if bd.Connection != nil {
 		err := bd.Connection.Close(bd.ctx)
 		if err != nil {
-			// TODO: Issue 187 - i18n
-			util.Logger.Warn(fmt.Sprintf("Error closing connection for client %s: %s", bd.ClientIdentifier, err.Error()))
+			util.Logger.Warn(i18n.ErrorClosingConnection, bd.ClientIdentifier, err.Error())
 		}
 		bd.Connection = nil
 	}

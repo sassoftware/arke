@@ -88,4 +88,5 @@ const (
 	InvalidMaxAge                    = BundleID + ".warn.invalidMaxAge.log"
 	InvalidRefillInterval            = BundleID + ".warn.invalidRefillInterval.log"
 	HPAScaled                        = BundleID + ".info.hpaScaled.log"
+	ErrorClosingConnection           = BundleID + ".error.errorClosingConnection.log"
 )
