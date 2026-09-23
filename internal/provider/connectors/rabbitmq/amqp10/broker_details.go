@@ -19,13 +19,13 @@ type BrokerDetails struct {
 	sync.Mutex
 	ctx      context.Context
 	provider provider.Provider
-	Env      rabbitmqAmqp10EnvironmentShim
+	Env      rabbitMQAMQP10EnvironmentShim
 
 	// TODO: The only _real_ reason broker details needs a connection is for
 	// management (conn.Management()). Otherwise the connection could just
 	// expose the methods brokerdetails needs, like state, etc., and Env can
 	// manage closing it.
-	Connection rabbitmqAmqp10ConnectionShim
+	Connection rabbitMQAMQP10ConnectionShim
 
 	// TODO: Issue 199 - do we need to shim the publisher?
 	// 		publisher needs to check connection lifecycle state before doing

@@ -19,22 +19,22 @@ import (
 	"google.golang.org/grpc/peer"
 )
 
-type rabbitmqAmqp10ProviderAddr struct {
+type rabbitMQAMQP10ProviderAddr struct {
 	addr string
 }
 
-func (a rabbitmqAmqp10ProviderAddr) Network() string {
+func (a rabbitMQAMQP10ProviderAddr) Network() string {
 	return "tcp"
 }
 
-func (a rabbitmqAmqp10ProviderAddr) String() string {
+func (a rabbitMQAMQP10ProviderAddr) String() string {
 	return a.addr
 }
 
 func newTestProviderContext(t *testing.T, clientName string) (context.Context, string) {
 	t.Helper()
 
-	ctx := peer.NewContext(context.Background(), &peer.Peer{Addr: rabbitmqAmqp10ProviderAddr{addr: fmt.Sprintf("%s-%d", clientName, time.Now().UnixNano())}})
+	ctx := peer.NewContext(context.Background(), &peer.Peer{Addr: rabbitMQAMQP10ProviderAddr{addr: fmt.Sprintf("%s-%d", clientName, time.Now().UnixNano())}})
 	clientIdentifier, err := util.SetClientIdentifier(ctx, clientName)
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -44,8 +44,8 @@ func newTestProviderContext(t *testing.T, clientName string) (context.Context, s
 	return ctx, clientIdentifier
 }
 
-func newTestAMQP10Provider() *rabbitmqAmqp10provider {
-	return &rabbitmqAmqp10provider{
+func newTestRabbitMQAMQP10Provider() *rabbitMQAMQP10provider {
+	return &rabbitMQAMQP10provider{
 		connections: util.NewConcurrentMap(),
 	}
 }
@@ -54,10 +54,10 @@ func Test_NewAMQP10Provider(t *testing.T) {
 	t.Run("initializes provider", func(t *testing.T) {
 		t.Setenv(trustedCerts, "")
 
-		prov := NewRabbitmqAMQP10Provider()
+		prov := NewRabbitMQAMQP10Provider()
 
-		require.IsType(t, &rabbitmqAmqp10provider{}, prov)
-		amqp10Prov := prov.(*rabbitmqAmqp10provider)
+		require.IsType(t, &rabbitMQAMQP10provider{}, prov)
+		amqp10Prov := prov.(*rabbitMQAMQP10provider)
 		assert.NotNil(t, amqp10Prov.connections)
 		assert.Equal(t, 0, amqp10Prov.connections.Length())
 	})
@@ -65,10 +65,10 @@ func Test_NewAMQP10Provider(t *testing.T) {
 	t.Run("ignores unreadable CA bundle", func(t *testing.T) {
 		t.Setenv(trustedCerts, "does-not-exist.pem")
 
-		prov := NewRabbitmqAMQP10Provider()
+		prov := NewRabbitMQAMQP10Provider()
 
-		require.IsType(t, &rabbitmqAmqp10provider{}, prov)
-		amqp10Prov := prov.(*rabbitmqAmqp10provider)
+		require.IsType(t, &rabbitMQAMQP10provider{}, prov)
+		amqp10Prov := prov.(*rabbitMQAMQP10provider)
 		assert.NotNil(t, amqp10Prov.connections)
 	})
 }
@@ -76,7 +76,7 @@ func Test_NewAMQP10Provider(t *testing.T) {
 func Test_amqp10provider_getBrokerDetails(t *testing.T) {
 	t.Run("returns broker details for client identifier", func(t *testing.T) {
 		ctx, clientIdentifier := newTestProviderContext(t, "get-broker-details")
-		prov := newTestAMQP10Provider()
+		prov := newTestRabbitMQAMQP10Provider()
 		bd := &BrokerDetails{ClientIdentifier: clientIdentifier}
 		prov.connections.Add(clientIdentifier, bd)
 
@@ -87,7 +87,7 @@ func Test_amqp10provider_getBrokerDetails(t *testing.T) {
 	})
 
 	t.Run("returns error when client identifier is missing", func(t *testing.T) {
-		prov := newTestAMQP10Provider()
+		prov := newTestRabbitMQAMQP10Provider()
 
 		got, err := prov.getBrokerDetails(context.Background())
 
@@ -97,7 +97,7 @@ func Test_amqp10provider_getBrokerDetails(t *testing.T) {
 
 	t.Run("returns error when broker details are missing", func(t *testing.T) {
 		ctx, clientIdentifier := newTestProviderContext(t, "missing-broker-details")
-		prov := newTestAMQP10Provider()
+		prov := newTestRabbitMQAMQP10Provider()
 
 		got, err := prov.getBrokerDetails(ctx)
 
@@ -108,7 +108,7 @@ func Test_amqp10provider_getBrokerDetails(t *testing.T) {
 }
 
 func Test_amqp10provider_getBrokerDetailsByIdentifier(t *testing.T) {
-	prov := newTestAMQP10Provider()
+	prov := newTestRabbitMQAMQP10Provider()
 	brokerDetails := &BrokerDetails{ClientIdentifier: "client"}
 	prov.connections.Add("client", brokerDetails)
 
@@ -121,7 +121,7 @@ func Test_amqp10provider_getBrokerDetailsByIdentifier(t *testing.T) {
 	})
 }
 
-type rabbitmqAmqp10EnvironmentCall struct {
+type rabbitMQAMQP10EnvironmentCall struct {
 	ctx       context.Context
 	tlsConfig *tls.Config
 	cf        *pb.ConnectionConfiguration
@@ -129,16 +129,16 @@ type rabbitmqAmqp10EnvironmentCall struct {
 	options   *rabbitmqamqp.AmqpConnOptions
 }
 
-func mockSpyAmqp10Environment(t *testing.T) *rabbitmqAmqp10EnvironmentCall {
+func mockSpyAmqp10Environment(t *testing.T) *rabbitMQAMQP10EnvironmentCall {
 	t.Helper()
 
-	gotCall := &rabbitmqAmqp10EnvironmentCall{}
-	conn := &rabbitmqAmqp10ConnectionMock{}
+	gotCall := &rabbitMQAMQP10EnvironmentCall{}
+	conn := &rabbitMQAMQP10ConnectionMock{}
 	conn.On("WatchConnection", mock.Anything).Return().Once()
-	env := &rabbitmqAmqp10EnvironmentMock{}
+	env := &rabbitMQAMQP10EnvironmentMock{}
 	env.On("NewConnection", mock.Anything).Return(conn, nil).Once()
-	originalNewAmqp10Environment := newRabbitmqAmqp10EnvironmentFunc
-	newRabbitmqAmqp10EnvironmentFunc = func(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config, connURL string, options *rabbitmqamqp.AmqpConnOptions) (rabbitmqAmqp10EnvironmentShim, error) {
+	originalNewAmqp10Environment := newRabbitMQAMQP10EnvironmentFunc
+	newRabbitMQAMQP10EnvironmentFunc = func(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config, connURL string, options *rabbitmqamqp.AmqpConnOptions) (rabbitMQAMQP10EnvironmentShim, error) {
 		gotCall.ctx = ctx
 		gotCall.cf = cf
 		gotCall.tlsConfig = tlsConfig
@@ -147,7 +147,7 @@ func mockSpyAmqp10Environment(t *testing.T) *rabbitmqAmqp10EnvironmentCall {
 		return env, nil
 	}
 	t.Cleanup(func() {
-		newRabbitmqAmqp10EnvironmentFunc = originalNewAmqp10Environment
+		newRabbitMQAMQP10EnvironmentFunc = originalNewAmqp10Environment
 		conn.AssertExpectations(t)
 		env.AssertExpectations(t)
 	})
@@ -167,7 +167,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 	t.Run("non TLS connect does not create TLS config when CA bundle is configured", func(t *testing.T) {
 		t.Setenv(trustedCerts, newTestCABundle(t))
 		ctx, _ := newTestProviderContext(t, "connect-non-tls")
-		prov := newTestAMQP10Provider()
+		prov := newTestRabbitMQAMQP10Provider()
 		config := newTestConnectionConfig()
 		gotCall := mockSpyAmqp10Environment(t)
 
@@ -179,7 +179,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 
 	t.Run("TLS connect creates verifying TLS config", func(t *testing.T) {
 		ctx, _ := newTestProviderContext(t, "connect-tls")
-		prov := newTestAMQP10Provider()
+		prov := newTestRabbitMQAMQP10Provider()
 		config := newTestConnectionConfig()
 		config.Tls = true
 		gotCall := mockSpyAmqp10Environment(t)
@@ -193,7 +193,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 
 	t.Run("TLS connect can skip verification", func(t *testing.T) {
 		ctx, _ := newTestProviderContext(t, "connect-tls-skip-verify")
-		prov := newTestAMQP10Provider()
+		prov := newTestRabbitMQAMQP10Provider()
 		config := newTestConnectionConfig()
 		config.Tls = true
 		gotCall := mockSpyAmqp10Environment(t)
@@ -208,7 +208,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 	t.Run("TLS connect loads CA bundle into TLS config", func(t *testing.T) {
 		t.Setenv(trustedCerts, newTestCABundle(t))
 		ctx, _ := newTestProviderContext(t, "connect-tls-ca")
-		prov := newTestAMQP10Provider()
+		prov := newTestRabbitMQAMQP10Provider()
 		config := newTestConnectionConfig()
 		config.Tls = true
 		gotCall := mockSpyAmqp10Environment(t)
@@ -223,7 +223,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 }
 
 func Test_amqp10provider_ClientExists(t *testing.T) {
-	prov := newTestAMQP10Provider()
+	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add("client", &BrokerDetails{})
 
 	assert.True(t, prov.ClientExists("client"))
@@ -232,7 +232,7 @@ func Test_amqp10provider_ClientExists(t *testing.T) {
 
 func Test_amqp10provider_Disconnect(t *testing.T) {
 	t.Run("does nothing when broker details are missing", func(t *testing.T) {
-		prov := newTestAMQP10Provider()
+		prov := newTestRabbitMQAMQP10Provider()
 
 		assert.NotPanics(t, func() {
 			prov.Disconnect(context.Background())
@@ -241,8 +241,8 @@ func Test_amqp10provider_Disconnect(t *testing.T) {
 
 	t.Run("closes connection and removes matching broker details", func(t *testing.T) {
 		ctx, clientIdentifier := newTestProviderContext(t, "disconnect")
-		prov := newTestAMQP10Provider()
-		conn := &rabbitmqAmqp10ConnectionMock{}
+		prov := newTestRabbitMQAMQP10Provider()
+		conn := &rabbitMQAMQP10ConnectionMock{}
 		conn.On("Close", ctx).Return(nil).Once()
 		bd := &BrokerDetails{ctx: ctx, ClientIdentifier: clientIdentifier, Connection: conn}
 		bd.state.Store(provider.CONNECTED)
@@ -264,14 +264,14 @@ func Test_amqp10provider_Disconnect(t *testing.T) {
 
 func Test_amqp10provider_WaitForConnect(t *testing.T) {
 	t.Run("returns false when broker details are missing", func(t *testing.T) {
-		prov := newTestAMQP10Provider()
+		prov := newTestRabbitMQAMQP10Provider()
 
 		assert.False(t, prov.WaitForConnect(context.Background()))
 	})
 
 	t.Run("returns true when broker details are connected", func(t *testing.T) {
 		ctx, clientIdentifier := newTestProviderContext(t, "wait-for-connect")
-		prov := newTestAMQP10Provider()
+		prov := newTestRabbitMQAMQP10Provider()
 		bd := &BrokerDetails{ClientIdentifier: clientIdentifier}
 		bd.state.Store(provider.CONNECTED)
 		prov.connections.Add(clientIdentifier, bd)
@@ -282,7 +282,7 @@ func Test_amqp10provider_WaitForConnect(t *testing.T) {
 
 	t.Run("returns false when broker details disappear while waiting", func(t *testing.T) {
 		ctx, clientIdentifier := newTestProviderContext(t, "wait-disconnect")
-		prov := newTestAMQP10Provider()
+		prov := newTestRabbitMQAMQP10Provider()
 		bd := &BrokerDetails{ClientIdentifier: clientIdentifier}
 		bd.state.Store(provider.CONNECTING)
 		prov.connections.Add(clientIdentifier, bd)
@@ -310,7 +310,7 @@ func Test_amqp10provider_WaitForConnect(t *testing.T) {
 // These methods are left so we can get an accurate code coverage report as we
 // go. When the last stub is removed, delete this test.
 func Test_amqp10provider_StubbedMethods(t *testing.T) {
-	prov := newTestAMQP10Provider()
+	prov := newTestRabbitMQAMQP10Provider()
 
 	// TODO: Issue 199 - delete
 	assert.Nil(t, prov.Publish(context.Background(), nil, nil))

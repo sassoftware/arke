@@ -12,17 +12,17 @@ import (
 	"github.com/sassoftware/arke/internal/util"
 )
 
-// rabbitmqAmqp10ConnectionShim Shim so we can do unit testing
-type rabbitmqAmqp10ConnectionShim interface {
+// rabbitMQAMQP10ConnectionShim Shim so we can do unit testing
+type rabbitMQAMQP10ConnectionShim interface {
 	Close(context.Context) error
 	WatchConnection(ch chan *ramqp.StateChanged)
 	IsClosed() bool
 	State() int
 }
 
-// rabbitmqAmqp10Connection A connection to the broker
-type rabbitmqAmqp10Connection struct {
-	rabbitmqAmqp10ConnectionShim //nolint:unused
+// rabbitMQAMQP10Connection A connection to the broker
+type rabbitMQAMQP10Connection struct {
+	rabbitMQAMQP10ConnectionShim //nolint:unused
 	provider                     provider.Provider
 	connStr                      string
 	connection                   *ramqp.AmqpConnection
@@ -33,7 +33,7 @@ type rabbitmqAmqp10Connection struct {
 	stateChannel                 chan *ramqp.StateChanged
 }
 
-func getRabbitmqAmqp10ConnOptions(ctx context.Context, cf *pb.ConnectionConfiguration, tlsCfg *tls.Config) (*ramqp.AmqpConnOptions, error) {
+func getRabbitMQAMQP10ConnOptions(ctx context.Context, cf *pb.ConnectionConfiguration, tlsCfg *tls.Config) (*ramqp.AmqpConnOptions, error) {
 	clientIdentifier, err := util.GetClientIdentifier(ctx)
 	if err != nil {
 		return nil, err
@@ -51,16 +51,16 @@ func getRabbitmqAmqp10ConnOptions(ctx context.Context, cf *pb.ConnectionConfigur
 	}, nil
 }
 
-func (a *rabbitmqAmqp10Connection) WatchConnection(ch chan *ramqp.StateChanged) {
+func (a *rabbitMQAMQP10Connection) WatchConnection(ch chan *ramqp.StateChanged) {
 	a.connection.NotifyStatusChange(ch)
 }
 
-func (a *rabbitmqAmqp10Connection) IsClosed() bool {
+func (a *rabbitMQAMQP10Connection) IsClosed() bool {
 	// TODO: Issue 204 - implement IsClosed based on connection state changes
 	return false
 }
 
-func (a *rabbitmqAmqp10Connection) State() int {
+func (a *rabbitMQAMQP10Connection) State() int {
 	// TODO: Issue 204 - implement state retrieval based on connection state changes
 	// but states should be provider.*
 	// return a.connection.State()
@@ -68,7 +68,7 @@ func (a *rabbitmqAmqp10Connection) State() int {
 }
 
 // TODO: Issue 204 - cancel context used by state channel (i.e., make sure connection watcher channel shuts down) and close state channel
-func (a *rabbitmqAmqp10Connection) Close(_ context.Context) error {
+func (a *rabbitMQAMQP10Connection) Close(_ context.Context) error {
 	defer a.connectionCancel()
 	return a.connection.Close(a.connectionCtx)
 }

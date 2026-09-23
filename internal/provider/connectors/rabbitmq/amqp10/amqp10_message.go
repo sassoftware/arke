@@ -1,20 +1,20 @@
 package amqp10
 
-// rabbitmqAmqp10Table Simple map
-type rabbitmqAmqp10Table map[string]interface{}
+// rabbitMQAMQP10Table Simple map
+type rabbitMQAMQP10Table map[string]interface{}
 
-// rabbitmqAmqp10Message Structure of a message
-type rabbitmqAmqp10Message struct {
+// rabbitMQAMQP10Message Structure of a message
+type rabbitMQAMQP10Message struct {
 	delivery        interface{}
 	Body            []byte
 	DeliveryMode    int
 	ContentType     string
 	ContentEncoding string
-	Headers         rabbitmqAmqp10Table
+	Headers         rabbitMQAMQP10Table
 	DeliveryTag     uint64
 }
 
 // SetDelivery convenience method for unit tests
-func (msg *rabbitmqAmqp10Message) SetDelivery(delivery interface{}) {
+func (msg *rabbitMQAMQP10Message) SetDelivery(delivery interface{}) {
 	msg.delivery = delivery
 }

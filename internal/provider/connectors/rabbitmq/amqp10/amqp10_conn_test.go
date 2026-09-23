@@ -28,7 +28,7 @@ func Test_getAmqp10ConnOptions(t *testing.T) {
 	clientIdentifier := "test-client"
 	ctx, name := newTestProviderContext(t, clientIdentifier)
 	assert.True(t, strings.HasPrefix(name, clientIdentifier), "name should have prefix %s", clientIdentifier)
-	options, err := getRabbitmqAmqp10ConnOptions(ctx, config, tlsCfg)
+	options, err := getRabbitMQAMQP10ConnOptions(ctx, config, tlsCfg)
 	require.NoError(t, err)
 
 	assert.NotNil(t, options.SASLType)

@@ -32,7 +32,7 @@ func newTestBrokerDetails() *BrokerDetails {
 
 func Test_BrokerDetails_disconnect(t *testing.T) {
 	t.Run("connected broker details disconnects lifecycle", func(t *testing.T) {
-		conn := &rabbitmqAmqp10ConnectionMock{}
+		conn := &rabbitMQAMQP10ConnectionMock{}
 		bd := newTestBrokerDetails()
 		conn.On("Close", bd.ctx).Return(nil).Once()
 		bd.Connection = conn
@@ -58,7 +58,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 	})
 
 	t.Run("disconnect is idempotent", func(t *testing.T) {
-		conn := &rabbitmqAmqp10ConnectionMock{}
+		conn := &rabbitMQAMQP10ConnectionMock{}
 		bd := newTestBrokerDetails()
 		conn.On("Close", bd.ctx).Return(nil).Once()
 		bd.Connection = conn
@@ -73,7 +73,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 	})
 
 	t.Run("close error still disconnects lifecycle", func(t *testing.T) {
-		conn := &rabbitmqAmqp10ConnectionMock{}
+		conn := &rabbitMQAMQP10ConnectionMock{}
 		bd := newTestBrokerDetails()
 		conn.On("Close", bd.ctx).Return(errors.New("close failed")).Once()
 		bd.Connection = conn
@@ -90,7 +90,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 	t.Run("already disconnected or closed broker details are noops", func(t *testing.T) {
 		states := []uint32{provider.DISCONNECTED, provider.CLOSED}
 		for _, state := range states {
-			conn := &rabbitmqAmqp10ConnectionMock{}
+			conn := &rabbitMQAMQP10ConnectionMock{}
 			bd := newTestBrokerDetails()
 			bd.Connection = conn
 			bd.state.Store(state)
