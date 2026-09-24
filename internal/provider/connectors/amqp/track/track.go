@@ -54,13 +54,7 @@ func (t *Tracker) AddStream(name string) {
 
 // Reset removes all tracked entities.
 func (t *Tracker) Reset() {
-	for _, name := range t.exchanges.GetList() {
-		t.exchanges.Delete(name)
-	}
-	for _, name := range t.queues.GetList() {
-		t.queues.Delete(name)
-	}
-	for _, name := range t.streams.GetList() {
-		t.streams.Delete(name)
-	}
+	t.exchanges.Reset()
+	t.queues.Reset()
+	t.streams.Reset()
 }
