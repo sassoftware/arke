@@ -92,7 +92,9 @@ func (prov *rabbitMQAMQP10provider) Connect(ctx context.Context, cf *pb.Connecti
 			caBundle, err := os.ReadFile(filepath.FromSlash(filepath.Clean("/" + strings.Trim(caBundlePath, "/"))))
 			if err == nil {
 				tlsConfig.RootCAs = x509.NewCertPool()
-				tlsConfig.RootCAs.AppendCertsFromPEM(caBundle)
+				if !tlsConfig.RootCAs.AppendCertsFromPEM(caBundle) {
+					return &pb.Error{Message: fmt.Sprintf("Failed to parse TLS CA bundle at path: %s", caBundlePath)}
+				}
 			}
 		}
 	}

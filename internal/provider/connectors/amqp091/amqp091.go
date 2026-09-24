@@ -151,7 +151,9 @@ func NewAMQP091Provider() provider.Provider {
 		caBundle, err := os.ReadFile(filepath.FromSlash(filepath.Clean("/" + strings.Trim(caBundlePath, "/"))))
 		if err == nil {
 			prov.tlsConfig.RootCAs = x509.NewCertPool()
-			prov.tlsConfig.RootCAs.AppendCertsFromPEM(caBundle)
+			if !prov.tlsConfig.RootCAs.AppendCertsFromPEM(caBundle) {
+				util.Logger.Debugf("Failed to parse TLS CA bundle at path: %s", caBundlePath)
+			}
 		}
 	}
 
