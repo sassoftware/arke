@@ -62,7 +62,7 @@ func TestConcurrentMapReset(t *testing.T) {
 	_, ok = cMap.Get("testItem2")
 	assert.True(t, ok)
 
-	cMap.Reset()
+	cMap.reset()
 
 	assert.Empty(t, cMap.GetList())
 	_, ok = cMap.Get("testItem")

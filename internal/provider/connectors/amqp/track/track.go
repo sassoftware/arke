@@ -52,9 +52,17 @@ func (t *Tracker) AddStream(name string) {
 	t.streams.Add(name, struct{}{})
 }
 
-// Reset removes all tracked entities.
-func (t *Tracker) Reset() {
-	t.exchanges.Reset()
-	t.queues.Reset()
-	t.streams.Reset()
+// reset removes all tracked entities.
+func (t *Tracker) reset() {
+	// ConcurrentMap reset is package-private, so tracker-owned maps are cleared
+	// through the public map operations.
+	resetMap(t.exchanges)
+	resetMap(t.queues)
+	resetMap(t.streams)
+}
+
+func resetMap(entityMap *util.ConcurrentMap) {
+	for _, key := range entityMap.GetList() {
+		entityMap.Delete(key)
+	}
 }
