@@ -34,13 +34,6 @@ func (cm *ConcurrentMap) Delete(key string) {
 	delete(cm.items, key)
 }
 
-// reset removes all keys from the map.
-func (cm *ConcurrentMap) reset() {
-	cm.Lock()
-	defer cm.Unlock()
-	cm.items = make(map[string]interface{})
-}
-
 // DeleteIfEqual deletes key only if its current value is still expected,
 // avoiding removal of an entry that was replaced concurrently. Returns
 // true if the key was deleted, false if it was not present or its value was
