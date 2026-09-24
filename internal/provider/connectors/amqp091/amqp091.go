@@ -26,6 +26,7 @@ import (
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/i18n"
 	"github.com/sassoftware/arke/internal/provider"
+	"github.com/sassoftware/arke/internal/provider/connectors/amqp/track"
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/sassoftware/arke/internal/util/tracing"
 	"go.opentelemetry.io/otel/attribute"
@@ -96,8 +97,7 @@ type BrokerDetails struct {
 	pubPCChannels    *util.BlockingPool
 	StreamConnection streamConnectionShim
 	ClientIdentifier string
-	knownExchanges   *util.ConcurrentMap
-	knownQueues      *util.ConcurrentMap
+	tracker          *track.Tracker
 	knownBindings    *util.ConcurrentMap
 	activeMessages   *util.ConcurrentMap
 	state            atomic.Uint32
@@ -620,13 +620,24 @@ func sourceTypeToAmqpType(source *pb.Source) (string, error) {
 }
 
 func (bd *BrokerDetails) exchangeKnown(name string) bool {
-	_, ok := bd.knownExchanges.Get(name)
-	return ok
+	return bd.entityTracker().ExchangeExists(name)
 }
 
 func (bd *BrokerDetails) queueKnown(name string) bool {
-	_, ok := bd.knownQueues.Get(name)
-	return ok
+	return bd.entityTracker().QueueExists(name)
+}
+
+func (bd *BrokerDetails) streamKnown(name string) bool {
+	return bd.entityTracker().StreamExists(name)
+}
+
+func (bd *BrokerDetails) entityTracker() *track.Tracker {
+	bd.Lock()
+	defer bd.Unlock()
+	if bd.tracker == nil {
+		bd.tracker = track.New()
+	}
+	return bd.tracker
 }
 
 func (bd *BrokerDetails) bindingKnown(name string) bool {
@@ -664,14 +675,11 @@ func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDeta
 		return nil
 	}
 
-	amqpChannel, err := bd.Connection.StandbyChannel()
-	if err != nil {
-		return err
-	}
-
-	known := bd.exchangeKnown(address.GetName())
-
-	if !known {
+	if !bd.exchangeKnown(address.GetName()) {
+		amqpChannel, err := bd.Connection.StandbyChannel()
+		if err != nil {
+			return err
+		}
 		exchangeType, err := addressTypeToAmqpType(address.GetType())
 
 		if err != nil {
@@ -688,20 +696,22 @@ func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDeta
 			util.Logger.Debugf("Ignoring error declaring exchange %s: %s", address.GetName(), err.Error())
 		}
 
-		bd.knownExchanges.Add(address.GetName(), true)
+		bd.entityTracker().AddExchange(address.GetName())
 	}
 
 	if parent := address.GetParentAddress(); parent != nil {
-		known = bd.exchangeKnown(parent.GetName())
-		if !known {
+		if !bd.exchangeKnown(parent.GetName()) {
 			err := prov.declareExchange(parent, bd)
 			if err != nil {
 				util.Logger.Warn(i18n.ClientExchangeDeclareError, err.Error(), bd.ClientIdentifier)
 			}
-			bd.knownExchanges.Add(parent.GetName(), true)
 		}
 
 		// Bind each subject from the Address exchange to the ParentAddress exchange
+		amqpChannel, err := bd.Connection.StandbyChannel()
+		if err != nil {
+			return err
+		}
 		for _, subject := range address.GetSubjects() {
 			util.Logger.Info(i18n.ExchangeBind, address.GetName(), parent.GetName(), subject)
 			err := amqpChannel.ExchangeBind(address.GetName(), subject, parent.GetName())
@@ -787,8 +797,9 @@ func (prov *amqp091provider) declareQueue(source *pb.Source, bd *BrokerDetails, 
 	qErr := amqpChannel.QueueDeclare(source.GetName(), false, false, args)
 	if qErr != nil {
 		util.Logger.Warn(i18n.ClientQueueDeclareError, qErr.Error(), bd.ClientIdentifier)
+		return qErr
 	}
-	bd.knownQueues.Add(source.GetName(), true)
+	bd.entityTracker().AddQueue(source.GetName())
 	return nil
 }
 
@@ -1281,9 +1292,11 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 		_ = prov.declareExchange(source.GetAddress(), bd)
 	}
 
-	dErr := bd.StreamConnection.DeclareStream(source.GetName(), ttl)
-	if dErr != nil {
-		return &pb.Error{IsFatal: true, Message: fmt.Sprintf("failed to declare stream: %s", dErr.Error())}
+	if !bd.streamKnown(source.GetName()) {
+		dErr := bd.declareStream(source.GetName(), ttl)
+		if dErr != nil {
+			return &pb.Error{IsFatal: true, Message: fmt.Sprintf("failed to declare stream: %s", dErr.Error())}
+		}
 	}
 
 	if source.GetAddress().GetType() != pb.Address_STREAM {
@@ -1370,6 +1383,17 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 	defer bd.decrementStreamCount()
 	<-ctx.Done()
 	consumer.Close()
+	return nil
+}
+
+func (bd *BrokerDetails) declareStream(name string, ttl int64) error {
+	if bd.streamKnown(name) {
+		return nil
+	}
+	if err := bd.StreamConnection.DeclareStream(name, ttl); err != nil {
+		return err
+	}
+	bd.entityTracker().AddStream(name)
 	return nil
 }
 
@@ -1941,8 +1965,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	// Reinitialize these maps early, we especially want to
 	// ensure activeMessages gets cleared out before an Ack/Nacks
 	// are sent from the client.
-	bd.knownExchanges = util.NewConcurrentMap()
-	bd.knownQueues = util.NewConcurrentMap()
+	bd.tracker = track.New()
 	bd.knownBindings = util.NewConcurrentMap()
 	bd.activeMessages = util.NewConcurrentMap()
 
@@ -2026,7 +2049,7 @@ func (bd *BrokerDetails) loadExchanges() {
 	for _, exchange := range results {
 		if name, ok := exchange["name"].(string); ok {
 			util.Logger.Debugf("Adding Exchange to known list: %s", name)
-			bd.knownExchanges.Add(name, true)
+			bd.entityTracker().AddExchange(name)
 		}
 	}
 }

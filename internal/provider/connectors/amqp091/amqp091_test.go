@@ -20,6 +20,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/internal/provider"
+	"github.com/sassoftware/arke/internal/provider/connectors/amqp/track"
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -956,6 +957,8 @@ func Test_connect_clearsRetryChannel(t *testing.T) {
 	bd.ClientIdentifier = "1234"
 	bd.connectionConfig = &pb.ConnectionConfiguration{}
 	bd.RetryChannel = new(amqp091ChannelShim)
+	bd.tracker = track.New()
+	bd.tracker.AddExchange("old-exchange")
 
 	amock := &amqpConnectionMock{}
 	amock.On("Connect").Return(nil)
@@ -975,7 +978,34 @@ func Test_connect_clearsRetryChannel(t *testing.T) {
 	assert.True(t, ok)
 	assert.Nil(t, err)
 	assert.Nil(t, bd.RetryChannel)
+	assert.False(t, bd.exchangeKnown("old-exchange"))
 	amock.AssertExpectations(t)
+}
+
+func Test_loadExchangesTracksPreloadedNames(t *testing.T) {
+	managementServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		assert.Equal(t, "/api/exchanges/tenant", request.URL.Path)
+		_, _ = writer.Write([]byte(`[{"name":"preloaded"}]`))
+	}))
+	defer managementServer.Close()
+
+	managementURL, err := url.Parse(managementServer.URL)
+	assert.NoError(t, err)
+	managementPort, err := strconv.Atoi(managementURL.Port())
+	assert.NoError(t, err)
+
+	bd := &BrokerDetails{
+		connectionConfig: &pb.ConnectionConfiguration{
+			Host:      managementURL.Hostname(),
+			AdminPort: int32(managementPort), //nolint:gosec
+			Tenant:    testTenant,
+		},
+		tracker: track.New(),
+	}
+
+	bd.loadExchanges()
+
+	assert.True(t, bd.exchangeKnown("preloaded"))
 }
 
 func Test_RetryAfterReconnectUsesNewConnection(t *testing.T) {
@@ -1013,8 +1043,7 @@ func Test_RetryAfterReconnectUsesNewConnection(t *testing.T) {
 		Connection:       oldConnection,
 		ClientIdentifier: "1234",
 		activeMessages:   util.NewConcurrentMap(),
-		knownExchanges:   util.NewConcurrentMap(),
-		knownQueues:      util.NewConcurrentMap(),
+		tracker:          track.New(),
 		knownBindings:    util.NewConcurrentMap(),
 		connectionConfig: &pb.ConnectionConfiguration{},
 	}
@@ -2854,7 +2883,7 @@ func Test_declareQueueAutoDelete(t *testing.T) {
 		t.Run(fmt.Sprintf("AutoDeleteTest autoDelete:%t, exclusive: %t, expires:%d",
 			adt.autoDelete, adt.exclusive, adt.expires), func(t *testing.T) {
 			bd := &BrokerDetails{
-				knownQueues: util.NewConcurrentMap(),
+				tracker: track.New(),
 			}
 			addr := &pb.Address{Subjects: []string{"routingkey"}, Name: "address"}
 			src := &pb.Source{Address: addr, Name: "queue", AutoDelete: adt.autoDelete, Exclusive: adt.exclusive}
@@ -2887,6 +2916,71 @@ func Test_declareQueueAutoDelete(t *testing.T) {
 	}
 }
 
+func Test_declareExchangeSkipsKnownAndDoesNotCacheFailure(t *testing.T) {
+	address := &pb.Address{Name: "exchange", Type: pb.Address_TOPIC}
+	channel := &amqpChannelMock{}
+	channel.On("ExchangeDeclare", address.GetName(), "topic", false).Return(nil).Once()
+	connection := &amqpConnectionMock{}
+	connection.On("StandbyChannel").Return(channel, nil).Once()
+	bd := &BrokerDetails{Connection: connection, tracker: track.New()}
+	prov := NewAMQP091Provider().(*amqp091provider)
+
+	assert.NoError(t, prov.declareExchange(address, bd))
+	assert.NoError(t, prov.declareExchange(address, bd))
+	assert.True(t, bd.exchangeKnown(address.GetName()))
+
+	failingChannel := &amqpChannelMock{}
+	failingChannel.On("ExchangeDeclare", "failed", "topic", false).Return(errors.New("exchange failed")).Twice()
+	failingConnection := &amqpConnectionMock{}
+	failingConnection.On("StandbyChannel").Return(failingChannel, nil).Twice()
+	failingBD := &BrokerDetails{Connection: failingConnection, tracker: track.New()}
+	failingAddress := &pb.Address{Name: "failed", Type: pb.Address_TOPIC}
+
+	assert.EqualError(t, prov.declareExchange(failingAddress, failingBD), "exchange failed")
+	assert.EqualError(t, prov.declareExchange(failingAddress, failingBD), "exchange failed")
+	assert.False(t, failingBD.exchangeKnown(failingAddress.GetName()))
+}
+
+func Test_declareQueueSkipsKnownAndDoesNotCacheFailure(t *testing.T) {
+	source := &pb.Source{Name: "queue", Type: pb.Source_QUEUE}
+	channel := &amqpChannelMock{}
+	channel.On("QueueDeclare", source.GetName(), false, false, mock.Anything).Return(nil).Once()
+	connection := &amqpConnectionMock{}
+	connection.On("StandbyChannel").Return(channel, nil).Twice()
+	bd := &BrokerDetails{Connection: connection, tracker: track.New()}
+	prov := NewAMQP091Provider().(*amqp091provider)
+
+	assert.NoError(t, prov.declareQueue(source, bd, false))
+	assert.NoError(t, prov.declareQueue(source, bd, false))
+	assert.True(t, bd.queueKnown(source.GetName()))
+
+	failingChannel := &amqpChannelMock{}
+	failingChannel.On("QueueDeclare", "failed", false, false, mock.Anything).Return(errors.New("queue failed")).Twice()
+	failingConnection := &amqpConnectionMock{}
+	failingConnection.On("StandbyChannel").Return(failingChannel, nil).Twice()
+	failingBD := &BrokerDetails{Connection: failingConnection, tracker: track.New()}
+	failingSource := &pb.Source{Name: "failed", Type: pb.Source_QUEUE}
+
+	assert.EqualError(t, prov.declareQueue(failingSource, failingBD, false), "queue failed")
+	assert.EqualError(t, prov.declareQueue(failingSource, failingBD, false), "queue failed")
+	assert.False(t, failingBD.queueKnown(failingSource.GetName()))
+}
+
+func Test_declareQueueForceRedeclaresKnownQueue(t *testing.T) {
+	source := &pb.Source{Name: "queue", Type: pb.Source_QUEUE}
+	channel := &amqpChannelMock{}
+	channel.On("QueueDeclare", source.GetName(), false, false, mock.Anything).Return(nil).Twice()
+	connection := &amqpConnectionMock{}
+	connection.On("StandbyChannel").Return(channel, nil).Twice()
+	bd := &BrokerDetails{Connection: connection, tracker: track.New()}
+	prov := NewAMQP091Provider().(*amqp091provider)
+
+	assert.NoError(t, prov.declareQueue(source, bd, false))
+	assert.NoError(t, prov.declareQueue(source, bd, true))
+	channel.AssertExpectations(t)
+	connection.AssertExpectations(t)
+}
+
 func Test_singleActiveConsumer(t *testing.T) {
 	var sacTests = []struct {
 		singleActiveConsumer bool
@@ -2899,7 +2993,7 @@ func Test_singleActiveConsumer(t *testing.T) {
 		t.Run(fmt.Sprintf("SingleActiveConsumerTest singleActiveConsumer:%t",
 			sac.singleActiveConsumer), func(t *testing.T) {
 			bd := &BrokerDetails{
-				knownQueues: util.NewConcurrentMap(),
+				tracker: track.New(),
 			}
 			addr := &pb.Address{Subjects: []string{"routingkey"}, Name: "address"}
 			src := &pb.Source{Address: addr, Name: "queue", SingleActiveConsumer: sac.singleActiveConsumer}
