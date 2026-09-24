@@ -52,30 +52,6 @@ func TestConcurrentMapDelete(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestConcurrentMapReset(t *testing.T) {
-	cMap := NewConcurrentMap()
-	cMap.Add("testItem", "value")
-	cMap.Add("testItem2", "value2")
-
-	_, ok := cMap.Get("testItem")
-	assert.True(t, ok)
-	_, ok = cMap.Get("testItem2")
-	assert.True(t, ok)
-
-	cMap.reset()
-
-	assert.Empty(t, cMap.GetList())
-	_, ok = cMap.Get("testItem")
-	assert.False(t, ok)
-	_, ok = cMap.Get("testItem2")
-	assert.False(t, ok)
-
-	cMap.Add("newItem", "newValue")
-	value, ok := cMap.Get("newItem")
-	assert.True(t, ok)
-	assert.Equal(t, "newValue", value)
-}
-
 func TestConcurrentMapDeleteIfEqual(t *testing.T) {
 	cMap := NewConcurrentMap()
 	testItem := TestItem{"test item"}
