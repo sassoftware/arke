@@ -33,7 +33,7 @@ func TestTrackerReset(t *testing.T) {
 	tracker.AddQueue("queue")
 	tracker.AddStream("stream")
 
-	tracker.Reset()
+	tracker.reset()
 
 	assert.False(t, tracker.ExchangeExists("exchange"))
 	assert.False(t, tracker.QueueExists("queue"))
