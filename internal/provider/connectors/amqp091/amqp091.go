@@ -152,7 +152,7 @@ func NewAMQP091Provider() provider.Provider {
 		if err == nil {
 			prov.tlsConfig.RootCAs = x509.NewCertPool()
 			if !prov.tlsConfig.RootCAs.AppendCertsFromPEM(caBundle) {
-				util.Logger.Debugf("Failed to parse TLS CA bundle at path: %s", caBundlePath)
+				util.Logger.Warn(i18n.TLSCABundleError, caBundlePath)
 			}
 		}
 	}
