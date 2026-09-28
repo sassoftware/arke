@@ -97,7 +97,7 @@ type BrokerDetails struct {
 	pubPCChannels    *util.BlockingPool
 	StreamConnection streamConnectionShim
 	ClientIdentifier string
-	tracker          *track.EntityTracker
+	knownEntities    *track.EntityTracker
 	knownBindings    *util.ConcurrentMap
 	activeMessages   *util.ConcurrentMap
 	state            atomic.Uint32
@@ -634,10 +634,10 @@ func (bd *BrokerDetails) streamKnown(name string) bool {
 func (bd *BrokerDetails) entityTracker() *track.EntityTracker {
 	bd.Lock()
 	defer bd.Unlock()
-	if bd.tracker == nil {
-		bd.tracker = track.New()
+	if bd.knownEntities == nil {
+		bd.knownEntities = track.New()
 	}
-	return bd.tracker
+	return bd.knownEntities
 }
 
 func (bd *BrokerDetails) bindingKnown(name string) bool {
@@ -1964,7 +1964,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	// Reinitialize these maps early, we especially want to
 	// ensure activeMessages gets cleared out before an Ack/Nacks
 	// are sent from the client.
-	bd.tracker = track.New()
+	bd.knownEntities = track.New()
 	bd.knownBindings = util.NewConcurrentMap()
 	bd.activeMessages = util.NewConcurrentMap()
 

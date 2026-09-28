@@ -142,7 +142,7 @@ type streamConsumerMock struct {
 func Test_declareStreamSkipsKnownAndDoesNotCacheFailure(t *testing.T) {
 	streamConnection := &streamConnectionMock{}
 	streamConnection.On("DeclareStream").Return(nil).Once()
-	bd := &BrokerDetails{StreamConnection: streamConnection, tracker: track.New()}
+	bd := &BrokerDetails{StreamConnection: streamConnection, knownEntities: track.New()}
 
 	assert.NoError(t, bd.declareStream("stream", 0))
 	assert.NoError(t, bd.declareStream("stream", 0))
@@ -150,7 +150,7 @@ func Test_declareStreamSkipsKnownAndDoesNotCacheFailure(t *testing.T) {
 
 	failingConnection := &streamConnectionMock{}
 	failingConnection.On("DeclareStream").Return(errors.New("stream failed")).Twice()
-	failingBD := &BrokerDetails{StreamConnection: failingConnection, tracker: track.New()}
+	failingBD := &BrokerDetails{StreamConnection: failingConnection, knownEntities: track.New()}
 
 	assert.EqualError(t, failingBD.declareStream("failed", 0), "stream failed")
 	assert.EqualError(t, failingBD.declareStream("failed", 0), "stream failed")
