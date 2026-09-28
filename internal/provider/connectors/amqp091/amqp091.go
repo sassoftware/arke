@@ -97,7 +97,7 @@ type BrokerDetails struct {
 	pubPCChannels    *util.BlockingPool
 	StreamConnection streamConnectionShim
 	ClientIdentifier string
-	tracker          *track.Tracker
+	tracker          *track.EntityTracker
 	knownBindings    *util.ConcurrentMap
 	activeMessages   *util.ConcurrentMap
 	state            atomic.Uint32
@@ -631,7 +631,7 @@ func (bd *BrokerDetails) streamKnown(name string) bool {
 	return bd.entityTracker().StreamExists(name)
 }
 
-func (bd *BrokerDetails) entityTracker() *track.Tracker {
+func (bd *BrokerDetails) entityTracker() *track.EntityTracker {
 	bd.Lock()
 	defer bd.Unlock()
 	if bd.tracker == nil {

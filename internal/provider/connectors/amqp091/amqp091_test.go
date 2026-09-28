@@ -2941,7 +2941,7 @@ func Test_declareExchangeSkipsKnownAndDoesNotCacheFailure(t *testing.T) {
 	assert.False(t, failingBD.exchangeKnown(failingAddress.GetName()))
 }
 
-func Test_declareQueueSkipsKnownAndDoesNotCacheFailure(t *testing.T) {
+func Test_declareQueueSkipsKnownAndCachesFailure(t *testing.T) {
 	source := &pb.Source{Name: "queue", Type: pb.Source_QUEUE}
 	channel := &amqpChannelMock{}
 	channel.On("QueueDeclare", source.GetName(), false, false, mock.Anything).Return(nil).Once()
@@ -2955,15 +2955,15 @@ func Test_declareQueueSkipsKnownAndDoesNotCacheFailure(t *testing.T) {
 	assert.True(t, bd.queueKnown(source.GetName()))
 
 	failingChannel := &amqpChannelMock{}
-	failingChannel.On("QueueDeclare", "failed", false, false, mock.Anything).Return(errors.New("queue failed")).Twice()
+	failingChannel.On("QueueDeclare", "failed", false, false, mock.Anything).Return(errors.New("queue failed")).Once()
 	failingConnection := &amqpConnectionMock{}
-	failingConnection.On("StandbyChannel").Return(failingChannel, nil).Twice()
+	failingConnection.On("StandbyChannel").Return(failingChannel, nil).Once()
 	failingBD := &BrokerDetails{Connection: failingConnection, tracker: track.New()}
 	failingSource := &pb.Source{Name: "failed", Type: pb.Source_QUEUE}
 
-	assert.EqualError(t, prov.declareQueue(failingSource, failingBD, false), "queue failed")
-	assert.EqualError(t, prov.declareQueue(failingSource, failingBD, false), "queue failed")
-	assert.False(t, failingBD.queueKnown(failingSource.GetName()))
+	assert.NoError(t, prov.declareQueue(failingSource, failingBD, false))
+	assert.NoError(t, prov.declareQueue(failingSource, failingBD, false))
+	assert.True(t, failingBD.queueKnown(failingSource.GetName()))
 }
 
 func Test_declareQueueForceRedeclaresKnownQueue(t *testing.T) {
