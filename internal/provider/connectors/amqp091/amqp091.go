@@ -797,7 +797,6 @@ func (prov *amqp091provider) declareQueue(source *pb.Source, bd *BrokerDetails, 
 	qErr := amqpChannel.QueueDeclare(source.GetName(), false, false, args)
 	if qErr != nil {
 		util.Logger.Warn(i18n.ClientQueueDeclareError, qErr.Error(), bd.ClientIdentifier)
-		return qErr
 	}
 	bd.entityTracker().AddQueue(source.GetName())
 	return nil
