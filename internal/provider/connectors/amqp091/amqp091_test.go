@@ -957,8 +957,8 @@ func Test_connect_clearsRetryChannel(t *testing.T) {
 	bd.ClientIdentifier = "1234"
 	bd.connectionConfig = &pb.ConnectionConfiguration{}
 	bd.RetryChannel = new(amqp091ChannelShim)
-	bd.tracker = track.New()
-	bd.tracker.AddExchange("old-exchange")
+	bd.knownEntities = track.New()
+	bd.knownEntities.AddExchange("old-exchange")
 
 	amock := &amqpConnectionMock{}
 	amock.On("Connect").Return(nil)
@@ -1000,7 +1000,7 @@ func Test_loadExchangesTracksPreloadedNames(t *testing.T) {
 			AdminPort: int32(managementPort), //nolint:gosec
 			Tenant:    testTenant,
 		},
-		tracker: track.New(),
+		knownEntities: track.New(),
 	}
 
 	bd.loadExchanges()
@@ -1043,7 +1043,7 @@ func Test_RetryAfterReconnectUsesNewConnection(t *testing.T) {
 		Connection:       oldConnection,
 		ClientIdentifier: "1234",
 		activeMessages:   util.NewConcurrentMap(),
-		tracker:          track.New(),
+		knownEntities:    track.New(),
 		knownBindings:    util.NewConcurrentMap(),
 		connectionConfig: &pb.ConnectionConfiguration{},
 	}
@@ -2883,7 +2883,7 @@ func Test_declareQueueAutoDelete(t *testing.T) {
 		t.Run(fmt.Sprintf("AutoDeleteTest autoDelete:%t, exclusive: %t, expires:%d",
 			adt.autoDelete, adt.exclusive, adt.expires), func(t *testing.T) {
 			bd := &BrokerDetails{
-				tracker: track.New(),
+				knownEntities: track.New(),
 			}
 			addr := &pb.Address{Subjects: []string{"routingkey"}, Name: "address"}
 			src := &pb.Source{Address: addr, Name: "queue", AutoDelete: adt.autoDelete, Exclusive: adt.exclusive}
@@ -2922,7 +2922,7 @@ func Test_declareExchangeSkipsKnownAndDoesNotCacheFailure(t *testing.T) {
 	channel.On("ExchangeDeclare", address.GetName(), "topic", false).Return(nil).Once()
 	connection := &amqpConnectionMock{}
 	connection.On("StandbyChannel").Return(channel, nil).Once()
-	bd := &BrokerDetails{Connection: connection, tracker: track.New()}
+	bd := &BrokerDetails{Connection: connection, knownEntities: track.New()}
 	prov := NewAMQP091Provider().(*amqp091provider)
 
 	assert.NoError(t, prov.declareExchange(address, bd))
@@ -2933,7 +2933,7 @@ func Test_declareExchangeSkipsKnownAndDoesNotCacheFailure(t *testing.T) {
 	failingChannel.On("ExchangeDeclare", "failed", "topic", false).Return(errors.New("exchange failed")).Twice()
 	failingConnection := &amqpConnectionMock{}
 	failingConnection.On("StandbyChannel").Return(failingChannel, nil).Twice()
-	failingBD := &BrokerDetails{Connection: failingConnection, tracker: track.New()}
+	failingBD := &BrokerDetails{Connection: failingConnection, knownEntities: track.New()}
 	failingAddress := &pb.Address{Name: "failed", Type: pb.Address_TOPIC}
 
 	assert.EqualError(t, prov.declareExchange(failingAddress, failingBD), "exchange failed")
@@ -2947,7 +2947,7 @@ func Test_declareQueueSkipsKnownAndCachesFailure(t *testing.T) {
 	channel.On("QueueDeclare", source.GetName(), false, false, mock.Anything).Return(nil).Once()
 	connection := &amqpConnectionMock{}
 	connection.On("StandbyChannel").Return(channel, nil).Twice()
-	bd := &BrokerDetails{Connection: connection, tracker: track.New()}
+	bd := &BrokerDetails{Connection: connection, knownEntities: track.New()}
 	prov := NewAMQP091Provider().(*amqp091provider)
 
 	assert.NoError(t, prov.declareQueue(source, bd, false))
@@ -2958,7 +2958,7 @@ func Test_declareQueueSkipsKnownAndCachesFailure(t *testing.T) {
 	failingChannel.On("QueueDeclare", "failed", false, false, mock.Anything).Return(errors.New("queue failed")).Once()
 	failingConnection := &amqpConnectionMock{}
 	failingConnection.On("StandbyChannel").Return(failingChannel, nil).Once()
-	failingBD := &BrokerDetails{Connection: failingConnection, tracker: track.New()}
+	failingBD := &BrokerDetails{Connection: failingConnection, knownEntities: track.New()}
 	failingSource := &pb.Source{Name: "failed", Type: pb.Source_QUEUE}
 
 	assert.NoError(t, prov.declareQueue(failingSource, failingBD, false))
@@ -2972,7 +2972,7 @@ func Test_declareQueueForceRedeclaresKnownQueue(t *testing.T) {
 	channel.On("QueueDeclare", source.GetName(), false, false, mock.Anything).Return(nil).Twice()
 	connection := &amqpConnectionMock{}
 	connection.On("StandbyChannel").Return(channel, nil).Twice()
-	bd := &BrokerDetails{Connection: connection, tracker: track.New()}
+	bd := &BrokerDetails{Connection: connection, knownEntities: track.New()}
 	prov := NewAMQP091Provider().(*amqp091provider)
 
 	assert.NoError(t, prov.declareQueue(source, bd, false))
@@ -2993,7 +2993,7 @@ func Test_singleActiveConsumer(t *testing.T) {
 		t.Run(fmt.Sprintf("SingleActiveConsumerTest singleActiveConsumer:%t",
 			sac.singleActiveConsumer), func(t *testing.T) {
 			bd := &BrokerDetails{
-				tracker: track.New(),
+				knownEntities: track.New(),
 			}
 			addr := &pb.Address{Subjects: []string{"routingkey"}, Name: "address"}
 			src := &pb.Source{Address: addr, Name: "queue", SingleActiveConsumer: sac.singleActiveConsumer}
