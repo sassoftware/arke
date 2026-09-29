@@ -61,7 +61,7 @@ func (prov *rabbitMQAMQP10Provider) getBrokerDetails(ctx context.Context) (*Brok
 		return bd, nil
 	}
 
-	return nil, fmt.Errorf("Broker details not found for client identifier: %s", clientIdentifier)
+	return nil, fmt.Errorf("broker details not found for client identifier: %s", clientIdentifier)
 }
 
 func (prov *rabbitMQAMQP10Provider) getBrokerDetailsByIdentifier(clientIdentifier string) *BrokerDetails {

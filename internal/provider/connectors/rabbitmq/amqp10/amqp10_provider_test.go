@@ -113,9 +113,8 @@ func Test_amqp10provider_getBrokerDetails(t *testing.T) {
 		got, err := prov.getBrokerDetails(ctx)
 
 		assert.Nil(t, got)
-		assert.EqualError(t, err, fmt.Sprintf("Broker details not found for client identifier: %s", clientIdentifier))
+		assert.EqualError(t, err, fmt.Sprintf("broker details not found for client identifier: %s", clientIdentifier))
 	})
-
 }
 
 func Test_amqp10provider_getBrokerDetailsByIdentifier(t *testing.T) {
