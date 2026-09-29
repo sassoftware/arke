@@ -58,7 +58,7 @@ func newTestRabbitMQAMQP10Provider() *rabbitMQAMQP10Provider {
 
 func Test_NewAMQP10Provider(t *testing.T) {
 	t.Run("initializes provider", func(t *testing.T) {
-		t.Setenv(trustedCerts, "")
+		t.Setenv(provider.TrustedCerts, "")
 
 		prov := NewRabbitMQAMQP10Provider()
 
@@ -69,7 +69,7 @@ func Test_NewAMQP10Provider(t *testing.T) {
 	})
 
 	t.Run("ignores unreadable CA bundle", func(t *testing.T) {
-		t.Setenv(trustedCerts, "does-not-exist.pem")
+		t.Setenv(provider.TrustedCerts, "does-not-exist.pem")
 
 		prov := NewRabbitMQAMQP10Provider()
 
@@ -187,7 +187,7 @@ func newTestCABundle(t *testing.T) string {
 
 func Test_amqp10provider_Connect(t *testing.T) {
 	t.Run("non TLS connect does not create TLS config when CA bundle is configured", func(t *testing.T) {
-		t.Setenv(trustedCerts, newTestCABundle(t))
+		t.Setenv(provider.TrustedCerts, newTestCABundle(t))
 		ctx, _ := newTestProviderContext(t, "connect-non-tls")
 		prov := newTestRabbitMQAMQP10Provider()
 		config := newTestConnectionConfig()
@@ -228,7 +228,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 	})
 
 	t.Run("TLS connect loads CA bundle into TLS config", func(t *testing.T) {
-		t.Setenv(trustedCerts, newTestCABundle(t))
+		t.Setenv(provider.TrustedCerts, newTestCABundle(t))
 		ctx, _ := newTestProviderContext(t, "connect-tls-ca")
 		prov := newTestRabbitMQAMQP10Provider()
 		config := newTestConnectionConfig()

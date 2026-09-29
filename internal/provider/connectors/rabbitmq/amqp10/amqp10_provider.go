@@ -18,7 +18,6 @@ import (
 
 const (
 	providerName string = "rabbitmq-amqp10"
-	trustedCerts string = "ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE"
 )
 
 var supportedSourceOptions = map[string]bool{
@@ -97,7 +96,7 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 		tlsConfig = &tls.Config{
 			InsecureSkipVerify: tlsSkipVerify, //nolint:gosec
 		}
-		caBundlePath := os.Getenv(trustedCerts)
+		caBundlePath := os.Getenv(provider.TrustedCerts)
 		if caBundlePath != "" {
 			caBundle, err := os.ReadFile(filepath.FromSlash(filepath.Clean("/" + strings.Trim(caBundlePath, "/"))))
 			if err == nil {

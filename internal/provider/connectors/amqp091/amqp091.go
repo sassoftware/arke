@@ -34,7 +34,6 @@ import (
 )
 
 const providerName string = "amqp091"
-const trustedCerts = "ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE"
 const streamOffsetHeaderName = "x-current-offset"
 const retryCountHeaderName = "x-retry-count"
 const rabbitReceivedTimeHeaderName = "x-opt-rabbitmq-received-time"
@@ -144,7 +143,7 @@ func NewAMQP091Provider() provider.Provider {
 	connections := util.NewConcurrentMap()
 	prov := &amqp091provider{connections: connections}
 
-	caBundlePath := os.Getenv(trustedCerts)
+	caBundlePath := os.Getenv(provider.TrustedCerts)
 	prov.tlsConfig = &tls.Config{}
 
 	if caBundlePath != "" {
