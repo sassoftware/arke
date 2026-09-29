@@ -107,13 +107,7 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 			}
 		}
 	}
-	opts, err := getRabbitMQAMQP10ConnOptions(ctx, cf, tlsConfig)
-	if err != nil {
-		return &pb.Error{Message: err.Error()}
-	}
-	util.Logger.Debugf("Env options: %+v", opts)
-	connUrl := getConnURL(cf)
-	env, err := newRabbitMQAMQP10EnvironmentFunc(ctx, cf, tlsConfig, connUrl, opts)
+	env, err := newRabbitMQAMQP10EnvironmentFunc(ctx, cf, tlsConfig)
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
 	}

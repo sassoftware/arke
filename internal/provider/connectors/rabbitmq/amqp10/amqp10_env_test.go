@@ -11,16 +11,18 @@ import (
 )
 
 func Test_newRabbitMQAMQP10Environment(t *testing.T) {
-	ctx := context.Background()
+	clientName := "test-client"
+	ctx, clientIdentifier := newTestProviderContext(t, clientName)
+	t.Logf("ClientIdentifier: %s", clientIdentifier)
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
-	options := &rabbitmqamqp.AmqpConnOptions{Id: "test-client", TLSConfig: tlsCfg}
 	cf := newTestConnectionConfig()
-	env, err := newRabbitMQAMQP10EnvironmentFunc(ctx, cf, tlsCfg, "amqp://guest:guest@localhost:5672", options)
+	env, err := newRabbitMQAMQP10EnvironmentFunc(ctx, cf, tlsCfg)
 	require.NoError(t, err)
 
 	require.IsType(t, &rabbitMQAMQP10Environment{}, env)
 	amqpEnv := env.(*rabbitMQAMQP10Environment)
 	assert.Equal(t, ctx, amqpEnv.ctx)
+	assert.Contains(t, clientIdentifier, clientName)
 	assert.Same(t, cf, amqpEnv.connectionConfig)
 	assert.Same(t, tlsCfg, amqpEnv.tlsConfig)
 	assert.NotNil(t, amqpEnv.environment)

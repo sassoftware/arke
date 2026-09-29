@@ -140,15 +140,16 @@ func mockSpyAmqp10Environment(t *testing.T) *rabbitMQAMQP10EnvironmentCall {
 
 	gotCall := &rabbitMQAMQP10EnvironmentCall{}
 	conn := &rabbitMQAMQP10ConnectionMock{}
-	conn.On("WatchConnection", mock.Anything).Return().Once()
+	conn.On("WatchConnection", mock.Anything).Return(nil).Once()
 	env := &rabbitMQAMQP10EnvironmentMock{}
 	env.On("NewConnection", mock.Anything).Return(conn, nil).Once()
 	originalNewAmqp10Environment := newRabbitMQAMQP10EnvironmentFunc
-	newRabbitMQAMQP10EnvironmentFunc = func(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config, connURL string, options *rabbitmqamqp.AmqpConnOptions) (rabbitMQAMQP10EnvironmentShim, error) {
+	newRabbitMQAMQP10EnvironmentFunc = func(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config) (rabbitMQAMQP10EnvironmentShim, error) {
+		options, _ := getRabbitMQAMQP10ConnOptions(ctx, cf, tlsConfig)
 		gotCall.ctx = ctx
 		gotCall.cf = cf
 		gotCall.tlsConfig = tlsConfig
-		gotCall.connURL = connURL
+		gotCall.connURL = getConnURL(cf)
 		gotCall.options = options
 		return env, nil
 	}

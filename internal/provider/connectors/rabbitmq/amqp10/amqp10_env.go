@@ -7,7 +7,6 @@ import (
 	rabbitmqamqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/internal/provider"
-	"github.com/sassoftware/arke/internal/util"
 )
 
 var newRabbitMQAMQP10EnvironmentFunc = newRabbitMQAMQP10Environment
@@ -25,8 +24,12 @@ type rabbitMQAMQP10Environment struct {
 	tlsConfig                     *tls.Config
 }
 
-func newRabbitMQAMQP10Environment(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config, connURL string, options *rabbitmqamqp.AmqpConnOptions) (rabbitMQAMQP10EnvironmentShim, error) {
-	util.Logger.Debugf("Creating new AMQP 1.0 environment with URL: ->%s<-", connURL)
+func newRabbitMQAMQP10Environment(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config) (rabbitMQAMQP10EnvironmentShim, error) {
+	connURL := getConnURL(cf)
+	options, err := getRabbitMQAMQP10ConnOptions(ctx, cf, tlsConfig)
+	if err != nil {
+		return nil, err
+	}
 	return &rabbitMQAMQP10Environment{
 		ctx:              ctx,
 		connectionConfig: cf,
