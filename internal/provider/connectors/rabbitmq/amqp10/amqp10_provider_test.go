@@ -2,8 +2,14 @@ package amqp10
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
 	"sync/atomic"
 	"testing"
@@ -44,8 +50,8 @@ func newTestProviderContext(t *testing.T, clientName string) (context.Context, s
 	return ctx, clientIdentifier
 }
 
-func newTestRabbitMQAMQP10Provider() *rabbitMQAMQP10provider {
-	return &rabbitMQAMQP10provider{
+func newTestRabbitMQAMQP10Provider() *rabbitMQAMQP10Provider {
+	return &rabbitMQAMQP10Provider{
 		connections: util.NewConcurrentMap(),
 	}
 }
@@ -56,8 +62,8 @@ func Test_NewAMQP10Provider(t *testing.T) {
 
 		prov := NewRabbitMQAMQP10Provider()
 
-		require.IsType(t, &rabbitMQAMQP10provider{}, prov)
-		amqp10Prov := prov.(*rabbitMQAMQP10provider)
+		require.IsType(t, &rabbitMQAMQP10Provider{}, prov)
+		amqp10Prov := prov.(*rabbitMQAMQP10Provider)
 		assert.NotNil(t, amqp10Prov.connections)
 		assert.Equal(t, 0, amqp10Prov.connections.Length())
 	})
@@ -67,8 +73,8 @@ func Test_NewAMQP10Provider(t *testing.T) {
 
 		prov := NewRabbitMQAMQP10Provider()
 
-		require.IsType(t, &rabbitMQAMQP10provider{}, prov)
-		amqp10Prov := prov.(*rabbitMQAMQP10provider)
+		require.IsType(t, &rabbitMQAMQP10Provider{}, prov)
+		amqp10Prov := prov.(*rabbitMQAMQP10Provider)
 		assert.NotNil(t, amqp10Prov.connections)
 	})
 }
@@ -158,8 +164,24 @@ func mockSpyAmqp10Environment(t *testing.T) *rabbitMQAMQP10EnvironmentCall {
 func newTestCABundle(t *testing.T) string {
 	t.Helper()
 
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	certificateTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "arke-test-ca"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+	}
+	certificateDER, err := x509.CreateCertificate(rand.Reader, certificateTemplate, certificateTemplate, publicKey, privateKey)
+	require.NoError(t, err)
+	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER})
+
 	caBundlePath := t.TempDir() + "/ca.pem"
-	require.NoError(t, os.WriteFile(caBundlePath, []byte("not a cert"), 0600))
+	require.NoError(t, os.WriteFile(caBundlePath, certificatePEM, 0600))
 	return caBundlePath
 }
 
@@ -217,7 +239,8 @@ func Test_amqp10provider_Connect(t *testing.T) {
 
 		require.Nil(t, err)
 		require.NotNil(t, gotCall.tlsConfig)
-		assert.NotNil(t, gotCall.tlsConfig.RootCAs)
+		require.NotNil(t, gotCall.tlsConfig.RootCAs)
+		assert.Len(t, gotCall.tlsConfig.RootCAs.Subjects(), 1)
 		assert.False(t, gotCall.tlsConfig.InsecureSkipVerify)
 	})
 }
@@ -333,9 +356,6 @@ func Test_amqp10provider_StubbedMethods(t *testing.T) {
 	// TODO: Issue 196 - delete
 	assert.Nil(t, prov.DeadLetter(context.Background(), nil, ""))
 
-	// TODO: Issue 197 - delete
-	assert.Empty(t, prov.SupportedSourceOptions())
-
 	// TODO: Issue 194 - delete
 	assert.Empty(t, prov.Stats().Clients)
 
@@ -351,4 +371,31 @@ func Test_sleepRandomReconnect(t *testing.T) {
 	elapsed := time.Since(start)
 	assert.GreaterOrEqual(t, elapsed, 100*time.Millisecond)
 	assert.LessOrEqual(t, elapsed, time.Duration(provider.ReconnectDelay+100)*time.Millisecond)
+}
+
+func Test_SupportedSourceOptions(t *testing.T) {
+	prov := NewRabbitMQAMQP10Provider()
+	opts := prov.SupportedSourceOptions()
+	assert.NotNil(t, opts)
+	expected := map[string]bool{
+		"MessageTTL":        true,
+		"DeadLetterAddress": true,
+		"DeadLetterSubject": true,
+		"Expires":           true,
+		"Offset":            true,
+		"ConsumerGroup":     true,
+	}
+
+	assert.Equal(t, expected, opts)
+}
+
+func Test_SupportedStreamSourceOptions(t *testing.T) {
+	assert.NotNil(t, supportedStreamSourceOptions)
+	expected := map[string]bool{
+		"Offset":        true,
+		"MessageTTL":    true,
+		"ConsumerGroup": true,
+	}
+
+	assert.Equal(t, expected, supportedStreamSourceOptions)
 }
