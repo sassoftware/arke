@@ -201,3 +201,21 @@ func Test_BrokerDetails_watchConnection(t *testing.T) {
 		assert.Eventually(t, func() bool { return bd.state.Load() == provider.CLOSED }, time.Second, 10*time.Millisecond)
 	})
 }
+
+func Test_BrokerDetails_connectInitializesEntityTracker(t *testing.T) {
+	bd := newTestBrokerDetails()
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	connection.On("WatchConnection", mock.Anything).Return().Once()
+	env := &rabbitMQAMQP10EnvironmentMock{}
+	env.On("NewConnection", bd.ctx).Return(connection, nil).Once()
+	bd.Env = env
+
+	ok, err := bd.connect()
+
+	require.True(t, ok)
+	require.NoError(t, err)
+	assert.NotNil(t, bd.knownEntities)
+	assert.False(t, bd.exchangeKnown("exchange"))
+	env.AssertExpectations(t)
+	connection.AssertExpectations(t)
+}

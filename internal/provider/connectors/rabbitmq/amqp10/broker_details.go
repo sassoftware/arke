@@ -14,6 +14,7 @@ import (
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/i18n"
 	"github.com/sassoftware/arke/internal/provider"
+	"github.com/sassoftware/arke/internal/provider/connectors/amqp/track"
 	"github.com/sassoftware/arke/internal/util"
 )
 
@@ -55,6 +56,7 @@ type BrokerDetails struct {
 	knownExchanges   *util.ConcurrentMap
 	knownQueues      *util.ConcurrentMap
 	knownBindings    *util.ConcurrentMap
+	knownEntities    *track.EntityTracker
 	activeMessages   *util.ConcurrentMap
 
 	state        atomic.Uint32
@@ -127,6 +129,19 @@ func (bd *BrokerDetails) decrementStreamCount() {
 	bd.updateLastPubSubEvent()
 }
 
+func (bd *BrokerDetails) exchangeKnown(name string) bool {
+	return bd.entityTracker().ExchangeExists(name)
+}
+
+func (bd *BrokerDetails) entityTracker() *track.EntityTracker {
+	bd.Lock()
+	defer bd.Unlock()
+	if bd.knownEntities == nil {
+		bd.knownEntities = track.New()
+	}
+	return bd.knownEntities
+}
+
 func (bd *BrokerDetails) waitWhileConnecting() int {
 	for start := time.Now(); time.Since(start) < 30*time.Second; {
 		switch bd.state.Load() {
@@ -172,6 +187,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	bd.knownExchanges = util.NewConcurrentMap()
 	bd.knownQueues = util.NewConcurrentMap()
 	bd.knownBindings = util.NewConcurrentMap()
+	bd.knownEntities = track.New()
 	bd.activeMessages = util.NewConcurrentMap()
 
 	util.Logger.Info(i18n.ClientConnect, bd.ClientIdentifier, bd.connectionConfig.GetHost())

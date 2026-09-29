@@ -7,12 +7,14 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	rabbitmqamqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/i18n"
 	"github.com/sassoftware/arke/internal/provider"
@@ -232,4 +234,44 @@ func (prov *rabbitMQAMQP10Provider) SourceStats(context.Context, *pb.Source) *pb
 // SupportedSourceOptions returns the source options supported by AMQP 1.0.
 func (prov *rabbitMQAMQP10Provider) SupportedSourceOptions() map[string]bool {
 	return supportedSourceOptions
+}
+
+func addressToExchangeSpecification(address *pb.Address) (rabbitmqamqp.IExchangeSpecification, error) {
+	switch address.GetType() {
+	case pb.Address_TOPIC:
+		return &rabbitmqamqp.TopicExchangeSpecification{Name: address.GetName(), IsAutoDelete: address.GetAutoDelete(), Arguments: nil}, nil
+	case pb.Address_FILTER:
+		return &rabbitmqamqp.HeadersExchangeSpecification{Name: address.GetName(), IsAutoDelete: address.GetAutoDelete(), Arguments: nil}, nil
+	case pb.Address_QUEUE:
+		return &rabbitmqamqp.DirectExchangeSpecification{Name: address.GetName(), IsAutoDelete: address.GetAutoDelete(), Arguments: nil}, nil
+	case pb.Address_STREAM:
+		return &rabbitmqamqp.CustomExchangeSpecification{Name: address.GetName(), IsAutoDelete: address.GetAutoDelete(), ExchangeTypeName: "stream", Arguments: nil}, nil
+	default:
+		return nil, fmt.Errorf("%s is not a valid address type", address.GetType())
+	}
+}
+
+func (prov *rabbitMQAMQP10Provider) declareExchange(address *pb.Address, bd *BrokerDetails) error {
+	name := address.GetName()
+	if strings.Contains(name, "amq.") || bd.exchangeKnown(name) {
+		return nil
+	}
+
+	specification, err := addressToExchangeSpecification(address)
+	if err != nil {
+		return err
+	}
+	_, err = bd.Connection.Management().DeclareExchange(bd.ctx, specification)
+	if err != nil {
+		if errors.Is(err, rabbitmqamqp.ErrPreconditionFailed) {
+			return err
+		}
+		if bd.exchangeKnown(name) {
+			return nil
+		}
+		return err
+	}
+
+	bd.entityTracker().AddExchange(name)
+	return nil
 }
