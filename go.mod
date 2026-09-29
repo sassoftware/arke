@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/Azure/go-amqp v1.7.0
 	github.com/KimMachineGun/automemlimit v0.7.5
+	github.com/go-openapi/testify/v2 v2.6.0
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.4
 	github.com/hashicorp/go-metrics v0.6.1

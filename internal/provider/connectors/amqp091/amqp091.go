@@ -1756,7 +1756,7 @@ func (prov *amqp091provider) WaitForConnect(ctx context.Context) bool {
 			return false
 		}
 
-		sleepRandomReconnect()
+		provider.SleepRandomReconnect()
 	}
 	return false
 }
@@ -1872,10 +1872,6 @@ func (prov *amqp091provider) SourceStats(ctx context.Context, source *pb.Source)
 	return bd.getStreamOrQueueStats(source)
 }
 
-func sleepRandomReconnect() {
-	util.SleepRandom(100, provider.ReconnectDelay)
-}
-
 // connectionWatcher Called at the end of BrokerDetails.connect(), we monitor the bd.ErrorChannel and try to reconnect
 // if we get an error on the channel. Receiving nil on the channel means we've closed because of the client
 func (bd *BrokerDetails) connectionWatcher() {
@@ -1898,7 +1894,7 @@ func (bd *BrokerDetails) connectionWatcher() {
 			// again (because ErrorChannel is drained and no relay goroutine
 			// will send another notification until a new connection is made).
 			for !bd.clientDisconnect.Load() {
-				sleepRandomReconnect()
+				provider.SleepRandomReconnect()
 				if ok, _ := bd.connect(); ok {
 					break
 				}

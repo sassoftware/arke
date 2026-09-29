@@ -363,16 +363,6 @@ func Test_amqp10provider_StubbedMethods(t *testing.T) {
 	assert.Equal(t, &pb.SourceStats{}, prov.SourceStats(context.Background(), nil))
 }
 
-func Test_sleepRandomReconnect(t *testing.T) {
-	start := time.Now()
-
-	sleepRandomReconnect()
-
-	elapsed := time.Since(start)
-	assert.GreaterOrEqual(t, elapsed, 100*time.Millisecond)
-	assert.LessOrEqual(t, elapsed, time.Duration(provider.ReconnectDelay+100)*time.Millisecond)
-}
-
 func Test_SupportedSourceOptions(t *testing.T) {
 	prov := NewRabbitMQAMQP10Provider()
 	opts := prov.SupportedSourceOptions()

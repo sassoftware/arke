@@ -217,7 +217,7 @@ func (prov *rabbitMQAMQP10Provider) WaitForConnect(ctx context.Context) bool {
 			return false
 		}
 
-		sleepRandomReconnect()
+		provider.SleepRandomReconnect()
 	}
 	return false
 }
@@ -230,10 +230,6 @@ func (prov *rabbitMQAMQP10Provider) Stats() *provider.Stats {
 func (prov *rabbitMQAMQP10Provider) SourceStats(context.Context, *pb.Source) *pb.SourceStats {
 	// TODO: Issue 193
 	return &pb.SourceStats{}
-}
-
-func sleepRandomReconnect() {
-	util.SleepRandom(100, provider.ReconnectDelay)
 }
 
 // SupportedSourceOptions returns the source options supported by AMQP 1.0.
