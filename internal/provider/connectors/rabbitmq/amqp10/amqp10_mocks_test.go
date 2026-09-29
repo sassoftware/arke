@@ -17,8 +17,9 @@ func (m *rabbitMQAMQP10ConnectionMock) Close(ctx context.Context) error {
 	return args.Error(0)
 }
 
-func (m *rabbitMQAMQP10ConnectionMock) WatchConnection(ch chan *rabbitmqamqp.StateChanged) {
-	m.Called(ch)
+func (m *rabbitMQAMQP10ConnectionMock) WatchConnection(ch chan *rabbitmqamqp.StateChanged) error {
+	args := m.Called(ch)
+	return args.Error(0)
 }
 
 func (m *rabbitMQAMQP10ConnectionMock) IsClosed() bool {

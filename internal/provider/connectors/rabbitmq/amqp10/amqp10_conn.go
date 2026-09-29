@@ -3,6 +3,7 @@ package amqp10
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"time"
 
 	goamqp "github.com/Azure/go-amqp"
@@ -15,7 +16,7 @@ import (
 // rabbitMQAMQP10ConnectionShim Shim so we can do unit testing
 type rabbitMQAMQP10ConnectionShim interface {
 	Close(context.Context) error
-	WatchConnection(ch chan *ramqp.StateChanged)
+	WatchConnection(ch chan *ramqp.StateChanged) error
 	IsClosed() bool
 	State() int
 }
@@ -51,8 +52,12 @@ func getRabbitMQAMQP10ConnOptions(ctx context.Context, cf *pb.ConnectionConfigur
 	}, nil
 }
 
-func (a *rabbitMQAMQP10Connection) WatchConnection(ch chan *ramqp.StateChanged) {
+func (a *rabbitMQAMQP10Connection) WatchConnection(ch chan *ramqp.StateChanged) error {
+	if a.connection == nil {
+		return errors.New("connection is nil")
+	}
 	a.connection.NotifyStatusChange(ch)
+	return nil
 }
 
 func (a *rabbitMQAMQP10Connection) IsClosed() bool {

@@ -183,8 +183,11 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	// buf of 5 to account for possible quick state changes and avoid blocking
 	bd.Connection = conn
 	bd.stateChannel = make(chan *rabbitmqamqp.StateChanged, 5)
-	bd.Connection.WatchConnection(bd.stateChannel)
-
+	err = bd.Connection.WatchConnection(bd.stateChannel)
+	if err != nil {
+		bd.disconnect()
+		return false, err
+	}
 	go bd.watchConnection()
 
 	util.Logger.Info(i18n.ClientConnected, bd.ClientIdentifier)
