@@ -54,7 +54,3 @@ func (e *rabbitMQAMQP10Environment) NewConnection(ctx context.Context) (rabbitMQ
 		state:            provider.CONNECTED,
 	}, nil
 }
-
-func (e *rabbitMQAMQP10Environment) Close(ctx context.Context) error {
-	return e.environment.CloseConnections(e.ctx)
-}

@@ -56,15 +56,6 @@ func Test_rabbitMQAMQP10Environment_NewConnection(t *testing.T) {
 	})
 }
 
-func Test_rabbitMQAMQP10Environment_Close(t *testing.T) {
-	env := &rabbitMQAMQP10Environment{
-		ctx:         context.Background(),
-		environment: rabbitmqamqp.NewEnvironment("amqp://127.0.0.1:1", nil),
-	}
-
-	assert.NoError(t, env.Close(context.Background()))
-}
-
 func Test_rabbitMQAMQP10Connection_IsClosed(t *testing.T) {
 	conn := &rabbitMQAMQP10Connection{}
 
