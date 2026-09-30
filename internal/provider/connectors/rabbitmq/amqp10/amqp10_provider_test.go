@@ -18,6 +18,7 @@ import (
 	rabbitmqamqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/internal/provider"
+	"github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -149,7 +150,7 @@ func mockSpyAmqp10Environment(t *testing.T) *rabbitMQAMQP10EnvironmentCall {
 		gotCall.ctx = ctx
 		gotCall.cf = cf
 		gotCall.tlsConfig = tlsConfig
-		gotCall.connURL = getConnURL(cf)
+		gotCall.connURL = amqp.GetConnURL(cf)
 		gotCall.options = options
 		return env, nil
 	}

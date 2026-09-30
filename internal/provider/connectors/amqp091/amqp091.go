@@ -26,6 +26,7 @@ import (
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/i18n"
 	"github.com/sassoftware/arke/internal/provider"
+	iamqp "github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/sassoftware/arke/internal/provider/connectors/amqp/track"
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/sassoftware/arke/internal/util/tracing"
@@ -1974,14 +1975,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 
 	util.Logger.Info(i18n.ClientConnect, bd.ClientIdentifier, cf.GetHost())
 
-	scheme := "amqp"
-
-	// Use TLS in these scenarios:
-	// * ConnectionConfiguration.TLS = true
-	if cf.GetTls() {
-		bd.tlsEnabled = true
-		scheme = "amqps"
-	}
+	bd.tlsEnabled = cf.GetTls()
 
 	var connStr string
 
@@ -1993,8 +1987,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 		util.Logger.Debugf("%s connecting without TLS: %s:%d", bd.ClientIdentifier, cf.GetHost(), cf.GetPort())
 	}
 
-	connStr = fmt.Sprintf("%s://%s:%s@%s:%d/%s", scheme, cf.GetCredentials().GetUsername(),
-		cf.GetCredentials().GetPassword(), cf.GetHost(), cf.GetPort(), tenant)
+	connStr = iamqp.GetConnURL(cf)
 
 	conn = NewAmqpConn091(connStr, bd.ClientIdentifier, bd.tlsConfig)
 	err = conn.Connect()
