@@ -1,11 +1,11 @@
 package amqp10
 
 // rabbitMQAMQP10Table Simple map
-type rabbitMQAMQP10Table map[string]interface{}
+type rabbitMQAMQP10Table map[string]any
 
 // rabbitMQAMQP10Message Structure of a message
 type rabbitMQAMQP10Message struct {
-	delivery        interface{}
+	delivery        any
 	Body            []byte
 	DeliveryMode    int
 	ContentType     string
@@ -15,6 +15,6 @@ type rabbitMQAMQP10Message struct {
 }
 
 // SetDelivery convenience method for unit tests
-func (msg *rabbitMQAMQP10Message) SetDelivery(delivery interface{}) {
+func (msg *rabbitMQAMQP10Message) SetDelivery(delivery any) {
 	msg.delivery = delivery
 }
