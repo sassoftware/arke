@@ -21,6 +21,12 @@ func TestNewProvider(t *testing.T) {
 	assert.Nil(t, err)
 }
 
+func TestNewProviderAMQP10(t *testing.T) {
+	prov, err := p.NewProvider("rabbitmq-amqp10")
+	assert.NotNil(t, prov)
+	assert.Nil(t, err)
+}
+
 func TestNewProviderFail(t *testing.T) {
 	prov, err := p.NewProvider("fail")
 	assert.Nil(t, prov)

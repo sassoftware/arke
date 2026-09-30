@@ -4,6 +4,10 @@
 package provider
 
 const (
+	TrustedCerts string = "ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE"
+)
+
+const (
 	// DISCONNECTED Closed by the broker, retry connecting
 	DISCONNECTED = iota
 	// CONNECTED Connected to the broker

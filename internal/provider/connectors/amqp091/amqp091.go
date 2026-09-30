@@ -26,6 +26,7 @@ import (
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/i18n"
 	"github.com/sassoftware/arke/internal/provider"
+	iamqp "github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/sassoftware/arke/internal/provider/connectors/amqp/track"
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/sassoftware/arke/internal/util/tracing"
@@ -34,7 +35,6 @@ import (
 )
 
 const providerName string = "amqp091"
-const trustedCerts = "ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE"
 const streamOffsetHeaderName = "x-current-offset"
 const retryCountHeaderName = "x-retry-count"
 const rabbitReceivedTimeHeaderName = "x-opt-rabbitmq-received-time"
@@ -144,14 +144,16 @@ func NewAMQP091Provider() provider.Provider {
 	connections := util.NewConcurrentMap()
 	prov := &amqp091provider{connections: connections}
 
-	caBundlePath := os.Getenv(trustedCerts)
+	caBundlePath := os.Getenv(provider.TrustedCerts)
 	prov.tlsConfig = &tls.Config{}
 
 	if caBundlePath != "" {
 		caBundle, err := os.ReadFile(filepath.FromSlash(filepath.Clean("/" + strings.Trim(caBundlePath, "/"))))
 		if err == nil {
 			prov.tlsConfig.RootCAs = x509.NewCertPool()
-			prov.tlsConfig.RootCAs.AppendCertsFromPEM(caBundle)
+			if !prov.tlsConfig.RootCAs.AppendCertsFromPEM(caBundle) {
+				util.Logger.Warn(i18n.TLSCABundleError, caBundlePath)
+			}
 		}
 	}
 
@@ -1755,7 +1757,7 @@ func (prov *amqp091provider) WaitForConnect(ctx context.Context) bool {
 			return false
 		}
 
-		sleepRandomReconnect()
+		provider.SleepRandomReconnect()
 	}
 	return false
 }
@@ -1871,10 +1873,6 @@ func (prov *amqp091provider) SourceStats(ctx context.Context, source *pb.Source)
 	return bd.getStreamOrQueueStats(source)
 }
 
-func sleepRandomReconnect() {
-	util.SleepRandom(100, provider.ReconnectDelay)
-}
-
 // connectionWatcher Called at the end of BrokerDetails.connect(), we monitor the bd.ErrorChannel and try to reconnect
 // if we get an error on the channel. Receiving nil on the channel means we've closed because of the client
 func (bd *BrokerDetails) connectionWatcher() {
@@ -1897,7 +1895,7 @@ func (bd *BrokerDetails) connectionWatcher() {
 			// again (because ErrorChannel is drained and no relay goroutine
 			// will send another notification until a new connection is made).
 			for !bd.clientDisconnect.Load() {
-				sleepRandomReconnect()
+				provider.SleepRandomReconnect()
 				if ok, _ := bd.connect(); ok {
 					break
 				}
@@ -1977,14 +1975,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 
 	util.Logger.Info(i18n.ClientConnect, bd.ClientIdentifier, cf.GetHost())
 
-	scheme := "amqp"
-
-	// Use TLS in these scenarios:
-	// * ConnectionConfiguration.TLS = true
-	if cf.GetTls() {
-		bd.tlsEnabled = true
-		scheme = "amqps"
-	}
+	bd.tlsEnabled = cf.GetTls()
 
 	var connStr string
 
@@ -1996,8 +1987,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 		util.Logger.Debugf("%s connecting without TLS: %s:%d", bd.ClientIdentifier, cf.GetHost(), cf.GetPort())
 	}
 
-	connStr = fmt.Sprintf("%s://%s:%s@%s:%d/%s", scheme, cf.GetCredentials().GetUsername(),
-		cf.GetCredentials().GetPassword(), cf.GetHost(), cf.GetPort(), tenant)
+	connStr = iamqp.GetConnURL(cf)
 
 	conn = NewAmqpConn091(connStr, bd.ClientIdentifier, bd.tlsConfig)
 	err = conn.Connect()
