@@ -47,7 +47,6 @@ func (e *rabbitMQAMQP10Environment) NewConnection(ctx context.Context) (rabbitMQ
 		return nil, err
 	}
 	return &rabbitMQAMQP10Connection{
-		connStr:          amqp.GetConnURL(e.connectionConfig),
 		connection:       conn,
 		connectionCtx:    connCtx,
 		connectionCancel: connCancel,

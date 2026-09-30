@@ -25,7 +25,6 @@ type rabbitMQAMQP10ConnectionShim interface {
 type rabbitMQAMQP10Connection struct {
 	rabbitMQAMQP10ConnectionShim //nolint:unused
 	provider                     provider.Provider
-	connStr                      string
 	connection                   *ramqp.AmqpConnection
 	connectionCtx                context.Context
 	connectionCancel             context.CancelFunc
