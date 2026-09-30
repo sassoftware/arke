@@ -395,6 +395,8 @@ func Test_SupportedStreamSourceOptions(t *testing.T) {
 	assert.Equal(t, expected, supportedStreamSourceOptions)
 }
 
+const testExchangeName = "exchange"
+
 func Test_addressToExchangeSpecification(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -409,12 +411,12 @@ func Test_addressToExchangeSpecification(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			address := &pb.Address{Name: "exchange", Type: test.addressType, AutoDelete: true}
+			address := &pb.Address{Name: testExchangeName, Type: test.addressType, AutoDelete: true}
 			specification, err := addressToExchangeSpecification(address)
 
 			require.NoError(t, err)
 			require.IsType(t, test.expectedType, specification)
-			assert.Equal(t, "exchange", exchangeSpecificationName(specification))
+			assert.Equal(t, testExchangeName, exchangeSpecificationName(specification))
 			assert.True(t, exchangeSpecificationAutoDelete(specification))
 			if custom, ok := specification.(*rabbitmqamqp.CustomExchangeSpecification); ok {
 				assert.Equal(t, "stream", custom.ExchangeTypeName)
@@ -422,7 +424,7 @@ func Test_addressToExchangeSpecification(t *testing.T) {
 		})
 	}
 
-	_, err := addressToExchangeSpecification(&pb.Address{Name: "exchange", Type: pb.Address_TargetType(99)})
+	_, err := addressToExchangeSpecification(&pb.Address{Name: testExchangeName, Type: pb.Address_TargetType(99)})
 	assert.EqualError(t, err, "99 is not a valid address type")
 }
 
@@ -457,7 +459,7 @@ func exchangeSpecificationAutoDelete(specification rabbitmqamqp.IExchangeSpecifi
 }
 
 func Test_amqp10provider_declareExchange(t *testing.T) {
-	address := &pb.Address{Name: "exchange", Type: pb.Address_TOPIC}
+	address := &pb.Address{Name: testExchangeName, Type: pb.Address_TOPIC}
 	management := &rabbitMQAMQP10ManagementMock{}
 	connection := &rabbitMQAMQP10ConnectionMock{}
 	connection.On("Management").Return(management)

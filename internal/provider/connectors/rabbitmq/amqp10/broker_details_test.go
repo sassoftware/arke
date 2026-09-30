@@ -205,7 +205,7 @@ func Test_BrokerDetails_watchConnection(t *testing.T) {
 func Test_BrokerDetails_connectInitializesEntityTracker(t *testing.T) {
 	bd := newTestBrokerDetails()
 	connection := &rabbitMQAMQP10ConnectionMock{}
-	connection.On("WatchConnection", mock.Anything).Return().Once()
+	connection.On("WatchConnection", mock.Anything).Return(nil).Once()
 	env := &rabbitMQAMQP10EnvironmentMock{}
 	env.On("NewConnection", bd.ctx).Return(connection, nil).Once()
 	bd.Env = env
