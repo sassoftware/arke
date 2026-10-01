@@ -166,7 +166,7 @@ func mockSpyAmqp10Environment(t *testing.T) *rabbitMQAMQP10EnvironmentCall {
 	return gotCall
 }
 
-func newTestCABundle(t *testing.T) string {
+func newTestCABundle(t *testing.T) (string, *x509.Certificate) {
 	t.Helper()
 
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -183,16 +183,19 @@ func newTestCABundle(t *testing.T) string {
 	}
 	certificateDER, err := x509.CreateCertificate(rand.Reader, certificateTemplate, certificateTemplate, publicKey, privateKey)
 	require.NoError(t, err)
+	certificate, err := x509.ParseCertificate(certificateDER)
+	require.NoError(t, err)
 	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER})
 
 	caBundlePath := t.TempDir() + "/ca.pem"
 	require.NoError(t, os.WriteFile(caBundlePath, certificatePEM, 0600))
-	return caBundlePath
+	return caBundlePath, certificate
 }
 
 func Test_amqp10provider_Connect(t *testing.T) {
 	t.Run("non TLS connect does not create TLS config when CA bundle is configured", func(t *testing.T) {
-		t.Setenv(provider.TrustedCerts, newTestCABundle(t))
+		caBundlePath, _ := newTestCABundle(t)
+		t.Setenv(provider.TrustedCerts, caBundlePath)
 		ctx, _ := newTestProviderContext(t, "connect-non-tls")
 		prov := newTestRabbitMQAMQP10Provider()
 		config := newTestConnectionConfig()
@@ -233,7 +236,8 @@ func Test_amqp10provider_Connect(t *testing.T) {
 	})
 
 	t.Run("TLS connect loads CA bundle into TLS config", func(t *testing.T) {
-		t.Setenv(provider.TrustedCerts, newTestCABundle(t))
+		caBundlePath, caCertificate := newTestCABundle(t)
+		t.Setenv(provider.TrustedCerts, caBundlePath)
 		ctx, _ := newTestProviderContext(t, "connect-tls-ca")
 		prov := newTestRabbitMQAMQP10Provider()
 		config := newTestConnectionConfig()
@@ -245,7 +249,11 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		require.Nil(t, err)
 		require.NotNil(t, gotCall.tlsConfig)
 		require.NotNil(t, gotCall.tlsConfig.RootCAs)
-		assert.Len(t, gotCall.tlsConfig.RootCAs.Subjects(), 1)
+		_, verifyErr := caCertificate.Verify(x509.VerifyOptions{
+			Roots:     gotCall.tlsConfig.RootCAs,
+			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		})
+		require.NoError(t, verifyErr)
 		assert.False(t, gotCall.tlsConfig.InsecureSkipVerify)
 	})
 }
@@ -470,6 +478,21 @@ func Test_amqp10provider_declareExchange(t *testing.T) {
 	require.NoError(t, prov.declareExchange(address, bd))
 	assert.True(t, bd.exchangeExists(address.GetName()))
 	management.AssertNumberOfCalls(t, "DeclareExchange", 1)
+}
+
+func Test_amqp10provider_declareExchangeReturnsInvalidAddressType(t *testing.T) {
+	management := &rabbitMQAMQP10ManagementMock{}
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	connection.On("Management").Return(management)
+	bd := &BrokerDetails{ctx: context.Background(), Connection: connection}
+	prov := newTestRabbitMQAMQP10Provider()
+	address := &pb.Address{Name: testExchangeName, Type: pb.Address_TargetType(99)}
+
+	err := prov.declareExchange(address, bd)
+
+	assert.EqualError(t, err, "99 is not a valid address type")
+	connection.AssertNotCalled(t, "Management")
+	management.AssertNotCalled(t, "DeclareExchange", mock.Anything, mock.Anything)
 }
 
 func Test_amqp10provider_declareExchangeSkipsReservedAndKnown(t *testing.T) {
