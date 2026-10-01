@@ -253,7 +253,7 @@ func addressToExchangeSpecification(address *pb.Address) (rabbitmqamqp.IExchange
 
 func (prov *rabbitMQAMQP10Provider) declareExchange(address *pb.Address, bd *BrokerDetails) error {
 	name := address.GetName()
-	if strings.Contains(name, "amq.") || bd.exchangeKnown(name) {
+	if strings.Contains(name, "amq.") || bd.exchangeExists(name) {
 		return nil
 	}
 
@@ -266,7 +266,7 @@ func (prov *rabbitMQAMQP10Provider) declareExchange(address *pb.Address, bd *Bro
 		if errors.Is(err, rabbitmqamqp.ErrPreconditionFailed) {
 			return err
 		}
-		if bd.exchangeKnown(name) {
+		if bd.exchangeExists(name) {
 			return nil
 		}
 		return err

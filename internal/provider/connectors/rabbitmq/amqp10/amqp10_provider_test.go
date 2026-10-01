@@ -468,7 +468,7 @@ func Test_amqp10provider_declareExchange(t *testing.T) {
 	management.On("DeclareExchange", bd.ctx, mock.AnythingOfType("*rabbitmqamqp.TopicExchangeSpecification")).Return(nil, nil).Once()
 
 	require.NoError(t, prov.declareExchange(address, bd))
-	assert.True(t, bd.exchangeKnown(address.GetName()))
+	assert.True(t, bd.exchangeExists(address.GetName()))
 	management.AssertNumberOfCalls(t, "DeclareExchange", 1)
 }
 
@@ -495,7 +495,7 @@ func Test_amqp10provider_declareExchangeRetriesAfterFailure(t *testing.T) {
 
 	assert.EqualError(t, prov.declareExchange(&pb.Address{Name: "failed", Type: pb.Address_TOPIC}, bd), "exchange failed")
 	assert.EqualError(t, prov.declareExchange(&pb.Address{Name: "failed", Type: pb.Address_TOPIC}, bd), "exchange failed")
-	assert.False(t, bd.exchangeKnown("failed"))
+	assert.False(t, bd.exchangeExists("failed"))
 	management.AssertNumberOfCalls(t, "DeclareExchange", 2)
 }
 
@@ -526,7 +526,7 @@ func Test_amqp10provider_declareExchangeReturnsPreconditionFailure(t *testing.T)
 	err := prov.declareExchange(&pb.Address{Name: "incompatible", Type: pb.Address_TOPIC}, bd)
 
 	require.ErrorIs(t, err, rabbitmqamqp.ErrPreconditionFailed)
-	assert.True(t, bd.exchangeKnown("incompatible"))
+	assert.True(t, bd.exchangeExists("incompatible"))
 	management.AssertNumberOfCalls(t, "DeclareExchange", 1)
 }
 
@@ -545,8 +545,8 @@ func Test_amqp10provider_declareExchangeConnectionIsolation(t *testing.T) {
 
 	prov := newTestRabbitMQAMQP10Provider()
 	require.NoError(t, prov.declareExchange(&pb.Address{Name: "shared", Type: pb.Address_TOPIC}, bdOne))
-	assert.False(t, bdTwo.exchangeKnown("shared"))
+	assert.False(t, bdTwo.exchangeExists("shared"))
 	require.NoError(t, prov.declareExchange(&pb.Address{Name: "shared", Type: pb.Address_TOPIC}, bdTwo))
-	assert.True(t, bdOne.exchangeKnown("shared"))
-	assert.True(t, bdTwo.exchangeKnown("shared"))
+	assert.True(t, bdOne.exchangeExists("shared"))
+	assert.True(t, bdTwo.exchangeExists("shared"))
 }

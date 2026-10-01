@@ -215,7 +215,7 @@ func Test_BrokerDetails_connectInitializesEntityTracker(t *testing.T) {
 	require.True(t, ok)
 	require.NoError(t, err)
 	assert.NotNil(t, bd.knownEntities)
-	assert.False(t, bd.exchangeKnown("exchange"))
+	assert.False(t, bd.exchangeExists("exchange"))
 	env.AssertExpectations(t)
 	connection.AssertExpectations(t)
 }

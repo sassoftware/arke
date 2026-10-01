@@ -53,9 +53,6 @@ type BrokerDetails struct {
 	// StreamConnection streamConnectionShim
 
 	ClientIdentifier string
-	knownExchanges   *util.ConcurrentMap
-	knownQueues      *util.ConcurrentMap
-	knownBindings    *util.ConcurrentMap
 	knownEntities    *track.EntityTracker
 	activeMessages   *util.ConcurrentMap
 
@@ -129,7 +126,7 @@ func (bd *BrokerDetails) decrementStreamCount() {
 	bd.updateLastPubSubEvent()
 }
 
-func (bd *BrokerDetails) exchangeKnown(name string) bool {
+func (bd *BrokerDetails) exchangeExists(name string) bool {
 	return bd.entityTracker().ExchangeExists(name)
 }
 
@@ -184,9 +181,6 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	// Reinitialize these maps early, we especially want to
 	// ensure activeMessages gets cleared out before an Ack/Nacks
 	// are sent from the client.
-	bd.knownExchanges = util.NewConcurrentMap()
-	bd.knownQueues = util.NewConcurrentMap()
-	bd.knownBindings = util.NewConcurrentMap()
 	bd.knownEntities = track.New()
 	bd.activeMessages = util.NewConcurrentMap()
 
