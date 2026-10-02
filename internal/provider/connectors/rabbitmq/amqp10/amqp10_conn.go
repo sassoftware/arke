@@ -29,6 +29,8 @@ type rabbitMQAMQP10ManagementShim interface {
 	DeclareExchange(context.Context, ramqp.IExchangeSpecification) (*ramqp.AmqpExchangeInfo, error)
 }
 
+var _ rabbitMQAMQP10ManagementShim = (*ramqp.AmqpManagement)(nil)
+
 // rabbitMQAMQP10Connection A connection to the broker
 type rabbitMQAMQP10Connection struct {
 	rabbitMQAMQP10ConnectionShim //nolint:unused
