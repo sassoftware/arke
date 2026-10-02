@@ -7,7 +7,7 @@ require (
 	github.com/sassoftware/arke v1.40.1
 	github.com/sassoftware/arke/api v1.13.0
 	github.com/stretchr/testify v1.12.1
-	google.golang.org/grpc v1.84.0
+	google.golang.org/grpc v1.83.2
 	gopkg.in/yaml.v2 v2.4.0
 )
 

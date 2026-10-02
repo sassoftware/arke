@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	ramqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,4 +37,12 @@ func Test_getAmqp10ConnOptions(t *testing.T) {
 
 	assert.NotNil(t, options.SASLType)
 	assert.Same(t, tlsCfg, options.TLSConfig)
+}
+
+func Test_rabbitMQAMQP10Connection_WatchConnectionRejectsNilConnection(t *testing.T) {
+	connection := &rabbitMQAMQP10Connection{}
+
+	err := connection.WatchConnection(make(chan *ramqp.StateChanged))
+
+	require.EqualError(t, err, "connection is nil")
 }
