@@ -260,10 +260,28 @@ func Test_amqp10provider_Connect(t *testing.T) {
 
 func Test_amqp10provider_ClientExists(t *testing.T) {
 	prov := newTestRabbitMQAMQP10Provider()
-	prov.connections.Add("client", &BrokerDetails{})
+	connected := &BrokerDetails{}
+	connected.state.Store(provider.CONNECTED)
+	prov.connections.Add("client", connected)
 
 	assert.True(t, prov.ClientExists("client"))
 	assert.False(t, prov.ClientExists("missing"))
+
+	t.Run("returns false for a closed broker detail", func(t *testing.T) {
+		closed := &BrokerDetails{}
+		closed.state.Store(provider.CLOSED)
+		prov.connections.Add("closed", closed)
+
+		assert.False(t, prov.ClientExists("closed"))
+	})
+
+	t.Run("returns true while reconnecting", func(t *testing.T) {
+		reconnecting := &BrokerDetails{}
+		reconnecting.state.Store(provider.CONNECTING)
+		prov.connections.Add("reconnecting", reconnecting)
+
+		assert.True(t, prov.ClientExists("reconnecting"))
+	})
 }
 
 func Test_amqp10provider_Disconnect(t *testing.T) {

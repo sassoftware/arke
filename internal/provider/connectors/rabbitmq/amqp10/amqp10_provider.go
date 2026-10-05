@@ -140,9 +140,23 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 }
 
 func (prov *rabbitMQAMQP10Provider) ClientExists(clientIdentifier string) bool {
-	// TODO: Issue 201 - not sure anything else needs to be done here
-	_, ok := prov.connections.Get(clientIdentifier)
-	return ok
+	value, ok := prov.connections.Get(clientIdentifier)
+	if !ok {
+		return false
+	}
+
+	bd, ok := value.(*BrokerDetails)
+	if !ok {
+		return false
+	}
+
+	switch bd.state.Load() {
+	case provider.CONNECTED, provider.CONNECTING:
+		return true
+	default:
+		// Issue 201: broker-level verification remains unresolved.
+		return false
+	}
 }
 
 func (prov *rabbitMQAMQP10Provider) Publish(context.Context, <-chan *pb.Message, chan<- *pb.Error) *pb.Error {
