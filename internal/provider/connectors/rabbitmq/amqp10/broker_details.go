@@ -14,6 +14,7 @@ import (
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/i18n"
 	"github.com/sassoftware/arke/internal/provider"
+	"github.com/sassoftware/arke/internal/provider/connectors/amqp/track"
 	"github.com/sassoftware/arke/internal/util"
 
 	"github.com/sassoftware/arke/internal/provider/connectors/amqp"
@@ -55,9 +56,7 @@ type BrokerDetails struct {
 	// StreamConnection streamConnectionShim
 
 	ClientIdentifier string
-	knownExchanges   *util.ConcurrentMap
-	knownQueues      *util.ConcurrentMap
-	knownBindings    *util.ConcurrentMap
+	knownEntities    *track.EntityTracker
 	activeMessages   *util.ConcurrentMap
 
 	state        atomic.Uint32
@@ -130,6 +129,19 @@ func (bd *BrokerDetails) decrementStreamCount() {
 	bd.updateLastPubSubEvent()
 }
 
+func (bd *BrokerDetails) exchangeExists(name string) bool {
+	return bd.entityTracker().ExchangeExists(name)
+}
+
+func (bd *BrokerDetails) entityTracker() *track.EntityTracker {
+	bd.Lock()
+	defer bd.Unlock()
+	if bd.knownEntities == nil {
+		bd.knownEntities = track.New()
+	}
+	return bd.knownEntities
+}
+
 func (bd *BrokerDetails) waitWhileConnecting() int {
 	for start := time.Now(); time.Since(start) < 30*time.Second; {
 		switch bd.state.Load() {
@@ -172,9 +184,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	// Reinitialize these maps early, we especially want to
 	// ensure activeMessages gets cleared out before an Ack/Nacks
 	// are sent from the client.
-	bd.knownExchanges = util.NewConcurrentMap()
-	bd.knownQueues = util.NewConcurrentMap()
-	bd.knownBindings = util.NewConcurrentMap()
+	bd.knownEntities = track.New()
 	bd.activeMessages = util.NewConcurrentMap()
 
 	util.Logger.Info(i18n.ClientConnect, bd.ClientIdentifier, bd.connectionConfig.GetHost())

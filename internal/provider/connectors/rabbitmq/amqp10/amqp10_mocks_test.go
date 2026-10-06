@@ -15,6 +15,19 @@ type rabbitMQAMQP10ConnectionMock struct {
 	mock.Mock
 }
 
+type rabbitMQAMQP10ManagementMock struct {
+	mock.Mock
+}
+
+func (m *rabbitMQAMQP10ManagementMock) DeclareExchange(ctx context.Context, specification rabbitmqamqp.IExchangeSpecification) (*rabbitmqamqp.AmqpExchangeInfo, error) {
+	args := m.Called(ctx, specification)
+	var info *rabbitmqamqp.AmqpExchangeInfo
+	if args.Get(0) != nil {
+		info = args.Get(0).(*rabbitmqamqp.AmqpExchangeInfo)
+	}
+	return info, args.Error(1)
+}
+
 func (m *rabbitMQAMQP10ConnectionMock) Close(ctx context.Context) error {
 	args := m.Called(ctx)
 	return args.Error(0)
@@ -33,6 +46,11 @@ func (m *rabbitMQAMQP10ConnectionMock) IsClosed() bool {
 func (m *rabbitMQAMQP10ConnectionMock) State() int {
 	args := m.Called()
 	return args.Int(0)
+}
+
+func (m *rabbitMQAMQP10ConnectionMock) Management() rabbitMQAMQP10ManagementShim {
+	args := m.Called()
+	return args.Get(0).(rabbitMQAMQP10ManagementShim)
 }
 
 // rabbitMQAMQP10EnvironmentMock is a mock implementation of the rabbitMQAMQP10EnvironmentShim interface.
