@@ -95,6 +95,7 @@ type BrokerDetails struct {
 	pubChannels      *util.BlockingPool
 	pubPCChannels    *util.BlockingPool
 	StreamConnection streamConnectionShim
+	streamConnMu     sync.Mutex // guards lazy init of StreamConnection
 	ClientIdentifier string
 	knownExchanges   *util.ConcurrentMap
 	knownQueues      *util.ConcurrentMap
@@ -1588,16 +1589,18 @@ func (prov *amqp091provider) publishOneStream(ctx context.Context, msg *pb.Messa
 
 func (prov *amqp091provider) getStreamConnection(bd *BrokerDetails) *pb.Error {
 	// Not all of our clients are using streams, so we only connect if streams are used.
-	if bd.StreamConnection == nil {
-		connStr := getStreamConnectionString(bd)
-		bd.Lock()
-		bd.StreamConnection = NewStreamConn(connStr, bd.ClientIdentifier, bd.tlsConfig)
-		bd.Unlock()
-		connErr := bd.StreamConnection.Connect()
-		if connErr != nil {
-			return &pb.Error{Message: fmt.Sprintf("failed to create stream connection to broker: %s", connErr.Error())}
-		}
+	// Serialized so concurrent callers never see a StreamConnection that is not yet connected.
+	bd.streamConnMu.Lock()
+	defer bd.streamConnMu.Unlock()
+	if bd.StreamConnection != nil {
+		return nil
 	}
+
+	conn := NewStreamConn(getStreamConnectionString(bd), bd.ClientIdentifier, bd.tlsConfig)
+	if connErr := conn.Connect(); connErr != nil {
+		return &pb.Error{Message: fmt.Sprintf("failed to create stream connection to broker: %s", connErr.Error())}
+	}
+	bd.StreamConnection = conn
 	return nil
 }
 
@@ -1842,7 +1845,10 @@ func (prov *amqp091provider) SourceStats(ctx context.Context, source *pb.Source)
 	}
 
 	if source.GetType() == pb.Source_STREAM {
-		prov.getStreamConnection(bd)
+		if strConnErr := prov.getStreamConnection(bd); strConnErr != nil {
+			sourceStats.Error = strConnErr
+			return sourceStats
+		}
 	}
 
 	return bd.getStreamOrQueueStats(source)
