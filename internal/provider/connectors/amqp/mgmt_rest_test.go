@@ -28,7 +28,7 @@ func (m *ManagementClientMock) SourceStats(vhost, queueName string) (*pb.SourceS
 
 func Test_makeRequest(t *testing.T) {
 	t.Run("sets JSON headers and basic authentication", func(t *testing.T) {
-		req, err := makeRequest(http.MethodGet, "http://example.com/api", "user", "pass", nil)
+		req, err := makeRequest(context.Background(), http.MethodGet, "http://example.com/api", "user", "pass", nil)
 
 		require.NoError(t, err)
 		username, password, ok := req.BasicAuth()
@@ -40,14 +40,14 @@ func Test_makeRequest(t *testing.T) {
 	})
 
 	t.Run("omits basic authentication when either credential is empty", func(t *testing.T) {
-		req, err := makeRequest(http.MethodGet, "http://example.com/api", "user", "", nil)
+		req, err := makeRequest(context.Background(), http.MethodGet, "http://example.com/api", "user", "", nil)
 
 		require.NoError(t, err)
 		assert.Empty(t, req.Header.Get("Authorization"))
 	})
 
 	t.Run("returns invalid request errors", func(t *testing.T) {
-		_, err := makeRequest("bad method", "http://example.com/api", "", "", nil)
+		_, err := makeRequest(context.Background(), "bad method", "http://example.com/api", "", "", nil)
 
 		assert.Error(t, err)
 	})

@@ -35,7 +35,7 @@ func getAdminPort(cf *pb.ConnectionConfiguration) int32 {
 
 	// Next, check if the admin port is specified in the environment variable.
 	envAdminPortOnce.Do(func() {
-		if val, ok := strconv.Atoi(strings.TrimSpace(os.Getenv(EnvAdminPortName))); ok == nil {
+		if val, err := strconv.ParseInt(strings.TrimSpace(os.Getenv(EnvAdminPortName)), 10, 32); err == nil {
 			envAdminPortValue = int32(val)
 		}
 	})

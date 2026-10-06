@@ -37,6 +37,12 @@ func Test_getAdminPort(t *testing.T) {
 			expected: defaultAdminPort,
 		},
 		{
+			name:     "out of range environment port uses default",
+			config:   &pb.ConnectionConfiguration{},
+			envPort:  "2147483648",
+			expected: defaultAdminPort,
+		},
+		{
 			name:     "zero environment port uses default",
 			config:   &pb.ConnectionConfiguration{},
 			envPort:  "0",
