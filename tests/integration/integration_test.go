@@ -298,7 +298,6 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 	defer util.RemoveClientIdentifier(ctx)
 
 	connConfig := cfg.ConnectionConfigurationFromEnv()
-	t.Logf("cf: %+v", connConfig)
 	connConfig.ClientName = clientIdentifier
 	prov, err := provider.NewProvider(cfg.ConnectionConfigurationFromEnv().Provider)
 	require.NoError(t, err)
@@ -309,6 +308,21 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 	assert.Eventually(t, func() bool {
 		return prov.WaitForConnect(ctx)
 	}, 2*time.Second, 100*time.Millisecond)
+
+	source := &pb.Source{
+		Name: "queue-name",
+		Address: &pb.Address{
+			Name:     "queue-name",
+			Subjects: []string{},
+			Type:     pb.Address_QUEUE,
+		},
+	}
+	stats := prov.SourceStats(ctx, source)
+	assert.Nil(t, stats.Error)
+	assert.NotNil(t, stats)
+	// Used UI to create the queue queue-name.quorum and publish msgs.
+	// Ran this test and observed message_count and publish_rate.
+	t.Logf("Source stats: %+v", stats)
 	prov.Disconnect(ctx)
 	assert.False(t, prov.ClientExists(clientIdentifier))
 }

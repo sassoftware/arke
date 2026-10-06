@@ -6,6 +6,7 @@ package amqp10
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -16,6 +17,22 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
+
+type managementClientStub struct {
+	vhost     string
+	queueName string
+	stats     *pb.SourceStats
+}
+
+func (m *managementClientStub) Do(_ *http.Request) ([]byte, int, error) {
+	return nil, 0, nil
+}
+
+func (m *managementClientStub) SourceStats(vhost, queueName string) *pb.SourceStats {
+	m.vhost = vhost
+	m.queueName = queueName
+	return m.stats
+}
 
 func newTestBrokerDetails() *BrokerDetails {
 	return &BrokerDetails{
@@ -30,6 +47,51 @@ func newTestBrokerDetails() *BrokerDetails {
 				Password: "guest",
 			},
 		},
+	}
+}
+
+func Test_BrokerDetails_getStreamOrQueueStats(t *testing.T) {
+	tests := []struct {
+		name              string
+		tenant            string
+		source            *pb.Source
+		expectedVhost     string
+		expectedQueueName string
+	}{
+		{
+			name:   "quorum queue appends suffix and uses configured tenant",
+			tenant: "tenant-a",
+			source: &pb.Source{
+				Name: "orders",
+				Type: pb.Source_QUEUE,
+			},
+			expectedVhost:     "tenant-a",
+			expectedQueueName: "orders.quorum",
+		},
+		{
+			name: "stream preserves name and defaults empty tenant",
+			source: &pb.Source{
+				Name: "events",
+				Type: pb.Source_STREAM,
+			},
+			expectedVhost:     "/",
+			expectedQueueName: "events",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bd := newTestBrokerDetails()
+			bd.connectionConfig.Tenant = tt.tenant
+			managementClient := &managementClientStub{stats: &pb.SourceStats{MessageCount: 7}}
+			bd.mgmtClient = managementClient
+
+			got := bd.getStreamOrQueueStats(tt.source)
+
+			assert.Same(t, managementClient.stats, got)
+			assert.Equal(t, tt.expectedVhost, managementClient.vhost)
+			assert.Equal(t, tt.expectedQueueName, managementClient.queueName)
+		})
 	}
 }
 
