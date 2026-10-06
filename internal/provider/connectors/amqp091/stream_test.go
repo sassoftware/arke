@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -1388,4 +1389,124 @@ func Test_streamSubscribe_ExchangeAndBindingDeclaration(t *testing.T) {
 			smock.AssertExpectations(t)
 		})
 	}
+}
+
+// unconnectedGuardStreamConn records whether stats methods are invoked on a
+// stream connection that has not successfully completed Connect().
+type unconnectedGuardStreamConn struct {
+	streamConnectionMock
+	connectErr        error
+	connectEntered    chan struct{} // closed when Connect starts
+	connectRelease    chan struct{} // Connect blocks until closed (if non-nil)
+	connected         atomic.Bool
+	usedBeforeConnect atomic.Bool
+}
+
+func (g *unconnectedGuardStreamConn) Connect() error {
+	if g.connectEntered != nil {
+		close(g.connectEntered)
+	}
+	if g.connectRelease != nil {
+		<-g.connectRelease
+	}
+	if g.connectErr == nil {
+		g.connected.Store(true)
+	}
+	return g.connectErr
+}
+
+func (g *unconnectedGuardStreamConn) GetConsumerOffset(string, string) (int64, error) {
+	if !g.connected.Load() {
+		g.usedBeforeConnect.Store(true)
+	}
+	return 0, nil
+}
+
+func (g *unconnectedGuardStreamConn) GetStreamOffset(string) (int64, error) {
+	if !g.connected.Load() {
+		g.usedBeforeConnect.Store(true)
+	}
+	return 0, nil
+}
+
+func setupStreamStatsTest(t *testing.T, guard *unconnectedGuardStreamConn) (*amqp091provider, *BrokerDetails, *pb.Source) {
+	t.Helper()
+	oldGetClientIdentifier := GetClientIdentifier
+	oldNewStreamConn := NewStreamConn
+	t.Cleanup(func() {
+		GetClientIdentifier = oldGetClientIdentifier
+		NewStreamConn = oldNewStreamConn
+	})
+	GetClientIdentifier = func(context.Context) (string, error) { return "1234", nil }
+	NewStreamConn = func(string, string, *tls.Config) streamConnectionShim { return guard }
+
+	msrv := mockManagementRequestServer()
+	t.Cleanup(msrv.Close)
+	u, err := url.Parse(msrv.URL)
+	assert.NoError(t, err)
+	port, _ := strconv.Atoi(u.Port())
+
+	bd := &BrokerDetails{connectionConfig: &pb.ConnectionConfiguration{
+		Credentials: &pb.Credentials{Username: "user", Password: "password"},
+		Host:        u.Hostname(),
+		Tenant:      testTenant,
+		AdminPort:   int32(port), //nolint:gosec
+	}}
+	prov := NewAMQP091Provider().(*amqp091provider)
+	prov.connections.Add("1234", bd)
+
+	src := &pb.Source{
+		Name:    "sourceStream",
+		Type:    pb.Source_STREAM,
+		Address: &pb.Address{Name: "addressStream", Type: pb.Address_STREAM, Subjects: []string{"routingkey"}},
+	}
+	return prov, bd, src
+}
+
+// If getStreamConnection fails in SourceStats, the error is ignored and
+// getStreamOrQueueStats still uses the never-connected bd.StreamConnection.
+func Test_SourceStats_streamConnectFailureDoesNotUseUnconnectedConnection(t *testing.T) {
+	guard := &unconnectedGuardStreamConn{connectErr: errors.New("connect failed")}
+	prov, _, src := setupStreamStatsTest(t, guard)
+
+	var stats *pb.SourceStats
+	assert.NotPanics(t, func() { stats = prov.SourceStats(ctx, src) })
+
+	assert.False(t, guard.usedBeforeConnect.Load(),
+		"stats were queried on a stream connection whose Connect() failed")
+	assert.NotNil(t, stats.GetError(), "SourceStats should report the stream connection failure")
+}
+
+// Simulates Subscribe (getStreamConnection) still inside Connect() while a
+// concurrent SourceStats call sees a non-nil bd.StreamConnection and uses it.
+func Test_SourceStats_concurrentWithStreamConnect(t *testing.T) {
+	guard := &unconnectedGuardStreamConn{
+		connectEntered: make(chan struct{}),
+		connectRelease: make(chan struct{}),
+	}
+	prov, bd, src := setupStreamStatsTest(t, guard)
+
+	subscribeDone := make(chan *pb.Error, 1)
+	go func() { subscribeDone <- prov.getStreamConnection(bd) }()
+
+	select {
+	case <-guard.connectEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("subscribe never reached Connect()")
+	}
+
+	// SourceStats must wait for Connect() rather than use the half-initialized connection.
+	statsDone := make(chan struct{})
+	go func() {
+		defer close(statsDone)
+		assert.NotPanics(t, func() { prov.SourceStats(ctx, src) })
+	}()
+	time.Sleep(200 * time.Millisecond)
+	assert.False(t, guard.usedBeforeConnect.Load(),
+		"SourceStats used the stream connection before Connect() completed")
+
+	close(guard.connectRelease)
+	assert.Nil(t, <-subscribeDone)
+	<-statsDone
+	assert.False(t, guard.usedBeforeConnect.Load())
 }
