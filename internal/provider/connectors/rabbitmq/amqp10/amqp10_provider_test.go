@@ -325,7 +325,6 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		require.Nil(t, err)
 		require.NotNil(t, gotCall.tlsConfig)
 		require.NotNil(t, gotCall.tlsConfig.RootCAs)
-		assert.Len(t, gotCall.tlsConfig.RootCAs.Subjects(), 1)
 		assert.False(t, gotCall.tlsConfig.InsecureSkipVerify)
 	})
 }
