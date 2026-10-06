@@ -268,7 +268,7 @@ func (prov *rabbitMQAMQP10Provider) declareExchange(address *pb.Address, bd *Bro
 	if err != nil {
 		return err
 	}
-	_, err = bd.Connection.Management().DeclareExchange(bd.ctx, specification)
+	_, err = bd.Connection.DeclareExchange(bd.ctx, specification)
 	if err != nil {
 		if errors.Is(err, rabbitmqamqp.ErrPreconditionFailed) {
 			bd.entityTracker().AddExchange(name)
