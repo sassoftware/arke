@@ -100,11 +100,11 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 	var tlsConfig *tls.Config
 	if cf.GetTls() {
 		tlsConfig = &tls.Config{
-			InsecureSkipVerify: tlsSkipVerify, //nolint:gosec
+			InsecureSkipVerify: tlsSkipVerify, // #nosec G704
 		}
 		caBundlePath := os.Getenv(provider.TrustedCerts)
 		if caBundlePath != "" {
-			caBundle, err := os.ReadFile(filepath.FromSlash(filepath.Clean("/" + strings.Trim(caBundlePath, "/"))))
+			caBundle, err := os.ReadFile(filepath.FromSlash(filepath.Clean("/" + strings.Trim(caBundlePath, "/")))) // #gosec G703
 			if err == nil {
 				tlsConfig.RootCAs = x509.NewCertPool()
 				if !tlsConfig.RootCAs.AppendCertsFromPEM(caBundle) {
