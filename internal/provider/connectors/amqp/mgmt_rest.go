@@ -85,7 +85,7 @@ func makeRequest(ctx context.Context, method, url, username, password string, bo
 // Do performs an HTTP request to the AMQP management endpoint and returns the
 // response body, status code, and any error encountered.
 func (c *AMQPManagementClient) Do(req *http.Request) ([]byte, int, error) {
-	resp, err := c.client.Do(req.WithContext(c.Ctx))
+	resp, err := c.client.Do(req.WithContext(c.Ctx)) //nolint:gosec
 	if err != nil {
 		return nil, 0, err
 	}
@@ -129,7 +129,7 @@ func (c *AMQPManagementClient) SourceStats(vhost, queueName string) *pb.SourceSt
 		stats.DeliverRate = float32(qStats.MessageStats.DeliverDetails.Rate)
 		stats.ConsumerCount = int32(qStats.Consumers)
 	}
-	switch qStats.Type { //nolint:exhaustive
+	switch qStats.Type {
 	case queueTypeQuorum:
 		stats.MessageCount = int64(qStats.Messages)
 	case queueTypeStream:

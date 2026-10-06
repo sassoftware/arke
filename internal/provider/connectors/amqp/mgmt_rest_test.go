@@ -64,7 +64,7 @@ func Test_AMQPManagementClient_Do(t *testing.T) {
 		Ctx:    context.Background(),
 		client: server.Client(),
 	}
-	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
 	require.NoError(t, err)
 
 	body, status, err := client.Do(req)

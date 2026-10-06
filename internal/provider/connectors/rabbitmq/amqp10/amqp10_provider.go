@@ -100,7 +100,7 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 	var tlsConfig *tls.Config
 	if cf.GetTls() {
 		tlsConfig = &tls.Config{
-			InsecureSkipVerify: tlsSkipVerify, // #nosec G704
+			InsecureSkipVerify: tlsSkipVerify, //nolint:gosec
 		}
 		caBundlePath := os.Getenv(provider.TrustedCerts)
 		if caBundlePath != "" {
