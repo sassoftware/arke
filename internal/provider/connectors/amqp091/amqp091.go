@@ -1968,11 +1968,6 @@ func (bd *BrokerDetails) connect() (bool, error) {
 
 	cf := bd.connectionConfig
 
-	var tenant = cf.GetTenant()
-	if tenant == "" {
-		tenant = "/"
-	}
-
 	util.Logger.Info(i18n.ClientConnect, bd.ClientIdentifier, cf.GetHost())
 
 	bd.tlsEnabled = cf.GetTls()
