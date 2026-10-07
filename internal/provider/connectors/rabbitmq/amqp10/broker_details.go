@@ -26,9 +26,8 @@ type BrokerDetails struct {
 	Env      rabbitMQAMQP10EnvironmentShim
 
 	// TODO: The only _real_ reason broker details needs a connection is for
-	// management (conn.Management()). Otherwise the connection could just
-	// expose the methods brokerdetails needs, like state, etc., and Env can
-	// manage closing it.
+	// exchange declaration. Otherwise the connection could just expose the
+	// methods brokerdetails needs, like state, etc., and Env can manage closing it.
 	Connection rabbitMQAMQP10ConnectionShim
 
 	// TODO: Issue 199 - do we need to shim the publisher?

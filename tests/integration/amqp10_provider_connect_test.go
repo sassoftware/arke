@@ -65,7 +65,7 @@ func Test_AMQP10DeclareExchangeAllowsIncompatibleRedeclaration(t *testing.T) {
 	prov, err := provider.NewProvider(baseConfig.Provider)
 	require.NoError(t, err)
 
-	connectClient := func(clientName string) context.Context {
+	connectClient := func(clientName string) (context.Context, context.CancelFunc) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		clientAddr := "test-amqp10-declare-" + uuid.NewString()
@@ -81,12 +81,12 @@ func Test_AMQP10DeclareExchangeAllowsIncompatibleRedeclaration(t *testing.T) {
 			util.RemoveClientIdentifier(ctx)
 			cancel()
 		})
-		return ctx
+		return ctx, cancel
 	}
 
 	exchangeName := "arke-amqp10-redeclare-" + uuid.NewString()
-	ctxA := connectClient("test-amqp10-declare-a")
-	ctxB := connectClient("test-amqp10-declare-b")
+	ctxA, cancelA := connectClient("test-amqp10-declare-a")
+	ctxB, cancelB := connectClient("test-amqp10-declare-b")
 
 	// There is no public exchange-delete operation on this temporary Subscribe path.
 	sourceA := &pb.Source{Address: &pb.Address{Name: exchangeName, Type: pb.Address_TOPIC, AutoDelete: true}}
@@ -94,4 +94,6 @@ func Test_AMQP10DeclareExchangeAllowsIncompatibleRedeclaration(t *testing.T) {
 
 	sourceB := &pb.Source{Address: &pb.Address{Name: exchangeName, Type: pb.Address_TOPIC, AutoDelete: false}}
 	require.Nil(t, prov.Subscribe(ctxB, sourceB, nil))
+	cancelA()
+	cancelB()
 }

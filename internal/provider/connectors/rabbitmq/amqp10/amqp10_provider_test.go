@@ -483,22 +483,18 @@ func exchangeSpecificationAutoDelete(specification rabbitmqamqp.IExchangeSpecifi
 
 func Test_amqp10provider_declareExchange(t *testing.T) {
 	address := &pb.Address{Name: testExchangeName, Type: pb.Address_TOPIC}
-	management := &rabbitMQAMQP10ManagementMock{}
 	connection := &rabbitMQAMQP10ConnectionMock{}
-	connection.On("Management").Return(management)
 	bd := &BrokerDetails{ctx: context.Background(), Connection: connection}
 	prov := newTestRabbitMQAMQP10Provider()
-	management.On("DeclareExchange", bd.ctx, mock.AnythingOfType("*rabbitmqamqp.TopicExchangeSpecification")).Return(nil, nil).Once()
+	connection.On("DeclareExchange", bd.ctx, mock.AnythingOfType("*rabbitmqamqp.TopicExchangeSpecification")).Return(nil, nil).Once()
 
 	require.NoError(t, prov.declareExchange(address, bd))
 	assert.True(t, bd.exchangeExists(address.GetName()))
-	management.AssertNumberOfCalls(t, "DeclareExchange", 1)
+	connection.AssertNumberOfCalls(t, "DeclareExchange", 1)
 }
 
 func Test_amqp10provider_declareExchangeReturnsInvalidAddressType(t *testing.T) {
-	management := &rabbitMQAMQP10ManagementMock{}
 	connection := &rabbitMQAMQP10ConnectionMock{}
-	connection.On("Management").Return(management)
 	bd := &BrokerDetails{ctx: context.Background(), Connection: connection}
 	prov := newTestRabbitMQAMQP10Provider()
 	address := &pb.Address{Name: testExchangeName, Type: pb.Address_TargetType(99)}
@@ -506,85 +502,74 @@ func Test_amqp10provider_declareExchangeReturnsInvalidAddressType(t *testing.T) 
 	err := prov.declareExchange(address, bd)
 
 	assert.EqualError(t, err, "99 is not a valid address type")
-	connection.AssertNotCalled(t, "Management")
-	management.AssertNotCalled(t, "DeclareExchange", mock.Anything, mock.Anything)
+	connection.AssertNotCalled(t, "DeclareExchange", mock.Anything, mock.Anything)
 }
 
 func Test_amqp10provider_declareExchangeSkipsReservedAndKnown(t *testing.T) {
-	management := &rabbitMQAMQP10ManagementMock{}
 	connection := &rabbitMQAMQP10ConnectionMock{}
-	connection.On("Management").Return(management)
 	bd := &BrokerDetails{ctx: context.Background(), Connection: connection}
 	prov := newTestRabbitMQAMQP10Provider()
 
 	require.NoError(t, prov.declareExchange(&pb.Address{Name: "amq.direct", Type: pb.Address_QUEUE}, bd))
 	bd.entityTracker().AddExchange("known")
 	require.NoError(t, prov.declareExchange(&pb.Address{Name: "known", Type: pb.Address_TOPIC}, bd))
-	management.AssertNotCalled(t, "DeclareExchange", mock.Anything, mock.Anything)
+	connection.AssertNotCalled(t, "DeclareExchange", mock.Anything, mock.Anything)
 }
 
 func Test_amqp10provider_declareExchangeRetriesAfterFailure(t *testing.T) {
-	management := &rabbitMQAMQP10ManagementMock{}
 	connection := &rabbitMQAMQP10ConnectionMock{}
-	connection.On("Management").Return(management)
 	bd := &BrokerDetails{ctx: context.Background(), Connection: connection}
 	prov := newTestRabbitMQAMQP10Provider()
-	management.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, errors.New("exchange failed")).Twice()
+	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, errors.New("exchange failed")).Twice()
 
 	assert.EqualError(t, prov.declareExchange(&pb.Address{Name: "failed", Type: pb.Address_TOPIC}, bd), "exchange failed")
 	assert.EqualError(t, prov.declareExchange(&pb.Address{Name: "failed", Type: pb.Address_TOPIC}, bd), "exchange failed")
 	assert.False(t, bd.exchangeExists("failed"))
-	management.AssertNumberOfCalls(t, "DeclareExchange", 2)
+	connection.AssertNumberOfCalls(t, "DeclareExchange", 2)
 }
 
 func Test_amqp10provider_declareExchangeAcceptsConcurrentSuccess(t *testing.T) {
-	management := &rabbitMQAMQP10ManagementMock{}
 	connection := &rabbitMQAMQP10ConnectionMock{}
-	connection.On("Management").Return(management)
 	bd := &BrokerDetails{ctx: context.Background(), Connection: connection}
 	prov := newTestRabbitMQAMQP10Provider()
-	management.On("DeclareExchange", bd.ctx, mock.Anything).Run(func(mock.Arguments) {
+	connection.On("DeclareExchange", bd.ctx, mock.Anything).Run(func(mock.Arguments) {
 		bd.entityTracker().AddExchange("race")
 	}).Return(nil, errors.New("exchange failed")).Once()
 
 	require.NoError(t, prov.declareExchange(&pb.Address{Name: "race", Type: pb.Address_TOPIC}, bd))
-	management.AssertNumberOfCalls(t, "DeclareExchange", 1)
+	connection.AssertNumberOfCalls(t, "DeclareExchange", 1)
 }
 
 func Test_amqp10provider_subscribeDeclaresExchange(t *testing.T) {
 	ctx, clientIdentifier := newTestProviderContext(t, "subscribe-declare")
-	management := &rabbitMQAMQP10ManagementMock{}
 	connection := &rabbitMQAMQP10ConnectionMock{}
-	connection.On("Management").Return(management).Once()
 	bd := &BrokerDetails{ctx: ctx, Connection: connection}
 	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add(clientIdentifier, bd)
 	source := &pb.Source{Address: &pb.Address{Name: "subscribe", Type: pb.Address_TOPIC}}
-	management.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
+	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
 
 	err := prov.Subscribe(ctx, source, nil)
 
 	require.Nil(t, err)
 	assert.True(t, bd.exchangeExists(source.GetAddress().GetName()))
-	management.AssertNumberOfCalls(t, "DeclareExchange", 1)
+	connection.AssertNumberOfCalls(t, "DeclareExchange", 1)
 }
 
 func Test_amqp10provider_subscribeReturnsDeclarationError(t *testing.T) {
 	ctx, clientIdentifier := newTestProviderContext(t, "subscribe-declare-error")
-	management := &rabbitMQAMQP10ManagementMock{}
 	connection := &rabbitMQAMQP10ConnectionMock{}
-	connection.On("Management").Return(management).Once()
 	bd := &BrokerDetails{ctx: ctx, Connection: connection}
 	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add(clientIdentifier, bd)
 	source := &pb.Source{Address: &pb.Address{Name: "subscribe-error", Type: pb.Address_TOPIC}}
-	management.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, errors.New("exchange failed")).Once()
+	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, errors.New("exchange failed")).Once()
 
 	err := prov.Subscribe(ctx, source, nil)
 
 	require.Equal(t, "exchange failed", err.GetMessage())
 	assert.False(t, bd.exchangeExists(source.GetAddress().GetName()))
-	management.AssertNumberOfCalls(t, "DeclareExchange", 1)
+	connection.AssertNumberOfCalls(t, "DeclareExchange", 1)
 }
 
 func Test_amqp10provider_subscribeSkipsKnownExchange(t *testing.T) {
@@ -600,32 +585,26 @@ func Test_amqp10provider_subscribeSkipsKnownExchange(t *testing.T) {
 }
 
 func Test_amqp10provider_declareExchangeAcceptsPreconditionFailure(t *testing.T) {
-	management := &rabbitMQAMQP10ManagementMock{}
 	connection := &rabbitMQAMQP10ConnectionMock{}
-	connection.On("Management").Return(management)
 	bd := &BrokerDetails{ctx: context.Background(), Connection: connection}
 	prov := newTestRabbitMQAMQP10Provider()
-	management.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, rabbitmqamqp.ErrPreconditionFailed).Once()
+	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, rabbitmqamqp.ErrPreconditionFailed).Once()
 
 	err := prov.declareExchange(&pb.Address{Name: "incompatible", Type: pb.Address_TOPIC}, bd)
 
 	require.NoError(t, err)
 	assert.True(t, bd.exchangeExists("incompatible"))
-	management.AssertNumberOfCalls(t, "DeclareExchange", 1)
+	connection.AssertNumberOfCalls(t, "DeclareExchange", 1)
 }
 
 func Test_amqp10provider_declareExchangeConnectionIsolation(t *testing.T) {
-	managementOne := &rabbitMQAMQP10ManagementMock{}
 	connectionOne := &rabbitMQAMQP10ConnectionMock{}
-	connectionOne.On("Management").Return(managementOne)
 	bdOne := &BrokerDetails{ctx: context.Background(), Connection: connectionOne}
-	managementOne.On("DeclareExchange", bdOne.ctx, mock.Anything).Return(nil, nil).Once()
+	connectionOne.On("DeclareExchange", bdOne.ctx, mock.Anything).Return(nil, nil).Once()
 
-	managementTwo := &rabbitMQAMQP10ManagementMock{}
 	connectionTwo := &rabbitMQAMQP10ConnectionMock{}
-	connectionTwo.On("Management").Return(managementTwo)
 	bdTwo := &BrokerDetails{ctx: context.Background(), Connection: connectionTwo}
-	managementTwo.On("DeclareExchange", bdTwo.ctx, mock.Anything).Return(nil, nil).Once()
+	connectionTwo.On("DeclareExchange", bdTwo.ctx, mock.Anything).Return(nil, nil).Once()
 
 	prov := newTestRabbitMQAMQP10Provider()
 	require.NoError(t, prov.declareExchange(&pb.Address{Name: "shared", Type: pb.Address_TOPIC}, bdOne))
