@@ -154,7 +154,6 @@ func (prov *rabbitMQAMQP10Provider) ClientExists(clientIdentifier string) bool {
 	case provider.CONNECTED, provider.CONNECTING:
 		return true
 	default:
-		// Issue 201: broker-level verification remains unresolved.
 		return false
 	}
 }
