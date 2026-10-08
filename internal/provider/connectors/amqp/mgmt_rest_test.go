@@ -28,7 +28,7 @@ func (m *ManagementClientMock) SourceStats(vhost, queueName string) (*pb.SourceS
 
 func Test_makeRequest(t *testing.T) {
 	t.Run("sets JSON headers and basic authentication", func(t *testing.T) {
-		req, err := makeRequest(context.Background(), http.MethodGet, "http://example.com/api", "user", "pass", nil)
+		req, err := makeRequest(context.Background(), http.MethodGet, "http://example.com/api", "user", "pass")
 
 		require.NoError(t, err)
 		username, password, ok := req.BasicAuth()
@@ -40,14 +40,14 @@ func Test_makeRequest(t *testing.T) {
 	})
 
 	t.Run("omits basic authentication when either credential is empty", func(t *testing.T) {
-		req, err := makeRequest(context.Background(), http.MethodGet, "http://example.com/api", "user", "", nil)
+		req, err := makeRequest(context.Background(), http.MethodGet, "http://example.com/api", "user", "")
 
 		require.NoError(t, err)
 		assert.Empty(t, req.Header.Get("Authorization"))
 	})
 
 	t.Run("returns invalid request errors", func(t *testing.T) {
-		_, err := makeRequest(context.Background(), "bad method", "http://example.com/api", "", "", nil)
+		_, err := makeRequest(context.Background(), "bad method", "http://example.com/api", "", "")
 
 		assert.Error(t, err)
 	})
@@ -72,6 +72,51 @@ func Test_AMQPManagementClient_Do(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusAccepted, status)
 	assert.Equal(t, "response body", string(body))
+}
+
+func Test_AMQPManagementClient_Request(t *testing.T) {
+	type requestInfo struct {
+		method        string
+		path          string
+		authorization string
+	}
+	requests := make(chan requestInfo, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests <- requestInfo{
+			method:        req.Method,
+			path:          req.URL.EscapedPath(),
+			authorization: req.Header.Get("Authorization"),
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client, err := NewManagementClient(context.Background(), server.URL, "user", "pass", nil)
+	require.NoError(t, err)
+	_, status, err := client.Request(context.Background(), http.MethodDelete, "/api/queues/%2F/orders")
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNoContent, status)
+	request := <-requests
+	assert.Equal(t, http.MethodDelete, request.method)
+	assert.Equal(t, "/api/queues/%2F/orders", request.path)
+	assert.Equal(t, "Basic dXNlcjpwYXNz", request.authorization)
+}
+
+func Test_AMQPManagementClient_RequestRespectsContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("request should not reach the server")
+	}))
+	defer server.Close()
+
+	client, err := NewManagementClient(context.Background(), server.URL, "user", "pass", nil)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err = client.Request(ctx, http.MethodGet, "/api/queues/%2F/orders")
+
+	assert.ErrorIs(t, err, context.Canceled)
 }
 
 func Test_AMQPManagementClient_SourceStats(t *testing.T) {
