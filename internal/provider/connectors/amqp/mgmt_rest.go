@@ -85,7 +85,7 @@ func makeRequest(ctx context.Context, method, url, username, password string) (*
 // Do performs an HTTP request to the AMQP management endpoint and returns the
 // response body, status code, and any error encountered.
 func (c *AMQPManagementClient) Do(req *http.Request) ([]byte, int, error) {
-	resp, err := c.client.Do(req.WithContext(c.Ctx)) //nolint:gosec
+	resp, err := c.client.Do(req) //nolint:gosec
 	if err != nil {
 		return nil, 0, err
 	}
@@ -95,6 +95,16 @@ func (c *AMQPManagementClient) Do(req *http.Request) ([]byte, int, error) {
 		return nil, resp.StatusCode, err
 	}
 	return data, resp.StatusCode, nil
+}
+
+// Request sends an authenticated request to a path on the management API.
+func (c *AMQPManagementClient) Request(ctx context.Context, method, path string) ([]byte, int, error) {
+	requestURL := strings.TrimRight(c.endpoint, "/") + "/" + strings.TrimLeft(path, "/")
+	req, err := makeRequest(ctx, method, requestURL, c.username, c.password)
+	if err != nil {
+		return nil, 0, err
+	}
+	return c.Do(req)
 }
 
 // SourceStats retrieves statistics for a specific queue in the given virtual host.
@@ -109,12 +119,7 @@ func (c *AMQPManagementClient) SourceStats(vhost, queueName string) *pb.SourceSt
 	vhost = url.QueryEscape(vhost)
 
 	urn := fmt.Sprintf("/api/queues/%s/%s", vhost, queue)
-	req, err := makeRequest(c.Ctx, "GET", fmt.Sprintf("%s%s", c.endpoint, urn), c.username, c.password)
-	if err != nil {
-		stats.Error = &pb.Error{Message: err.Error()}
-		return stats
-	}
-	body, _, err := c.Do(req)
+	body, _, err := c.Request(c.Ctx, http.MethodGet, urn)
 	if err != nil {
 		stats.Error = &pb.Error{Message: err.Error()}
 		return stats

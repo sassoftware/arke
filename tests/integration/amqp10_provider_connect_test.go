@@ -130,46 +130,15 @@ type declaredQueueProperties struct {
 	singleActiveConsumer bool
 }
 
-type rabbitQueueManagementClient struct {
-	endpoint string
-	vhost    string
-	username string
-	password string
-	client   *amqp.AMQPManagementClient
-}
-
-func newRabbitQueueManagementClient(connectionConfig *pb.ConnectionConfiguration) (*rabbitQueueManagementClient, error) {
-	vhost := connectionConfig.GetTenant()
+func queueManagementPath(vhost, queueName string) string {
 	if vhost == "" {
 		vhost = "/"
 	}
-	username, password := amqp.GetUsernamePassword(connectionConfig)
-	endpoint := amqp.GetMgmtEndpoint(connectionConfig)
-	client, err := amqp.NewManagementClient(context.Background(), endpoint, username, password, nil)
-	if err != nil {
-		return nil, err
-	}
-	return &rabbitQueueManagementClient{
-		endpoint: endpoint,
-		vhost:    vhost,
-		username: username,
-		password: password,
-		client:   client,
-	}, nil
+	return "/api/queues/" + url.PathEscape(vhost) + "/" + url.PathEscape(queueName)
 }
 
-func (m *rabbitQueueManagementClient) request(ctx context.Context, method, queueName string) ([]byte, int, error) {
-	endpoint := m.endpoint + "/api/queues/" + url.PathEscape(m.vhost) + "/" + url.PathEscape(queueName)
-	request, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
-	if err != nil {
-		return nil, 0, err
-	}
-	request.SetBasicAuth(m.username, m.password)
-	return m.client.Do(request)
-}
-
-func (m *rabbitQueueManagementClient) deleteQueue(ctx context.Context, queueName string) error {
-	_, statusCode, err := m.request(ctx, http.MethodDelete, queueName)
+func deleteQueue(ctx context.Context, client *amqp.AMQPManagementClient, vhost, queueName string) error {
+	_, statusCode, err := client.Request(ctx, http.MethodDelete, queueManagementPath(vhost, queueName))
 	if err != nil {
 		return err
 	}
@@ -179,8 +148,8 @@ func (m *rabbitQueueManagementClient) deleteQueue(ctx context.Context, queueName
 	return nil
 }
 
-func (m *rabbitQueueManagementClient) queueProperties(ctx context.Context, queueName string) (declaredQueueProperties, error) {
-	data, statusCode, err := m.request(ctx, http.MethodGet, queueName)
+func queueProperties(ctx context.Context, client *amqp.AMQPManagementClient, vhost, queueName string) (declaredQueueProperties, error) {
+	data, statusCode, err := client.Request(ctx, http.MethodGet, queueManagementPath(vhost, queueName))
 	if err != nil {
 		return declaredQueueProperties{}, err
 	}
@@ -263,7 +232,8 @@ func Test_AMQP091AndAMQP10QueueDeclarationsMatch(t *testing.T) {
 	}
 
 	connectionConfig := cfg.ConnectionConfigurationFromEnv()
-	management, err := newRabbitQueueManagementClient(&connectionConfig)
+	username, password := amqp.GetUsernamePassword(&connectionConfig)
+	management, err := amqp.NewManagementClient(context.Background(), amqp.GetMgmtEndpoint(&connectionConfig), username, password, nil)
 	require.NoError(t, err)
 	baseQueueName := "issue190-" + uuid.NewString()
 	queueName091 := baseQueueName + "-091.quorum"
@@ -271,10 +241,10 @@ func Test_AMQP091AndAMQP10QueueDeclarationsMatch(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := management.deleteQueue(cleanupCtx, queueName091); err != nil {
+		if err := deleteQueue(cleanupCtx, management, connectionConfig.GetTenant(), queueName091); err != nil {
 			t.Errorf("delete AMQP 0.9.1 queue: %v", err)
 		}
-		if err := management.deleteQueue(cleanupCtx, queueName10); err != nil {
+		if err := deleteQueue(cleanupCtx, management, connectionConfig.GetTenant(), queueName10); err != nil {
 			t.Errorf("delete AMQP 1.0 queue: %v", err)
 		}
 	})
@@ -315,8 +285,8 @@ func Test_AMQP091AndAMQP10QueueDeclarationsMatch(t *testing.T) {
 	queueName10 = amqp.SourceName(source10)
 	require.Nil(t, provider10.Subscribe(ctx10, source10, nil))
 
-	properties091 := waitForQueueProperties(t, management, queueName091)
-	properties10 := waitForQueueProperties(t, management, queueName10)
+	properties091 := waitForQueueProperties(t, management, connectionConfig.GetTenant(), queueName091)
+	properties10 := waitForQueueProperties(t, management, connectionConfig.GetTenant(), queueName10)
 	expected := declaredQueueProperties{
 		queueType:            "quorum",
 		expires:              600000,
@@ -327,14 +297,30 @@ func Test_AMQP091AndAMQP10QueueDeclarationsMatch(t *testing.T) {
 	}
 	require.Equal(t, expected, properties091)
 	require.Equal(t, expected, properties10)
+
+	provider10Conflict := amqp10.NewRabbitMQAMQP10Provider()
+	ctx10Conflict := integrationClientContext(t, "issue190-amqp10-conflict")
+	t.Cleanup(func() {
+		provider10Conflict.Disconnect(ctx10Conflict)
+	})
+	require.Nil(t, provider10Conflict.Connect(ctx10Conflict, &connectionConfig, false))
+
+	conflictingSource := newSource(baseQueueName + "-10")
+	conflictingSource.Options["MessageTTL"] = "3211"
+	conflictErr := provider10Conflict.Subscribe(ctx10Conflict, conflictingSource, nil)
+	t.Logf("conflicting queue redeclaration result: %v", conflictErr)
+	require.Nil(t, conflictErr)
+
+	properties10 = waitForQueueProperties(t, management, connectionConfig.GetTenant(), queueName10)
+	require.Equal(t, expected, properties10)
 }
 
-func waitForQueueProperties(t *testing.T, management *rabbitQueueManagementClient, queueName string) declaredQueueProperties {
+func waitForQueueProperties(t *testing.T, management *amqp.AMQPManagementClient, vhost, queueName string) declaredQueueProperties {
 	t.Helper()
 	var properties declaredQueueProperties
 	var lastErr error
 	require.Eventually(t, func() bool {
-		properties, lastErr = management.queueProperties(context.Background(), queueName)
+		properties, lastErr = queueProperties(context.Background(), management, vhost, queueName)
 		return lastErr == nil
 	}, 5*time.Second, 100*time.Millisecond, "queue %q properties unavailable: %v", queueName, lastErr)
 	return properties
