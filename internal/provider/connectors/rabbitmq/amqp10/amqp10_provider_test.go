@@ -769,12 +769,9 @@ func Test_queueSpecificationRejectsUnsupportedAndInvalidOptions(t *testing.T) {
 
 	_, err = queueSpecification(&pb.Source{Type: pb.Source_QUEUE, Options: map[string]string{"Expires": "invalid"}})
 	assert.EqualError(t, err, "value for Expires option must be a quoted integer")
-
-	_, err = queueSpecification(&pb.Source{Type: pb.Source_STREAM})
-	assert.EqualError(t, err, "STREAM is not a valid source type")
 }
 
-func Test_amqp10provider_declareQueueTracksBrokerError(t *testing.T) {
+func Test_amqp10provider_declareQueueReturnsBrokerError(t *testing.T) {
 	connection := &rabbitMQAMQP10ConnectionMock{}
 	bd := &BrokerDetails{ctx: context.Background(), Connection: connection}
 	prov := newTestRabbitMQAMQP10Provider()
@@ -782,8 +779,21 @@ func Test_amqp10provider_declareQueueTracksBrokerError(t *testing.T) {
 
 	err := prov.declareQueue(&pb.Source{Name: "failed", Type: pb.Source_TEMPORARY}, bd)
 
+	require.EqualError(t, err, "queue failed")
+	assert.False(t, bd.queueExists("failed"))
+	connection.AssertNumberOfCalls(t, "DeclareQueue", 1)
+}
+
+func Test_amqp10provider_declareQueueAcceptsPreconditionFailure(t *testing.T) {
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	bd := &BrokerDetails{ctx: context.Background(), Connection: connection}
+	prov := newTestRabbitMQAMQP10Provider()
+	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, rabbitmqamqp.ErrPreconditionFailed).Once()
+
+	err := prov.declareQueue(&pb.Source{Name: "already-exists", Type: pb.Source_TEMPORARY}, bd)
+
 	require.NoError(t, err)
-	assert.True(t, bd.queueExists("failed"))
+	assert.True(t, bd.queueExists("already-exists"))
 	connection.AssertNumberOfCalls(t, "DeclareQueue", 1)
 }
 

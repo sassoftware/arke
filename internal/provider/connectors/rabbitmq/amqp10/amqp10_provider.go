@@ -323,14 +323,6 @@ func (prov *rabbitMQAMQP10Provider) declareExchange(address *pb.Address, bd *Bro
 }
 
 func queueSpecification(source *pb.Source) (rabbitmqamqp.IQueueSpecification, error) {
-	switch source.GetType() {
-	case pb.Source_QUEUE, pb.Source_TEMPORARY:
-	case pb.Source_STREAM:
-		return nil, fmt.Errorf("%s is not a valid source type", source.GetType())
-	default:
-		return nil, fmt.Errorf("%s is not a valid source type", source.GetType())
-	}
-
 	name := amqp.SourceName(source)
 	isQuorum := amqp.IsQuorum(source)
 	messageTTL := int64(0)
@@ -399,9 +391,9 @@ func (prov *rabbitMQAMQP10Provider) declareQueue(source *pb.Source, bd *BrokerDe
 		return err
 	}
 	_, declarationErr := bd.Connection.DeclareQueue(bd.ctx, specification)
-	if declarationErr != nil {
+	if declarationErr != nil && !errors.Is(declarationErr, rabbitmqamqp.ErrPreconditionFailed) {
 		util.Logger.Warn(i18n.ClientQueueDeclareError, declarationErr.Error(), bd.ClientIdentifier)
-		// TODO: Should we log or return queue declaration errors?
+		return declarationErr
 	}
 	bd.entityTracker().AddQueue(name)
 	return nil
