@@ -16,14 +16,17 @@ import (
 	"github.com/sassoftware/arke/internal/provider"
 	"github.com/sassoftware/arke/internal/provider/connectors/amqp/track"
 	"github.com/sassoftware/arke/internal/util"
+
+	"github.com/sassoftware/arke/internal/provider/connectors/amqp"
 )
 
 // BrokerDetails struct houses connection specific information for the broker
 type BrokerDetails struct {
 	sync.Mutex
-	ctx      context.Context
-	provider provider.Provider
-	Env      rabbitMQAMQP10EnvironmentShim
+	ctx        context.Context
+	provider   provider.Provider
+	mgmtClient amqp.ManagementClientShim
+	Env        rabbitMQAMQP10EnvironmentShim
 
 	// TODO: The only _real_ reason broker details needs a connection is for
 	// exchange declaration. Otherwise the connection could just expose the
@@ -239,4 +242,24 @@ func (bd *BrokerDetails) disconnect() {
 
 	bd.state.Store(provider.DISCONNECTED)
 	util.Logger.Info(i18n.ClientDisconnect, bd.ClientIdentifier)
+}
+
+func (bd *BrokerDetails) getStreamOrQueueStats(source *pb.Source) *pb.SourceStats {
+	// stats := &pb.SourceStats{
+	// 	MessageCount:  0,
+	// 	ConsumerCount: 0,
+	// 	LastOffset:    0,
+	// 	CurrentOffset: 0,
+	// 	Name:          providerName, <- we don't use this in 091
+	// 	PublishRate:   0,
+	// 	DeliverRate:   0,
+	// }
+
+	queue := amqp.SourceName(source)
+	vhost := amqp.GetVhost(bd.connectionConfig)
+	stats := bd.mgmtClient.SourceStats(vhost, queue)
+	if source.GetType() == pb.Source_STREAM {
+		// TODO: Issue 220/221 - Handle stream-specific stats
+	}
+	return stats
 }

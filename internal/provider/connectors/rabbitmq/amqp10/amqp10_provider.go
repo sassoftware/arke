@@ -18,6 +18,7 @@ import (
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/i18n"
 	"github.com/sassoftware/arke/internal/provider"
+	"github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/sassoftware/arke/internal/util"
 )
 
@@ -103,7 +104,7 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 		}
 		caBundlePath := os.Getenv(provider.TrustedCerts)
 		if caBundlePath != "" {
-			caBundle, err := os.ReadFile(filepath.FromSlash(filepath.Clean("/" + strings.Trim(caBundlePath, "/"))))
+			caBundle, err := os.ReadFile(filepath.FromSlash(filepath.Clean("/" + strings.Trim(caBundlePath, "/")))) // #gosec G703
 			if err == nil {
 				tlsConfig.RootCAs = x509.NewCertPool()
 				if !tlsConfig.RootCAs.AppendCertsFromPEM(caBundle) {
@@ -116,9 +117,17 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
+	endpoint := amqp.GetMgmtEndpoint(cf)
+	username, password := amqp.GetUsernamePassword(cf)
+	mgmtClient, err := amqp.NewManagementClient(ctx, endpoint, username, password, tlsConfig)
+	if err != nil {
+		return &pb.Error{Message: err.Error()}
+	}
+
 	bd = &BrokerDetails{
 		ctx:              ctx,
 		provider:         prov,
+		mgmtClient:       mgmtClient,
 		Env:              env,
 		ClientIdentifier: clientIdentifier,
 		tlsConfig:        tlsConfig,
@@ -246,9 +255,19 @@ func (prov *rabbitMQAMQP10Provider) Stats() *provider.Stats {
 	return &provider.Stats{}
 }
 
-func (prov *rabbitMQAMQP10Provider) SourceStats(context.Context, *pb.Source) *pb.SourceStats {
-	// TODO: Issue 193
-	return &pb.SourceStats{}
+func (prov *rabbitMQAMQP10Provider) SourceStats(ctx context.Context, source *pb.Source) *pb.SourceStats {
+	sourceStats := &pb.SourceStats{}
+	if source.GetAddress().GetName() == "" {
+		sourceStats.Error = &pb.Error{Message: "address name not defined"}
+		return sourceStats
+	}
+
+	bd, err := prov.getBrokerDetails(ctx)
+	if err != nil {
+		sourceStats.Error = &pb.Error{Message: err.Error()}
+		return sourceStats
+	}
+	return bd.getStreamOrQueueStats(source)
 }
 
 // SupportedSourceOptions returns the source options supported by AMQP 1.0.

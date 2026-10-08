@@ -31,18 +31,18 @@ func makeTestTable(n int) amqp091Table {
 
 func BenchmarkToAmqpTable(b *testing.B) {
 	src := makeTestTable(8)
-	b.ResetTimer()
+
 	b.ReportAllocs()
-	for range b.N {
+	for b.Loop() {
 		sinkTable = toAmqpTable(src)
 	}
 }
 
 func BenchmarkFromAmqpTable(b *testing.B) {
 	src := amqp.Table{"x-retry-count": int32(3), "Content-Type": "application/json"}
-	b.ResetTimer()
+
 	b.ReportAllocs()
-	for range b.N {
+	for b.Loop() {
 		sinkLocal = fromAmqpTable(src)
 	}
 }
@@ -63,7 +63,7 @@ var sinkHTTP *http.Client
 
 func BenchmarkGetManagementClient_Old(b *testing.B) {
 	b.ReportAllocs()
-	for range b.N {
+	for b.Loop() {
 		sinkHTTP = oldGetManagementClient(false)
 	}
 }
@@ -71,8 +71,8 @@ func BenchmarkGetManagementClient_Old(b *testing.B) {
 func BenchmarkGetManagementClient_New(b *testing.B) {
 	bd := &BrokerDetails{}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
+
+	for b.Loop() {
 		sinkHTTP = bd.getManagementClient()
 	}
 }
@@ -85,7 +85,7 @@ var sinkBD *BrokerDetails
 
 func BenchmarkBrokerDetailsValue(b *testing.B) {
 	b.ReportAllocs()
-	for range b.N {
+	for b.Loop() {
 		bd := BrokerDetails{ //nolint:exhaustruct
 			ClientIdentifier: "bench-client",
 			ErrorChannel:     make(chan amqp091Error, 1),
@@ -98,7 +98,7 @@ func BenchmarkBrokerDetailsValue(b *testing.B) {
 
 func BenchmarkBrokerDetailsPointer(b *testing.B) {
 	b.ReportAllocs()
-	for range b.N {
+	for b.Loop() {
 		sinkBD = &BrokerDetails{ //nolint:exhaustruct
 			ClientIdentifier: "bench-client",
 			ErrorChannel:     make(chan amqp091Error, 1),
@@ -114,7 +114,7 @@ var onceResult int
 func BenchmarkSyncOnce(b *testing.B) {
 	var once sync.Once
 	b.ReportAllocs()
-	for range b.N {
+	for b.Loop() {
 		once.Do(func() { onceResult++ })
 	}
 }

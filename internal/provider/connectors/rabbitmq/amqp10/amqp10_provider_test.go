@@ -193,6 +193,86 @@ func newTestCABundle(t *testing.T) (string, *x509.Certificate) {
 }
 
 func Test_amqp10provider_Connect(t *testing.T) {
+	t.Run("rejects nil connection configuration", func(t *testing.T) {
+		prov := newTestRabbitMQAMQP10Provider()
+
+		err := prov.Connect(context.Background(), nil, false)
+
+		require.NotNil(t, err)
+		assert.Equal(t, "connection configuration is required", err.GetMessage())
+	})
+
+	t.Run("rejects missing broker credentials", func(t *testing.T) {
+		ctx, _ := newTestProviderContext(t, "connect-missing-credentials")
+		prov := newTestRabbitMQAMQP10Provider()
+		config := newTestConnectionConfig()
+		config.Credentials = nil
+
+		err := prov.Connect(ctx, config, false)
+
+		require.NotNil(t, err)
+		assert.Equal(t, "missing broker credentials", err.GetMessage())
+	})
+
+	t.Run("rejects missing client identifier", func(t *testing.T) {
+		prov := newTestRabbitMQAMQP10Provider()
+
+		err := prov.Connect(context.Background(), newTestConnectionConfig(), false)
+
+		require.NotNil(t, err)
+		assert.Equal(t, "could not retrieve client-id from context", err.GetMessage())
+	})
+
+	t.Run("propagates environment construction error", func(t *testing.T) {
+		ctx, _ := newTestProviderContext(t, "connect-environment-error")
+		prov := newTestRabbitMQAMQP10Provider()
+		originalFactory := newRabbitMQAMQP10EnvironmentFunc
+		t.Cleanup(func() { newRabbitMQAMQP10EnvironmentFunc = originalFactory })
+		newRabbitMQAMQP10EnvironmentFunc = func(context.Context, *pb.ConnectionConfiguration, *tls.Config) (rabbitMQAMQP10EnvironmentShim, error) {
+			return nil, fmt.Errorf("environment setup failed")
+		}
+
+		err := prov.Connect(ctx, newTestConnectionConfig(), false)
+
+		require.NotNil(t, err)
+		assert.Equal(t, "environment setup failed", err.GetMessage())
+	})
+
+	t.Run("propagates broker connection error", func(t *testing.T) {
+		ctx, _ := newTestProviderContext(t, "connect-broker-error")
+		prov := newTestRabbitMQAMQP10Provider()
+		connectionErr := fmt.Errorf("broker connection failed")
+		env := &rabbitMQAMQP10EnvironmentMock{}
+		env.On("NewConnection", ctx).Return(nil, connectionErr).Once()
+		originalFactory := newRabbitMQAMQP10EnvironmentFunc
+		t.Cleanup(func() {
+			newRabbitMQAMQP10EnvironmentFunc = originalFactory
+			env.AssertExpectations(t)
+		})
+		newRabbitMQAMQP10EnvironmentFunc = func(context.Context, *pb.ConnectionConfiguration, *tls.Config) (rabbitMQAMQP10EnvironmentShim, error) {
+			return env, nil
+		}
+
+		err := prov.Connect(ctx, newTestConnectionConfig(), false)
+
+		require.NotNil(t, err)
+		assert.Equal(t, connectionErr.Error(), err.GetMessage())
+		assert.False(t, prov.ClientExists("connect-broker-error"))
+	})
+
+	t.Run("reuses an existing live connection", func(t *testing.T) {
+		ctx, clientIdentifier := newTestProviderContext(t, "connect-existing")
+		prov := newTestRabbitMQAMQP10Provider()
+		conn := &rabbitMQAMQP10ConnectionMock{}
+		conn.On("IsClosed").Return(false).Once()
+		prov.connections.Add(clientIdentifier, &BrokerDetails{ClientIdentifier: clientIdentifier, Connection: conn})
+
+		err := prov.Connect(ctx, newTestConnectionConfig(), false)
+
+		require.Nil(t, err)
+		conn.AssertExpectations(t)
+	})
+
 	t.Run("non TLS connect does not create TLS config when CA bundle is configured", func(t *testing.T) {
 		caBundlePath, _ := newTestCABundle(t)
 		t.Setenv(provider.TrustedCerts, caBundlePath)
@@ -388,7 +468,7 @@ func Test_amqp10provider_StubbedMethods(t *testing.T) {
 	assert.Empty(t, prov.Stats().Clients)
 
 	// TODO: Issue 193 - delete
-	assert.Equal(t, &pb.SourceStats{}, prov.SourceStats(context.Background(), nil))
+	assert.NotNil(t, prov.SourceStats(context.Background(), nil))
 }
 
 func Test_SupportedSourceOptions(t *testing.T) {
