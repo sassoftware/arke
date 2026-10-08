@@ -149,9 +149,22 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 }
 
 func (prov *rabbitMQAMQP10Provider) ClientExists(clientIdentifier string) bool {
-	// TODO: Issue 201 - not sure anything else needs to be done here
-	_, ok := prov.connections.Get(clientIdentifier)
-	return ok
+	value, ok := prov.connections.Get(clientIdentifier)
+	if !ok {
+		return false
+	}
+
+	bd, ok := value.(*BrokerDetails)
+	if !ok {
+		return false
+	}
+
+	switch bd.state.Load() {
+	case provider.CONNECTED, provider.CONNECTING:
+		return true
+	default:
+		return false
+	}
 }
 
 func (prov *rabbitMQAMQP10Provider) Publish(context.Context, <-chan *pb.Message, chan<- *pb.Error) *pb.Error {
@@ -162,7 +175,14 @@ func (prov *rabbitMQAMQP10Provider) PublishOne(context.Context, *pb.Message) *pb
 	return nil
 }
 
-func (prov *rabbitMQAMQP10Provider) Subscribe(context.Context, *pb.Source, chan<- *pb.Message) *pb.Error {
+func (prov *rabbitMQAMQP10Provider) Subscribe(ctx context.Context, source *pb.Source, _ chan<- *pb.Message) *pb.Error {
+	bd, err := prov.getBrokerDetails(ctx)
+	if err != nil {
+		return &pb.Error{Message: err.Error()}
+	}
+	if err := prov.declareExchange(source.GetAddress(), bd); err != nil {
+		return &pb.Error{Message: err.Error()}
+	}
 	return nil
 }
 
@@ -280,10 +300,11 @@ func (prov *rabbitMQAMQP10Provider) declareExchange(address *pb.Address, bd *Bro
 	if err != nil {
 		return err
 	}
-	_, err = bd.Connection.Management().DeclareExchange(bd.ctx, specification)
+	_, err = bd.Connection.DeclareExchange(bd.ctx, specification)
 	if err != nil {
 		if errors.Is(err, rabbitmqamqp.ErrPreconditionFailed) {
-			return err
+			bd.entityTracker().AddExchange(name)
+			return nil
 		}
 		if bd.exchangeExists(name) {
 			return nil
