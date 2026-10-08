@@ -69,8 +69,8 @@ func NewManagementClient(ctx context.Context, endpoint, username, password strin
 	return &c, nil
 }
 
-func makeRequest(ctx context.Context, method, url, username, password string, body io.Reader) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
+func makeRequest(ctx context.Context, method, url, username, password string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +109,7 @@ func (c *AMQPManagementClient) SourceStats(vhost, queueName string) *pb.SourceSt
 	vhost = url.QueryEscape(vhost)
 
 	urn := fmt.Sprintf("/api/queues/%s/%s", vhost, queue)
-	req, err := makeRequest(c.Ctx, "GET", fmt.Sprintf("%s%s", c.endpoint, urn), c.username, c.password, nil)
+	req, err := makeRequest(c.Ctx, "GET", fmt.Sprintf("%s%s", c.endpoint, urn), c.username, c.password)
 	if err != nil {
 		stats.Error = &pb.Error{Message: err.Error()}
 		return stats

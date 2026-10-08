@@ -325,6 +325,8 @@ func (prov *rabbitMQAMQP10Provider) declareExchange(address *pb.Address, bd *Bro
 func queueSpecification(source *pb.Source) (rabbitmqamqp.IQueueSpecification, error) {
 	switch source.GetType() {
 	case pb.Source_QUEUE, pb.Source_TEMPORARY:
+	case pb.Source_STREAM:
+		return nil, fmt.Errorf("%s is not a valid source type", source.GetType())
 	default:
 		return nil, fmt.Errorf("%s is not a valid source type", source.GetType())
 	}

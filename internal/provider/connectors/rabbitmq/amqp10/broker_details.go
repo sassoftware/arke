@@ -262,8 +262,6 @@ func (bd *BrokerDetails) getStreamOrQueueStats(source *pb.Source) *pb.SourceStat
 	queue := amqp.SourceName(source)
 	vhost := amqp.GetVhost(bd.connectionConfig)
 	stats := bd.mgmtClient.SourceStats(vhost, queue)
-	if source.GetType() == pb.Source_STREAM {
-		// TODO: Issue 220/221 - Handle stream-specific stats
-	}
+	// TODO: Issue 220/221 - Handle stream-specific stats
 	return stats
 }
