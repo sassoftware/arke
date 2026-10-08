@@ -626,7 +626,7 @@ func Test_amqp10provider_subscribeDeclaresExchange(t *testing.T) {
 	bd := &BrokerDetails{ctx: ctx, Connection: connection}
 	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add(clientIdentifier, bd)
-	source := &pb.Source{Address: &pb.Address{Name: "subscribe", Type: pb.Address_TOPIC}}
+	source := &pb.Source{Type: pb.Source_STREAM, Address: &pb.Address{Name: "subscribe", Type: pb.Address_TOPIC}}
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
 
 	err := prov.Subscribe(ctx, source, nil)
@@ -658,7 +658,7 @@ func Test_amqp10provider_subscribeSkipsKnownExchange(t *testing.T) {
 	bd.entityTracker().AddExchange("known")
 	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add(clientIdentifier, bd)
-	source := &pb.Source{Address: &pb.Address{Name: "known", Type: pb.Address_TOPIC}}
+	source := &pb.Source{Type: pb.Source_STREAM, Address: &pb.Address{Name: "known", Type: pb.Address_TOPIC}}
 
 	require.Nil(t, prov.Subscribe(ctx, source, nil))
 	assert.True(t, bd.exchangeExists("known"))
@@ -692,4 +692,137 @@ func Test_amqp10provider_declareExchangeConnectionIsolation(t *testing.T) {
 	require.NoError(t, prov.declareExchange(&pb.Address{Name: "shared", Type: pb.Address_TOPIC}, bdTwo))
 	assert.True(t, bdOne.exchangeExists("shared"))
 	assert.True(t, bdTwo.exchangeExists("shared"))
+}
+
+func Test_queueSpecificationClassic(t *testing.T) {
+	source := &pb.Source{
+		Name:                 "temporary",
+		Type:                 pb.Source_TEMPORARY,
+		AutoDelete:           true,
+		Exclusive:            true,
+		SingleActiveConsumer: true,
+		Options: map[string]string{
+			"MessageTTL":        "1000",
+			"Expires":           "2000",
+			"DeadLetterAddress": "dead-letter",
+			"DeadLetterSubject": "subject",
+		},
+	}
+
+	specification, err := queueSpecification(source)
+
+	require.NoError(t, err)
+	classic, ok := specification.(*rabbitmqamqp.ClassicQueueSpecification)
+	require.True(t, ok)
+	assert.Equal(t, "temporary", classic.Name)
+	assert.False(t, classic.IsAutoDelete)
+	assert.False(t, classic.IsExclusive)
+	assert.EqualValues(t, 1000, classic.MessageTTL)
+	assert.EqualValues(t, 2000, classic.AutoExpire)
+	assert.True(t, classic.SingleActiveConsumer)
+	assert.Equal(t, "dead-letter", classic.DeadLetterExchange)
+	assert.Equal(t, "subject", classic.DeadLetterRoutingKey)
+}
+
+func Test_queueSpecificationQuorumAndExpiryFallback(t *testing.T) {
+	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, AutoDelete: false}
+
+	specification, err := queueSpecification(source)
+
+	require.NoError(t, err)
+	quorum, ok := specification.(*rabbitmqamqp.QuorumQueueSpecification)
+	require.True(t, ok)
+	assert.Equal(t, "orders.quorum", quorum.Name)
+	assert.EqualValues(t, 0, quorum.AutoExpire)
+
+	source.AutoDelete = true
+	source.Name = "temporary"
+	specification, err = queueSpecification(source)
+
+	require.NoError(t, err)
+	classic, ok := specification.(*rabbitmqamqp.ClassicQueueSpecification)
+	require.True(t, ok)
+	assert.EqualValues(t, (5 * time.Minute).Milliseconds(), classic.AutoExpire)
+
+	source.AutoDelete = false
+	source.Exclusive = true
+	specification, err = queueSpecification(source)
+	require.NoError(t, err)
+	quorum, ok = specification.(*rabbitmqamqp.QuorumQueueSpecification)
+	require.True(t, ok)
+	assert.EqualValues(t, (5 * time.Minute).Milliseconds(), quorum.AutoExpire)
+
+	source.Options = map[string]string{"Expires": "0"}
+	specification, err = queueSpecification(source)
+	require.NoError(t, err)
+	quorum, ok = specification.(*rabbitmqamqp.QuorumQueueSpecification)
+	require.True(t, ok)
+	assert.Zero(t, quorum.AutoExpire)
+}
+
+func Test_queueSpecificationRejectsUnsupportedAndInvalidOptions(t *testing.T) {
+	_, err := queueSpecification(&pb.Source{Type: pb.Source_QUEUE, Options: map[string]string{"Offset": "1"}})
+	assert.EqualError(t, err, "Offset is an unsupported source option")
+
+	_, err = queueSpecification(&pb.Source{Type: pb.Source_QUEUE, Options: map[string]string{"MessageTTL": "invalid"}})
+	assert.EqualError(t, err, "value for MessageTTL option must be a quoted integer")
+
+	_, err = queueSpecification(&pb.Source{Type: pb.Source_QUEUE, Options: map[string]string{"Expires": "invalid"}})
+	assert.EqualError(t, err, "value for Expires option must be a quoted integer")
+
+	_, err = queueSpecification(&pb.Source{Type: pb.Source_STREAM})
+	assert.EqualError(t, err, "STREAM is not a valid source type")
+}
+
+func Test_amqp10provider_declareQueueTracksBrokerError(t *testing.T) {
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	bd := &BrokerDetails{ctx: context.Background(), Connection: connection}
+	prov := newTestRabbitMQAMQP10Provider()
+	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, errors.New("queue failed")).Once()
+
+	err := prov.declareQueue(&pb.Source{Name: "failed", Type: pb.Source_TEMPORARY}, bd)
+
+	require.NoError(t, err)
+	assert.True(t, bd.queueExists("failed"))
+	connection.AssertNumberOfCalls(t, "DeclareQueue", 1)
+}
+
+func Test_amqp10provider_subscribeDeclaresQueueAfterExchange(t *testing.T) {
+	ctx, clientIdentifier := newTestProviderContext(t, "subscribe-queue-order")
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	bd := &BrokerDetails{ctx: ctx, Connection: connection}
+	prov := newTestRabbitMQAMQP10Provider()
+	prov.connections.Add(clientIdentifier, bd)
+	source := &pb.Source{Name: "subscribe-queue", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "queue-address", Type: pb.Address_TOPIC}}
+	var calls []string
+	connection.On("DeclareExchange", bd.ctx, mock.Anything).Run(func(mock.Arguments) {
+		calls = append(calls, "exchange")
+	}).Return(nil, nil).Once()
+	connection.On("DeclareQueue", bd.ctx, mock.Anything).Run(func(mock.Arguments) {
+		calls = append(calls, "queue")
+	}).Return(nil, nil).Once()
+
+	err := prov.Subscribe(ctx, source, nil)
+
+	require.Nil(t, err)
+	assert.Equal(t, []string{"exchange", "queue"}, calls)
+	assert.True(t, bd.queueExists("subscribe-queue.quorum"))
+}
+
+func Test_amqp10provider_declareQueueSkipsKnownAndIsolatesTrackers(t *testing.T) {
+	prov := newTestRabbitMQAMQP10Provider()
+	connectionOne := &rabbitMQAMQP10ConnectionMock{}
+	bdOne := &BrokerDetails{ctx: context.Background(), Connection: connectionOne}
+	connectionTwo := &rabbitMQAMQP10ConnectionMock{}
+	bdTwo := &BrokerDetails{ctx: context.Background(), Connection: connectionTwo}
+	source := &pb.Source{Name: "shared", Type: pb.Source_QUEUE}
+	bdOne.entityTracker().AddQueue("shared.quorum")
+	connectionTwo.On("DeclareQueue", bdTwo.ctx, mock.Anything).Return(nil, nil).Once()
+
+	require.NoError(t, prov.declareQueue(source, bdOne))
+	assert.False(t, bdTwo.queueExists("shared.quorum"))
+	require.NoError(t, prov.declareQueue(source, bdTwo))
+	assert.True(t, bdTwo.queueExists("shared.quorum"))
+	connectionOne.AssertNotCalled(t, "DeclareQueue", mock.Anything, mock.Anything)
+	connectionTwo.AssertNumberOfCalls(t, "DeclareQueue", 1)
 }

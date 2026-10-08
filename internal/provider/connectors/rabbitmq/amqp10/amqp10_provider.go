@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -183,6 +184,11 @@ func (prov *rabbitMQAMQP10Provider) Subscribe(ctx context.Context, source *pb.So
 	if err := prov.declareExchange(source.GetAddress(), bd); err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
+	if source.GetType() == pb.Source_QUEUE || source.GetType() == pb.Source_TEMPORARY {
+		if err := prov.declareQueue(source, bd); err != nil {
+			return &pb.Error{Message: err.Error()}
+		}
+	}
 	return nil
 }
 
@@ -313,5 +319,88 @@ func (prov *rabbitMQAMQP10Provider) declareExchange(address *pb.Address, bd *Bro
 	}
 
 	bd.entityTracker().AddExchange(name)
+	return nil
+}
+
+func queueSpecification(source *pb.Source) (rabbitmqamqp.IQueueSpecification, error) {
+	switch source.GetType() {
+	case pb.Source_QUEUE, pb.Source_TEMPORARY:
+	default:
+		return nil, fmt.Errorf("%s is not a valid source type", source.GetType())
+	}
+
+	name := amqp.SourceName(source)
+	isQuorum := amqp.IsQuorum(source)
+	messageTTL := int64(0)
+	expires := int64(0)
+	hasExpires := false
+	deadLetterExchange := ""
+	deadLetterRoutingKey := ""
+	for option, value := range source.GetOptions() {
+		switch option {
+		case "MessageTTL":
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return nil, errors.New("value for MessageTTL option must be a quoted integer")
+			}
+			messageTTL = parsed
+		case "Expires":
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return nil, errors.New("value for Expires option must be a quoted integer")
+			}
+			expires = parsed
+			hasExpires = true
+		case "DeadLetterAddress":
+			deadLetterExchange = value
+		case "DeadLetterSubject":
+			deadLetterRoutingKey = value
+		default:
+			return nil, fmt.Errorf("%s is an unsupported source option", option)
+		}
+	}
+
+	if (source.GetAutoDelete() || source.GetExclusive()) && !hasExpires {
+		expires = (5 * time.Minute).Milliseconds()
+	}
+
+	// Match AMQP 0.9.1 by expressing auto-delete/exclusive behavior through expiry.
+	// DLX exchanges and bindings are configured separately.
+	if isQuorum {
+		return &rabbitmqamqp.QuorumQueueSpecification{
+			Name:                 name,
+			AutoExpire:           expires,
+			MessageTTL:           messageTTL,
+			SingleActiveConsumer: source.GetSingleActiveConsumer(),
+			DeadLetterExchange:   deadLetterExchange,
+			DeadLetterRoutingKey: deadLetterRoutingKey,
+		}, nil
+	}
+	return &rabbitmqamqp.ClassicQueueSpecification{
+		Name:                 name,
+		AutoExpire:           expires,
+		MessageTTL:           messageTTL,
+		SingleActiveConsumer: source.GetSingleActiveConsumer(),
+		DeadLetterExchange:   deadLetterExchange,
+		DeadLetterRoutingKey: deadLetterRoutingKey,
+	}, nil
+}
+
+func (prov *rabbitMQAMQP10Provider) declareQueue(source *pb.Source, bd *BrokerDetails) error {
+	name := amqp.SourceName(source)
+	if bd.queueExists(name) {
+		return nil
+	}
+
+	specification, err := queueSpecification(source)
+	if err != nil {
+		return err
+	}
+	_, declarationErr := bd.Connection.DeclareQueue(bd.ctx, specification)
+	if declarationErr != nil {
+		util.Logger.Warn(i18n.ClientQueueDeclareError, declarationErr.Error(), bd.ClientIdentifier)
+		// TODO: Should we log or return queue declaration errors?
+	}
+	bd.entityTracker().AddQueue(name)
 	return nil
 }

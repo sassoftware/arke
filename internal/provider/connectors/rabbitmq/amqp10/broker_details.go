@@ -132,6 +132,10 @@ func (bd *BrokerDetails) exchangeExists(name string) bool {
 	return bd.entityTracker().ExchangeExists(name)
 }
 
+func (bd *BrokerDetails) queueExists(name string) bool {
+	return bd.entityTracker().QueueExists(name)
+}
+
 func (bd *BrokerDetails) entityTracker() *track.EntityTracker {
 	bd.Lock()
 	defer bd.Unlock()

@@ -23,6 +23,7 @@ type rabbitMQAMQP10ConnectionShim interface {
 	IsClosed() bool
 	State() int
 	DeclareExchange(context.Context, ramqp.IExchangeSpecification) (*ramqp.AmqpExchangeInfo, error)
+	DeclareQueue(context.Context, ramqp.IQueueSpecification) (*ramqp.AmqpQueueInfo, error)
 }
 
 // rabbitMQAMQP10Connection A connection to the broker
@@ -77,6 +78,10 @@ func (a *rabbitMQAMQP10Connection) State() int {
 
 func (a *rabbitMQAMQP10Connection) DeclareExchange(ctx context.Context, specification ramqp.IExchangeSpecification) (*ramqp.AmqpExchangeInfo, error) {
 	return a.connection.Management().DeclareExchange(ctx, specification)
+}
+
+func (a *rabbitMQAMQP10Connection) DeclareQueue(ctx context.Context, specification ramqp.IQueueSpecification) (*ramqp.AmqpQueueInfo, error) {
+	return a.connection.Management().DeclareQueue(ctx, specification)
 }
 
 // TODO: Issue 204 - cancel context used by state channel (i.e., make sure connection watcher channel shuts down) and close state channel
