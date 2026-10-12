@@ -33,6 +33,11 @@ func (m *rabbitMQAMQP10ConnectionMock) DeclareQueue(ctx context.Context, specifi
 	return info, args.Error(1)
 }
 
+func (m *rabbitMQAMQP10ConnectionMock) Bind(ctx context.Context, specification rabbitmqamqp.IBindingSpecification) (string, error) {
+	args := m.Called(ctx, specification)
+	return args.String(0), args.Error(1)
+}
+
 func (m *rabbitMQAMQP10ConnectionMock) Close(ctx context.Context) error {
 	args := m.Called(ctx)
 	return args.Error(0)

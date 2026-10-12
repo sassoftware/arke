@@ -73,6 +73,82 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 	// Used UI to create the queue queue-name.quorum and publish msgs.
 	// Ran this test and observed message_count and publish_rate.
 	t.Logf("Source stats: %+v", stats)
+
+	exchangeName := "arke-amqp10-bindings-" + uuid.NewString()
+	queueName := exchangeName + "-queue"
+	routingKey := "integration.subject"
+	bindingSource := &pb.Source{
+		Name:       queueName,
+		Type:       pb.Source_QUEUE,
+		AutoDelete: true,
+		Address: &pb.Address{
+			Name:     exchangeName,
+			Type:     pb.Address_TOPIC,
+			Subjects: []string{routingKey},
+		},
+	}
+	username, password := amqp.GetUsernamePassword(&connConfig)
+	management, err := amqp.NewManagementClient(ctx, amqp.GetMgmtEndpoint(&connConfig), username, password, nil)
+	require.NoError(t, err)
+	vhost := amqp.GetVhost(&connConfig)
+	queueName = amqp.SourceName(bindingSource)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if err := deleteQueue(cleanupCtx, management, vhost, queueName); err != nil {
+			t.Errorf("delete AMQP 1.0 binding test queue: %v", err)
+		}
+		exchangePath := "/api/exchanges/" + url.PathEscape(vhost) + "/" + url.PathEscape(exchangeName)
+		_, statusCode, err := management.Request(cleanupCtx, http.MethodDelete, exchangePath)
+		if err != nil {
+			t.Errorf("delete AMQP 1.0 binding test exchange: %v", err)
+		} else if statusCode != http.StatusNoContent && statusCode != http.StatusNotFound {
+			t.Errorf("delete AMQP 1.0 binding test exchange returned %d", statusCode)
+		}
+	})
+
+	require.Nil(t, prov.Subscribe(ctx, bindingSource, nil))
+	bindingPath := fmt.Sprintf("/api/bindings/%s/e/%s/q/%s",
+		url.PathEscape(vhost), url.PathEscape(exchangeName), url.PathEscape(queueName))
+	type bindingInfo struct {
+		Source          string `json:"source"`
+		Destination     string `json:"destination"`
+		DestinationType string `json:"destination_type"`
+		RoutingKey      string `json:"routing_key"`
+	}
+	var bindings []bindingInfo
+	expectedBinding := bindingInfo{
+		Source:          exchangeName,
+		Destination:     queueName,
+		DestinationType: "queue",
+		RoutingKey:      routingKey,
+	}
+	var matchingBindings []bindingInfo
+	var bindingErr error
+	require.Eventually(t, func() bool {
+		body, statusCode, err := management.Request(ctx, http.MethodGet, bindingPath)
+		if err != nil {
+			bindingErr = err
+			return false
+		}
+		if statusCode != http.StatusOK {
+			bindingErr = fmt.Errorf("management API GET bindings returned %d", statusCode)
+			return false
+		}
+		bindingErr = json.Unmarshal(body, &bindings)
+		if bindingErr != nil {
+			return false
+		}
+		matchingBindings = matchingBindings[:0]
+		for _, binding := range bindings {
+			if binding == expectedBinding {
+				matchingBindings = append(matchingBindings, binding)
+			}
+		}
+		return len(matchingBindings) == 1
+	}, 5*time.Second, 100*time.Millisecond, "binding unavailable: %v", bindingErr)
+	require.Equal(t, []bindingInfo{expectedBinding}, matchingBindings)
+
 	prov.Disconnect(ctx)
 	assert.False(t, prov.ClientExists(clientIdentifier))
 }

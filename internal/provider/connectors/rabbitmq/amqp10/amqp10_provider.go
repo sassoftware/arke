@@ -24,7 +24,8 @@ import (
 )
 
 const (
-	providerName string = "rabbitmq-amqp10"
+	providerName       string = "rabbitmq-amqp10"
+	bindingMatchHeader string = "x-match"
 )
 
 var supportedSourceOptions = map[string]bool{
@@ -188,6 +189,9 @@ func (prov *rabbitMQAMQP10Provider) Subscribe(ctx context.Context, source *pb.So
 		if err := prov.declareQueue(source, bd); err != nil {
 			return &pb.Error{Message: err.Error()}
 		}
+	}
+	if err := prov.declareBindings(source, bd); err != nil {
+		return &pb.Error{Message: err.Error()}
 	}
 	return nil
 }
@@ -396,5 +400,99 @@ func (prov *rabbitMQAMQP10Provider) declareQueue(source *pb.Source, bd *BrokerDe
 		return declarationErr
 	}
 	bd.entityTracker().AddQueue(name)
+	return nil
+}
+
+func (prov *rabbitMQAMQP10Provider) declareBindings(source *pb.Source, bd *BrokerDetails) error {
+	address := source.GetAddress()
+	if source.GetType() == pb.Source_STREAM && address.GetType() == pb.Address_STREAM {
+		return nil
+	}
+
+	if err := prov.declareParentAddressBindings(address, bd); err != nil {
+		return err
+	}
+	return prov.bindAddressSubjects(source, address, bd)
+}
+
+func (prov *rabbitMQAMQP10Provider) bindAddressSubjects(source *pb.Source, address *pb.Address, bd *BrokerDetails) error {
+	matchHeadersList := bindingArguments(source, address)
+	subjects := append([]string(nil), address.GetSubjects()...)
+	if len(subjects) == 0 && len(matchHeadersList) > 0 {
+		subjects = append(subjects, "")
+	}
+
+	for _, subject := range subjects {
+		if len(matchHeadersList) == 0 {
+			if err := prov.bindQueueOrStream(source, address, subject, nil, bd); err != nil {
+				return err
+			}
+			continue
+		}
+		for _, matchHeaders := range matchHeadersList {
+			if err := prov.bindQueueOrStream(source, address, subject, matchHeaders, bd); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func bindingArguments(source *pb.Source, address *pb.Address) []map[string]any {
+	if address.GetType() != pb.Address_FILTER {
+		return nil
+	}
+
+	matchHeadersList := make([]map[string]any, 0, len(source.GetFilters()))
+	for _, filter := range source.GetFilters() {
+		matchHeaders := make(map[string]any)
+		for _, match := range filter.GetMatches() {
+			matchHeaders[match.GetName()] = match.GetValue()
+		}
+		if len(matchHeaders) > 0 {
+			matchHeaders[bindingMatchHeader] = "all"
+			if filter.GetType() == pb.Filter_ANY {
+				matchHeaders[bindingMatchHeader] = "any"
+			}
+		}
+		matchHeadersList = append(matchHeadersList, matchHeaders)
+	}
+	return matchHeadersList
+}
+
+func (prov *rabbitMQAMQP10Provider) bindQueueOrStream(source *pb.Source, address *pb.Address, subject string, arguments map[string]any, bd *BrokerDetails) error {
+	_, err := bd.Connection.Bind(bd.ctx, &rabbitmqamqp.ExchangeToQueueBindingSpecification{
+		SourceExchange:   address.GetName(),
+		DestinationQueue: amqp.SourceName(source),
+		BindingKey:       subject,
+		Arguments:        arguments,
+	})
+	return err
+}
+
+func (prov *rabbitMQAMQP10Provider) declareParentAddressBindings(address *pb.Address, bd *BrokerDetails) error {
+	parent := address.GetParentAddress()
+	if parent == nil {
+		return nil
+	}
+	if err := prov.declareParentAddressBindings(parent, bd); err != nil {
+		return err
+	}
+	if err := prov.declareExchange(parent, bd); err != nil {
+		return err
+	}
+	if err := prov.declareExchange(address, bd); err != nil {
+		return err
+	}
+	for _, subject := range address.GetSubjects() {
+		_, err := bd.Connection.Bind(bd.ctx, &rabbitmqamqp.ExchangeToExchangeBindingSpecification{
+			SourceExchange:      parent.GetName(),
+			DestinationExchange: address.GetName(),
+			BindingKey:          subject,
+		})
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
