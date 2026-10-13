@@ -653,14 +653,17 @@ func Test_amqp10provider_subscribeDeclaresExchange(t *testing.T) {
 	bd := &BrokerDetails{ctx: ctx, Connection: connection}
 	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add(clientIdentifier, bd)
-	source := &pb.Source{Type: pb.Source_STREAM, Address: &pb.Address{Name: "subscribe", Type: pb.Address_TOPIC}}
+	source := &pb.Source{Name: "subscribe", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "subscribe", Type: pb.Address_TOPIC}}
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
+	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Once()
 
 	err := prov.Subscribe(ctx, source, nil)
 
 	require.Nil(t, err)
 	assert.True(t, bd.exchangeExists(source.GetAddress().GetName()))
+	assert.True(t, bd.queueExists("subscribe.quorum"))
 	connection.AssertNumberOfCalls(t, "DeclareExchange", 1)
+	connection.AssertNumberOfCalls(t, "DeclareQueue", 1)
 }
 
 func Test_amqp10provider_subscribeReturnsDeclarationError(t *testing.T) {
@@ -685,10 +688,15 @@ func Test_amqp10provider_subscribeSkipsKnownExchange(t *testing.T) {
 	bd.entityTracker().AddExchange("known")
 	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add(clientIdentifier, bd)
-	source := &pb.Source{Type: pb.Source_STREAM, Address: &pb.Address{Name: "known", Type: pb.Address_TOPIC}}
+	source := &pb.Source{Name: "known", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "known", Type: pb.Address_TOPIC}}
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	bd.Connection = connection
+	bd.entityTracker().AddQueue("known.quorum")
+	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Once()
 
 	require.Nil(t, prov.Subscribe(ctx, source, nil))
 	assert.True(t, bd.exchangeExists("known"))
+	connection.AssertNumberOfCalls(t, "DeclareQueue", 1)
 }
 
 func Test_amqp10provider_declareExchangeAcceptsPreconditionFailure(t *testing.T) {
@@ -791,6 +799,12 @@ func Test_queueSpecificationRejectsUnsupportedAndInvalidOptions(t *testing.T) {
 	_, err := queueSpecification(&pb.Source{Type: pb.Source_QUEUE, Options: map[string]string{"Offset": "1"}})
 	assert.EqualError(t, err, "Offset is an unsupported source option")
 
+	_, err = queueSpecification(&pb.Source{Type: pb.Source_STREAM})
+	assert.EqualError(t, err, "stream sources are not supported for queue declaration")
+
+	_, err = queueSpecification(&pb.Source{Type: pb.Source_TargetType(99)})
+	assert.EqualError(t, err, "source type 99 is not supported for queue declaration")
+
 	_, err = queueSpecification(&pb.Source{Type: pb.Source_QUEUE, Options: map[string]string{"MessageTTL": "invalid"}})
 	assert.EqualError(t, err, "value for MessageTTL option must be a quoted integer")
 
@@ -830,7 +844,8 @@ func Test_amqp10provider_subscribeDeclaresQueueAfterExchange(t *testing.T) {
 	bd := &BrokerDetails{ctx: ctx, Connection: connection}
 	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add(clientIdentifier, bd)
-	source := &pb.Source{Name: "subscribe-queue", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "queue-address", Type: pb.Address_TOPIC}}
+	source := &pb.Source{Name: "subscribe-queue", Type: pb.Source_QUEUE, DeclareOnly: true, Address: &pb.Address{Name: "queue-address", Type: pb.Address_TOPIC}}
+	bd.entityTracker().AddQueue("subscribe-queue.quorum")
 	var calls []string
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Run(func(mock.Arguments) {
 		calls = append(calls, "exchange")
@@ -846,7 +861,7 @@ func Test_amqp10provider_subscribeDeclaresQueueAfterExchange(t *testing.T) {
 	assert.True(t, bd.queueExists("subscribe-queue.quorum"))
 }
 
-func Test_amqp10provider_declareQueueSkipsKnownAndIsolatesTrackers(t *testing.T) {
+func Test_amqp10provider_declareQueueRedeclaresKnownAndIsolatesTrackers(t *testing.T) {
 	prov := newTestRabbitMQAMQP10Provider()
 	connectionOne := &rabbitMQAMQP10ConnectionMock{}
 	bdOne := &BrokerDetails{ctx: context.Background(), Connection: connectionOne}
@@ -854,13 +869,14 @@ func Test_amqp10provider_declareQueueSkipsKnownAndIsolatesTrackers(t *testing.T)
 	bdTwo := &BrokerDetails{ctx: context.Background(), Connection: connectionTwo}
 	source := &pb.Source{Name: "shared", Type: pb.Source_QUEUE}
 	bdOne.entityTracker().AddQueue("shared.quorum")
+	connectionOne.On("DeclareQueue", bdOne.ctx, mock.Anything).Return(nil, nil).Once()
 	connectionTwo.On("DeclareQueue", bdTwo.ctx, mock.Anything).Return(nil, nil).Once()
 
 	require.NoError(t, prov.declareQueue(source, bdOne))
 	assert.False(t, bdTwo.queueExists("shared.quorum"))
 	require.NoError(t, prov.declareQueue(source, bdTwo))
 	assert.True(t, bdTwo.queueExists("shared.quorum"))
-	connectionOne.AssertNotCalled(t, "DeclareQueue", mock.Anything, mock.Anything)
+	connectionOne.AssertNumberOfCalls(t, "DeclareQueue", 1)
 	connectionTwo.AssertNumberOfCalls(t, "DeclareQueue", 1)
 }
 
@@ -1271,7 +1287,7 @@ func Test_amqp10provider_subscribeReturnsAndRetriesBindingError(t *testing.T) {
 		Name: testBindingExchangeName, Type: pb.Address_TOPIC, Subjects: []string{testBindingSubjectCreated},
 	}}
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
-	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Once()
+	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Twice()
 	connection.On("Bind", bd.ctx, mock.Anything).Return("", errors.New("bind failed")).Twice()
 
 	firstErr := prov.Subscribe(ctx, source, nil)
@@ -1306,7 +1322,7 @@ func Test_amqp10provider_subscribeRetriesAllBindingsAfterPartialFailure(t *testi
 		})
 	}
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
-	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Once()
+	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Twice()
 	connection.On("Bind", bd.ctx, matchBindingKey(testBindingSubjectOne)).Run(captureBinding).Return("first-binding", nil).Twice()
 	connection.On("Bind", bd.ctx, matchBindingKey(testBindingSubjectTwo)).Run(captureBinding).Return("", errors.New("second binding failed")).Once()
 	connection.On("Bind", bd.ctx, matchBindingKey(testBindingSubjectTwo)).Run(captureBinding).Return("second-binding", nil).Once()
@@ -1323,6 +1339,6 @@ func Test_amqp10provider_subscribeRetriesAllBindingsAfterPartialFailure(t *testi
 		{SourceExchange: testBindingExchangeName, DestinationQueue: testBindingQuorumQueueName, BindingKey: testBindingSubjectTwo},
 	}, got)
 	connection.AssertNumberOfCalls(t, "DeclareExchange", 1)
-	connection.AssertNumberOfCalls(t, "DeclareQueue", 1)
+	connection.AssertNumberOfCalls(t, "DeclareQueue", 2)
 	connection.AssertNumberOfCalls(t, "Bind", 4)
 }
