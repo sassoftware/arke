@@ -76,7 +76,7 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 
 	exchangeName := "arke-amqp10-bindings-" + uuid.NewString()
 	queueName := exchangeName + "-queue"
-	routingKey := "integration.subject"
+	routingKeys := []string{"integration.subject.retained", "integration.subject.removed"}
 	bindingSource := &pb.Source{
 		Name:       queueName,
 		Type:       pb.Source_QUEUE,
@@ -84,7 +84,7 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 		Address: &pb.Address{
 			Name:     exchangeName,
 			Type:     pb.Address_TOPIC,
-			Subjects: []string{routingKey},
+			Subjects: routingKeys,
 		},
 	}
 	username, password := amqp.GetUsernamePassword(&connConfig)
@@ -117,15 +117,9 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 		RoutingKey      string `json:"routing_key"`
 	}
 	var bindings []bindingInfo
-	expectedBinding := bindingInfo{
-		Source:          exchangeName,
-		Destination:     queueName,
-		DestinationType: "queue",
-		RoutingKey:      routingKey,
-	}
 	var matchingBindings []bindingInfo
 	var bindingErr error
-	require.Eventually(t, func() bool {
+	readMatchingBindings := func() bool {
 		body, statusCode, err := management.Request(ctx, http.MethodGet, bindingPath)
 		if err != nil {
 			bindingErr = err
@@ -141,13 +135,38 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 		}
 		matchingBindings = matchingBindings[:0]
 		for _, binding := range bindings {
-			if binding == expectedBinding {
-				matchingBindings = append(matchingBindings, binding)
+			if binding.Source != exchangeName || binding.Destination != queueName || binding.DestinationType != "queue" {
+				continue
 			}
+			matchingBindings = append(matchingBindings, binding)
 		}
-		return len(matchingBindings) == 1
-	}, 5*time.Second, 100*time.Millisecond, "binding unavailable: %v", bindingErr)
-	require.Equal(t, []bindingInfo{expectedBinding}, matchingBindings)
+		return true
+	}
+	expectedBindings := func(subjects []string) []bindingInfo {
+		bindings := make([]bindingInfo, 0, len(subjects))
+		for _, subject := range subjects {
+			bindings = append(bindings, bindingInfo{
+				Source:          exchangeName,
+				Destination:     queueName,
+				DestinationType: "queue",
+				RoutingKey:      subject,
+			})
+		}
+		return bindings
+	}
+	require.Eventually(t, func() bool {
+		return readMatchingBindings() && len(matchingBindings) == len(routingKeys)
+	},
+		5*time.Second, 100*time.Millisecond, "bindings unavailable: %v", bindingErr)
+	require.ElementsMatch(t, expectedBindings(routingKeys), matchingBindings)
+
+	bindingSource.Address.Subjects = []string{routingKeys[0]}
+	require.Nil(t, prov.Subscribe(ctx, bindingSource, nil))
+	require.Eventually(t, func() bool {
+		return readMatchingBindings() && len(matchingBindings) == len(bindingSource.Address.Subjects)
+	},
+		5*time.Second, 100*time.Millisecond, "stale binding cleanup unavailable: %v", bindingErr)
+	require.ElementsMatch(t, expectedBindings(bindingSource.Address.Subjects), matchingBindings)
 
 	prov.Disconnect(ctx)
 	assert.False(t, prov.ClientExists(clientIdentifier))

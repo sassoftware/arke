@@ -36,6 +36,7 @@ type queueStats struct {
 
 type ManagementClientShim interface {
 	Do(req *http.Request) ([]byte, int, error)
+	Request(ctx context.Context, method, path string) ([]byte, int, error)
 	SourceStats(vhost, queueName string) *pb.SourceStats
 }
 

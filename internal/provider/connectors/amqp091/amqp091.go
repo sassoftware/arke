@@ -974,9 +974,9 @@ func (prov *amqp091provider) declareBinding(source *pb.Source, bd *BrokerDetails
 			}
 
 			if len(matchHeaders) > 0 {
-				matchHeaders["x-match"] = "all"
+				matchHeaders[iamqp.BindingMatchHeader] = "all"
 				if filter.GetType() == pb.Filter_ANY {
-					matchHeaders["x-match"] = xMatchAny
+					matchHeaders[iamqp.BindingMatchHeader] = xMatchAny
 				}
 			}
 

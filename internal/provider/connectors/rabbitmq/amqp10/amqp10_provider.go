@@ -7,8 +7,11 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -24,8 +27,7 @@ import (
 )
 
 const (
-	providerName       string = "rabbitmq-amqp10"
-	bindingMatchHeader string = "x-match"
+	providerName string = "rabbitmq-amqp10"
 )
 
 var supportedSourceOptions = map[string]bool{
@@ -435,7 +437,61 @@ func (prov *rabbitMQAMQP10Provider) bindAddressSubjects(source *pb.Source, addre
 			}
 		}
 	}
+	prov.cleanupQueueBindings(source, address, subjects, bd)
 	return nil
+}
+
+func (prov *rabbitMQAMQP10Provider) cleanupQueueBindings(source *pb.Source, address *pb.Address, subjects []string, bd *BrokerDetails) {
+	vhost := amqp.GetVhost(bd.connectionConfig)
+	queueName := amqp.SourceName(source)
+	if bd.mgmtClient == nil {
+		util.Logger.Debugf("Error listing bindings for %s: management client is unavailable", queueName)
+		return
+	}
+	bindingPath := fmt.Sprintf("/api/bindings/%s/e/%s/q/%s",
+		url.PathEscape(vhost), url.PathEscape(address.GetName()), url.PathEscape(queueName))
+
+	body, statusCode, err := bd.mgmtClient.Request(bd.ctx, http.MethodGet, bindingPath)
+	if err != nil {
+		util.Logger.Debugf("Error listing bindings for %s: %s", queueName, err.Error())
+		return
+	}
+	if statusCode != http.StatusOK {
+		util.Logger.Debugf("Error listing bindings for %s: management request returned %d", queueName, statusCode)
+		return
+	}
+
+	var bindings []struct {
+		RoutingKey    string `json:"routing_key"`
+		PropertiesKey string `json:"properties_key"`
+	}
+	if err := json.Unmarshal(body, &bindings); err != nil {
+		util.Logger.Debugf("Error decoding bindings for %s: %s", queueName, err.Error())
+		return
+	}
+
+	for _, binding := range bindings {
+		bindingExpected := false
+		for _, subject := range subjects {
+			if binding.RoutingKey == subject {
+				bindingExpected = true
+				break
+			}
+		}
+		if bindingExpected {
+			continue
+		}
+
+		deletePath := bindingPath + "/" + url.PathEscape(binding.PropertiesKey)
+		_, statusCode, err := bd.mgmtClient.Request(bd.ctx, http.MethodDelete, deletePath)
+		if err != nil {
+			util.Logger.Debugf("Error deleting binding %s from %s: %s", binding.PropertiesKey, queueName, err.Error())
+			continue
+		}
+		if statusCode != http.StatusNoContent {
+			util.Logger.Debugf("Error deleting binding %s from %s: management request returned %d", binding.PropertiesKey, queueName, statusCode)
+		}
+	}
 }
 
 func bindingArguments(source *pb.Source, address *pb.Address) []map[string]any {
@@ -450,9 +506,9 @@ func bindingArguments(source *pb.Source, address *pb.Address) []map[string]any {
 			matchHeaders[match.GetName()] = match.GetValue()
 		}
 		if len(matchHeaders) > 0 {
-			matchHeaders[bindingMatchHeader] = "all"
+			matchHeaders[amqp.BindingMatchHeader] = "all"
 			if filter.GetType() == pb.Filter_ANY {
-				matchHeaders[bindingMatchHeader] = "any"
+				matchHeaders[amqp.BindingMatchHeader] = "any"
 			}
 		}
 		matchHeadersList = append(matchHeadersList, matchHeaders)
