@@ -36,6 +36,7 @@ type queueStats struct {
 
 type ManagementClientShim interface {
 	Do(req *http.Request) ([]byte, int, error)
+	Request(ctx context.Context, method, path string) ([]byte, int, error)
 	SourceStats(vhost, queueName string) *pb.SourceStats
 }
 
@@ -85,7 +86,7 @@ func makeRequest(ctx context.Context, method, url, username, password string) (*
 // Do performs an HTTP request to the AMQP management endpoint and returns the
 // response body, status code, and any error encountered.
 func (c *AMQPManagementClient) Do(req *http.Request) ([]byte, int, error) {
-	resp, err := c.client.Do(req) //nolint:gosec
+	resp, err := c.client.Do(req.WithContext(c.Ctx)) //nolint:gosec
 	if err != nil {
 		return nil, 0, err
 	}

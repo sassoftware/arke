@@ -184,10 +184,8 @@ func (prov *rabbitMQAMQP10Provider) Subscribe(ctx context.Context, source *pb.So
 	if err := prov.declareExchange(source.GetAddress(), bd); err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
-	if source.GetType() == pb.Source_QUEUE || source.GetType() == pb.Source_TEMPORARY {
-		if err := prov.declareQueue(source, bd); err != nil {
-			return &pb.Error{Message: err.Error()}
-		}
+	if err := prov.declareQueue(source, bd); err != nil {
+		return &pb.Error{Message: err.Error()}
 	}
 	return nil
 }
@@ -323,6 +321,13 @@ func (prov *rabbitMQAMQP10Provider) declareExchange(address *pb.Address, bd *Bro
 }
 
 func queueSpecification(source *pb.Source) (rabbitmqamqp.IQueueSpecification, error) {
+	if source.GetType() == pb.Source_STREAM {
+		return nil, errors.New("stream sources are not supported for queue declaration")
+	}
+	if source.GetType() != pb.Source_QUEUE && source.GetType() != pb.Source_TEMPORARY {
+		return nil, fmt.Errorf("source type %s is not supported for queue declaration", source.GetType())
+	}
+
 	name := amqp.SourceName(source)
 	isQuorum := amqp.IsQuorum(source)
 	messageTTL := int64(0)
@@ -382,9 +387,6 @@ func queueSpecification(source *pb.Source) (rabbitmqamqp.IQueueSpecification, er
 
 func (prov *rabbitMQAMQP10Provider) declareQueue(source *pb.Source, bd *BrokerDetails) error {
 	name := amqp.SourceName(source)
-	if bd.queueExists(name) {
-		return nil
-	}
 
 	specification, err := queueSpecification(source)
 	if err != nil {

@@ -16,14 +16,21 @@ type ManagementClientMock struct {
 	*mock.Mock
 }
 
+var _ ManagementClientShim = (*ManagementClientMock)(nil)
+
 func (m *ManagementClientMock) Do(req *http.Request) ([]byte, int, error) {
 	args := m.Called(req)
 	return args.Get(0).([]byte), args.Int(1), args.Error(2)
 }
 
-func (m *ManagementClientMock) SourceStats(vhost, queueName string) (*pb.SourceStats, error) {
+func (m *ManagementClientMock) Request(ctx context.Context, method, path string) ([]byte, int, error) {
+	args := m.Called(ctx, method, path)
+	return args.Get(0).([]byte), args.Int(1), args.Error(2)
+}
+
+func (m *ManagementClientMock) SourceStats(vhost, queueName string) *pb.SourceStats {
 	args := m.Called(vhost, queueName)
-	return args.Get(0).(*pb.SourceStats), args.Error(1)
+	return args.Get(0).(*pb.SourceStats)
 }
 
 func Test_makeRequest(t *testing.T) {
@@ -82,11 +89,7 @@ func Test_AMQPManagementClient_Request(t *testing.T) {
 	}
 	requests := make(chan requestInfo, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		requests <- requestInfo{
-			method:        req.Method,
-			path:          req.URL.EscapedPath(),
-			authorization: req.Header.Get("Authorization"),
-		}
+		requests <- requestInfo{method: req.Method, path: req.URL.EscapedPath(), authorization: req.Header.Get("Authorization")}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
@@ -103,20 +106,33 @@ func Test_AMQPManagementClient_Request(t *testing.T) {
 	assert.Equal(t, "Basic dXNlcjpwYXNz", request.authorization)
 }
 
-func Test_AMQPManagementClient_RequestRespectsContext(t *testing.T) {
+func Test_AMQPManagementClient_RequestRespectsConfiguredContext(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("request should not reach the server")
 	}))
 	defer server.Close()
 
-	client, err := NewManagementClient(context.Background(), server.URL, "user", "pass", nil)
-	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-
-	_, _, err = client.Request(ctx, http.MethodGet, "/api/queues/%2F/orders")
+	client := &AMQPManagementClient{Ctx: ctx, client: server.Client()}
+	client.endpoint = server.URL
+	_, _, err := client.Request(context.Background(), http.MethodGet, "/api/queues")
 
 	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func Test_ManagementClientMock_Request(t *testing.T) {
+	ctx := context.Background()
+	clientMock := &ManagementClientMock{Mock: &mock.Mock{}}
+	var client ManagementClientShim = clientMock
+	clientMock.On("Request", ctx, http.MethodGet, "/api/queues/%2F/orders").Return([]byte("{}"), http.StatusOK, nil).Once()
+
+	body, status, err := client.Request(ctx, http.MethodGet, "/api/queues/%2F/orders")
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, status)
+	assert.Equal(t, []byte("{}"), body)
+	clientMock.AssertExpectations(t)
 }
 
 func Test_AMQPManagementClient_SourceStats(t *testing.T) {
