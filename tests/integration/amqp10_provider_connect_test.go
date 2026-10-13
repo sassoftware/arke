@@ -374,16 +374,9 @@ func Test_AMQP091AndAMQP10QueueDeclarationsMatch(t *testing.T) {
 	require.Equal(t, expected, properties091)
 	require.Equal(t, expected, properties10)
 
-	provider10Conflict := amqp10.NewRabbitMQAMQP10Provider()
-	ctx10Conflict := integrationClientContext(t, "issue190-amqp10-conflict")
-	t.Cleanup(func() {
-		provider10Conflict.Disconnect(ctx10Conflict)
-	})
-	require.Nil(t, provider10Conflict.Connect(ctx10Conflict, &connectionConfig, false))
-
 	conflictingSource := newSource(baseQueueName + "-10")
 	conflictingSource.Options["MessageTTL"] = "3211"
-	conflictErr := provider10Conflict.Subscribe(ctx10Conflict, conflictingSource, nil)
+	conflictErr := provider10.Subscribe(ctx10, conflictingSource, nil)
 	t.Logf("conflicting queue redeclaration result: %v", conflictErr)
 	require.Nil(t, conflictErr)
 

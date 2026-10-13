@@ -28,6 +28,10 @@ func (m *managementClientStub) Do(_ *http.Request) ([]byte, int, error) {
 	return nil, 0, nil
 }
 
+func (m *managementClientStub) Request(context.Context, string, string) ([]byte, int, error) {
+	return nil, 0, nil
+}
+
 func (m *managementClientStub) SourceStats(vhost, queueName string) *pb.SourceStats {
 	m.vhost = vhost
 	m.queueName = queueName
