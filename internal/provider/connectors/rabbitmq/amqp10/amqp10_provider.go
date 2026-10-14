@@ -519,7 +519,7 @@ func bindingArguments(source *pb.Source, address *pb.Address) []map[string]any {
 }
 
 func (prov *rabbitMQAMQP10Provider) bindQueueOrStream(source *pb.Source, address *pb.Address, subject string, arguments map[string]any, bd *BrokerDetails) error {
-	_, err := bd.Connection.Bind(bd.ctx, &rabbitmqamqp.ExchangeToQueueBindingSpecification{
+	_, err := bd.Connection.DeclareBind(bd.ctx, &rabbitmqamqp.ExchangeToQueueBindingSpecification{
 		SourceExchange:   address.GetName(),
 		DestinationQueue: amqp.SourceName(source),
 		BindingKey:       subject,
@@ -543,7 +543,7 @@ func (prov *rabbitMQAMQP10Provider) declareParentAddressBindings(address *pb.Add
 		return err
 	}
 	for _, subject := range address.GetSubjects() {
-		_, err := bd.Connection.Bind(bd.ctx, &rabbitmqamqp.ExchangeToExchangeBindingSpecification{
+		_, err := bd.Connection.DeclareBind(bd.ctx, &rabbitmqamqp.ExchangeToExchangeBindingSpecification{
 			SourceExchange:      parent.GetName(),
 			DestinationExchange: address.GetName(),
 			BindingKey:          subject,

@@ -1006,7 +1006,7 @@ func Test_amqp10provider_declareBindings(t *testing.T) {
 			bd := &BrokerDetails{ctx: context.Background(), Connection: connection}
 			var got []rabbitmqamqp.ExchangeToQueueBindingSpecification
 			if len(tt.expected) > 0 {
-				connection.On("Bind", bd.ctx, mock.Anything).Run(func(args mock.Arguments) {
+				connection.On("DeclareBind", bd.ctx, mock.Anything).Run(func(args mock.Arguments) {
 					binding, ok := args.Get(1).(*rabbitmqamqp.ExchangeToQueueBindingSpecification)
 					require.True(t, ok)
 					got = append(got, *binding)
@@ -1017,7 +1017,7 @@ func Test_amqp10provider_declareBindings(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, got)
-			connection.AssertNumberOfCalls(t, "Bind", len(tt.expected))
+			connection.AssertNumberOfCalls(t, "DeclareBind", len(tt.expected))
 		})
 	}
 }
@@ -1063,7 +1063,7 @@ func Test_amqp10provider_cleanupQueueBindings(t *testing.T) {
 		}}
 		connection := &rabbitMQAMQP10ConnectionMock{}
 		bd := &BrokerDetails{ctx: context.Background(), Connection: connection, mgmtClient: management, connectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant}}
-		connection.On("Bind", bd.ctx, mock.Anything).Return("binding-path", nil).Once()
+		connection.On("DeclareBind", bd.ctx, mock.Anything).Return("binding-path", nil).Once()
 
 		err := newTestRabbitMQAMQP10Provider().bindAddressSubjects(source, source.GetAddress(), bd)
 
@@ -1092,7 +1092,7 @@ func Test_amqp10provider_cleanupQueueBindings(t *testing.T) {
 		err := newTestRabbitMQAMQP10Provider().bindAddressSubjects(source, source.GetAddress(), bd)
 
 		require.NoError(t, err)
-		connection.AssertNotCalled(t, "Bind", mock.Anything, mock.Anything)
+		connection.AssertNotCalled(t, "DeclareBind", mock.Anything, mock.Anything)
 		assert.Equal(t, []managementRequest{
 			{method: http.MethodGet, path: testCleanupBindingPath},
 			{method: http.MethodDelete, path: testCleanupBindingPath + "/one-key"},
@@ -1115,7 +1115,7 @@ func Test_amqp10provider_cleanupQueueBindings(t *testing.T) {
 		}}
 		connection := &rabbitMQAMQP10ConnectionMock{}
 		bd := &BrokerDetails{ctx: context.Background(), Connection: connection, mgmtClient: management, connectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant}}
-		connection.On("Bind", bd.ctx, mock.Anything).Run(func(args mock.Arguments) {
+		connection.On("DeclareBind", bd.ctx, mock.Anything).Run(func(args mock.Arguments) {
 			binding := args.Get(1).(*rabbitmqamqp.ExchangeToQueueBindingSpecification)
 			assert.Empty(t, binding.BindingKey)
 		}).Return("binding-path", nil).Once()
@@ -1177,7 +1177,7 @@ func Test_amqp10provider_subscribeSuppressesCleanupFailures(t *testing.T) {
 			}}
 			connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
 			connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Once()
-			connection.On("Bind", bd.ctx, mock.Anything).Return("binding-path", nil).Once()
+			connection.On("DeclareBind", bd.ctx, mock.Anything).Return("binding-path", nil).Once()
 
 			err := prov.Subscribe(ctx, source, nil)
 
@@ -1206,7 +1206,7 @@ func Test_amqp10provider_declareBindingsParentAddress(t *testing.T) {
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Run(func(mock.Arguments) {
 		calls = append(calls, "declare-exchange")
 	}).Return(nil, nil).Twice()
-	connection.On("Bind", bd.ctx, mock.Anything).Run(func(args mock.Arguments) {
+	connection.On("DeclareBind", bd.ctx, mock.Anything).Run(func(args mock.Arguments) {
 		binding, ok := args.Get(1).(rabbitmqamqp.IBindingSpecification)
 		require.True(t, ok)
 		got = append(got, binding)
@@ -1263,7 +1263,7 @@ func Test_amqp10provider_subscribeDeclaresQueueBeforeBindings(t *testing.T) {
 	connection.On("DeclareQueue", bd.ctx, mock.Anything).Run(func(mock.Arguments) {
 		calls = append(calls, testBindingCallQueue)
 	}).Return(nil, nil).Once()
-	connection.On("Bind", bd.ctx, mock.MatchedBy(func(specification rabbitmqamqp.IBindingSpecification) bool {
+	connection.On("DeclareBind", bd.ctx, mock.MatchedBy(func(specification rabbitmqamqp.IBindingSpecification) bool {
 		binding, ok := specification.(*rabbitmqamqp.ExchangeToQueueBindingSpecification)
 		return ok && binding.SourceExchange == testBindingExchangeName && binding.DestinationQueue == testBindingQuorumQueueName && binding.BindingKey == testBindingSubjectCreated
 	})).Run(func(mock.Arguments) {
@@ -1288,14 +1288,14 @@ func Test_amqp10provider_subscribeReturnsAndRetriesBindingError(t *testing.T) {
 	}}
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
 	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Twice()
-	connection.On("Bind", bd.ctx, mock.Anything).Return("", errors.New("bind failed")).Twice()
+	connection.On("DeclareBind", bd.ctx, mock.Anything).Return("", errors.New("bind failed")).Twice()
 
 	firstErr := prov.Subscribe(ctx, source, nil)
 	secondErr := prov.Subscribe(ctx, source, nil)
 
 	require.Equal(t, "bind failed", firstErr.GetMessage())
 	require.Equal(t, "bind failed", secondErr.GetMessage())
-	connection.AssertNumberOfCalls(t, "Bind", 2)
+	connection.AssertNumberOfCalls(t, "DeclareBind", 2)
 	assert.Empty(t, management.requests)
 }
 
@@ -1323,9 +1323,9 @@ func Test_amqp10provider_subscribeRetriesAllBindingsAfterPartialFailure(t *testi
 	}
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
 	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Twice()
-	connection.On("Bind", bd.ctx, matchBindingKey(testBindingSubjectOne)).Run(captureBinding).Return("first-binding", nil).Twice()
-	connection.On("Bind", bd.ctx, matchBindingKey(testBindingSubjectTwo)).Run(captureBinding).Return("", errors.New("second binding failed")).Once()
-	connection.On("Bind", bd.ctx, matchBindingKey(testBindingSubjectTwo)).Run(captureBinding).Return("second-binding", nil).Once()
+	connection.On("DeclareBind", bd.ctx, matchBindingKey(testBindingSubjectOne)).Run(captureBinding).Return("first-binding", nil).Twice()
+	connection.On("DeclareBind", bd.ctx, matchBindingKey(testBindingSubjectTwo)).Run(captureBinding).Return("", errors.New("second binding failed")).Once()
+	connection.On("DeclareBind", bd.ctx, matchBindingKey(testBindingSubjectTwo)).Run(captureBinding).Return("second-binding", nil).Once()
 
 	firstErr := prov.Subscribe(ctx, source, nil)
 	secondErr := prov.Subscribe(ctx, source, nil)
@@ -1340,5 +1340,5 @@ func Test_amqp10provider_subscribeRetriesAllBindingsAfterPartialFailure(t *testi
 	}, got)
 	connection.AssertNumberOfCalls(t, "DeclareExchange", 1)
 	connection.AssertNumberOfCalls(t, "DeclareQueue", 2)
-	connection.AssertNumberOfCalls(t, "Bind", 4)
+	connection.AssertNumberOfCalls(t, "DeclareBind", 4)
 }
