@@ -1276,7 +1276,7 @@ func Test_amqp10provider_subscribeDeclaresQueueBeforeBindings(t *testing.T) {
 	assert.Equal(t, []string{testBindingCallExchange, testBindingCallQueue, testBindingCallBinding, "cleanup"}, calls)
 }
 
-func Test_amqp10provider_subscribeReturnsAndRetriesBindingError(t *testing.T) {
+func Test_amqp10provider_subscribeContinuesAfterBindingError(t *testing.T) {
 	ctx, clientIdentifier := newTestProviderContext(t, "subscribe-bind-error")
 	connection := &rabbitMQAMQP10ConnectionMock{}
 	management := &managementClientStub{}
@@ -1287,19 +1287,18 @@ func Test_amqp10provider_subscribeReturnsAndRetriesBindingError(t *testing.T) {
 		Name: testBindingExchangeName, Type: pb.Address_TOPIC, Subjects: []string{testBindingSubjectCreated},
 	}}
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
-	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Twice()
-	connection.On("DeclareBind", bd.ctx, mock.Anything).Return("", errors.New("bind failed")).Twice()
+	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Once()
+	connection.On("DeclareBind", bd.ctx, mock.Anything).Return("", errors.New("bind failed")).Once()
 
-	firstErr := prov.Subscribe(ctx, source, nil)
-	secondErr := prov.Subscribe(ctx, source, nil)
+	err := prov.Subscribe(ctx, source, nil)
 
-	require.Equal(t, "bind failed", firstErr.GetMessage())
-	require.Equal(t, "bind failed", secondErr.GetMessage())
-	connection.AssertNumberOfCalls(t, "DeclareBind", 2)
-	assert.Empty(t, management.requests)
+	require.Nil(t, err)
+	connection.AssertNumberOfCalls(t, "DeclareBind", 1)
+	require.Len(t, management.requests, 1)
+	assert.Equal(t, http.MethodGet, management.requests[0].method)
 }
 
-func Test_amqp10provider_subscribeRetriesAllBindingsAfterPartialFailure(t *testing.T) {
+func Test_amqp10provider_subscribeContinuesAfterPartialBindingFailure(t *testing.T) {
 	ctx, clientIdentifier := newTestProviderContext(t, "subscribe-partial-bind-error")
 	connection := &rabbitMQAMQP10ConnectionMock{}
 	bd := &BrokerDetails{ctx: ctx, Connection: connection}
@@ -1322,23 +1321,18 @@ func Test_amqp10provider_subscribeRetriesAllBindingsAfterPartialFailure(t *testi
 		})
 	}
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
-	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Twice()
-	connection.On("DeclareBind", bd.ctx, matchBindingKey(testBindingSubjectOne)).Run(captureBinding).Return("first-binding", nil).Twice()
-	connection.On("DeclareBind", bd.ctx, matchBindingKey(testBindingSubjectTwo)).Run(captureBinding).Return("", errors.New("second binding failed")).Once()
+	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Once()
+	connection.On("DeclareBind", bd.ctx, matchBindingKey(testBindingSubjectOne)).Run(captureBinding).Return("", errors.New("first binding failed")).Once()
 	connection.On("DeclareBind", bd.ctx, matchBindingKey(testBindingSubjectTwo)).Run(captureBinding).Return("second-binding", nil).Once()
 
-	firstErr := prov.Subscribe(ctx, source, nil)
-	secondErr := prov.Subscribe(ctx, source, nil)
+	err := prov.Subscribe(ctx, source, nil)
 
-	require.Equal(t, "second binding failed", firstErr.GetMessage())
-	require.Nil(t, secondErr)
+	require.Nil(t, err)
 	assert.Equal(t, []rabbitmqamqp.ExchangeToQueueBindingSpecification{
-		{SourceExchange: testBindingExchangeName, DestinationQueue: testBindingQuorumQueueName, BindingKey: testBindingSubjectOne},
-		{SourceExchange: testBindingExchangeName, DestinationQueue: testBindingQuorumQueueName, BindingKey: testBindingSubjectTwo},
 		{SourceExchange: testBindingExchangeName, DestinationQueue: testBindingQuorumQueueName, BindingKey: testBindingSubjectOne},
 		{SourceExchange: testBindingExchangeName, DestinationQueue: testBindingQuorumQueueName, BindingKey: testBindingSubjectTwo},
 	}, got)
 	connection.AssertNumberOfCalls(t, "DeclareExchange", 1)
-	connection.AssertNumberOfCalls(t, "DeclareQueue", 2)
-	connection.AssertNumberOfCalls(t, "DeclareBind", 4)
+	connection.AssertNumberOfCalls(t, "DeclareQueue", 1)
+	connection.AssertNumberOfCalls(t, "DeclareBind", 2)
 }

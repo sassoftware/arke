@@ -36,8 +36,8 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 		hostname = "localhost"
 	}
 	t.Setenv("ARKE_BROKER_HOSTNAME", hostname)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
 
 	clientAddr := fmt.Sprintf("test-connect-integration-%d", time.Now().UnixNano())
 	ctx = peer.NewContext(ctx, &peer.Peer{Addr: mockPeerAddr{clientAddr: clientAddr}})

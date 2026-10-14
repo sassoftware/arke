@@ -428,15 +428,11 @@ func (prov *rabbitMQAMQP10Provider) bindAddressSubjects(source *pb.Source, addre
 
 	for _, subject := range subjects {
 		if len(matchHeadersList) == 0 {
-			if err := prov.bindQueueOrStream(source, address, subject, nil, bd); err != nil {
-				return err
-			}
+			prov.bindQueueOrStream(source, address, subject, nil, bd)
 			continue
 		}
 		for _, matchHeaders := range matchHeadersList {
-			if err := prov.bindQueueOrStream(source, address, subject, matchHeaders, bd); err != nil {
-				return err
-			}
+			prov.bindQueueOrStream(source, address, subject, matchHeaders, bd)
 		}
 	}
 	prov.cleanupQueueBindings(source, address, subjects, bd)
@@ -518,14 +514,17 @@ func bindingArguments(source *pb.Source, address *pb.Address) []map[string]any {
 	return matchHeadersList
 }
 
-func (prov *rabbitMQAMQP10Provider) bindQueueOrStream(source *pb.Source, address *pb.Address, subject string, arguments map[string]any, bd *BrokerDetails) error {
+func (prov *rabbitMQAMQP10Provider) bindQueueOrStream(source *pb.Source, address *pb.Address, subject string, arguments map[string]any, bd *BrokerDetails) {
 	_, err := bd.Connection.DeclareBind(bd.ctx, &rabbitmqamqp.ExchangeToQueueBindingSpecification{
 		SourceExchange:   address.GetName(),
 		DestinationQueue: amqp.SourceName(source),
 		BindingKey:       subject,
 		Arguments:        arguments,
 	})
-	return err
+	if err != nil {
+		// Queue binding failures are intentionally non-fatal, matching AMQP 0.9.1.
+		util.Logger.Warn(i18n.ClientQueueBindError, err.Error(), bd.ClientIdentifier)
+	}
 }
 
 func (prov *rabbitMQAMQP10Provider) declareParentAddressBindings(address *pb.Address, bd *BrokerDetails) error {
