@@ -35,7 +35,6 @@ type queueStats struct {
 }
 
 type ManagementClientShim interface {
-	Do(req *http.Request) ([]byte, int, error)
 	SourceStats(vhost, queueName string) *pb.SourceStats
 }
 
@@ -69,8 +68,8 @@ func NewManagementClient(ctx context.Context, endpoint, username, password strin
 	return &c, nil
 }
 
-func makeRequest(ctx context.Context, method, url, username, password string, body io.Reader) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
+func makeRequest(ctx context.Context, method, url, username, password string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +96,16 @@ func (c *AMQPManagementClient) Do(req *http.Request) ([]byte, int, error) {
 	return data, resp.StatusCode, nil
 }
 
+// Request sends an authenticated request to a path on the management API.
+func (c *AMQPManagementClient) Request(ctx context.Context, method, path string) ([]byte, int, error) {
+	requestURL := strings.TrimRight(c.endpoint, "/") + "/" + strings.TrimLeft(path, "/")
+	req, err := makeRequest(ctx, method, requestURL, c.username, c.password)
+	if err != nil {
+		return nil, 0, err
+	}
+	return c.Do(req)
+}
+
 // SourceStats retrieves statistics for a specific queue in the given virtual host.
 // Any error encountered will be in the Error field of the returned SourceStats.
 func (c *AMQPManagementClient) SourceStats(vhost, queueName string) *pb.SourceStats {
@@ -109,12 +118,7 @@ func (c *AMQPManagementClient) SourceStats(vhost, queueName string) *pb.SourceSt
 	vhost = url.QueryEscape(vhost)
 
 	urn := fmt.Sprintf("/api/queues/%s/%s", vhost, queue)
-	req, err := makeRequest(c.Ctx, "GET", fmt.Sprintf("%s%s", c.endpoint, urn), c.username, c.password, nil)
-	if err != nil {
-		stats.Error = &pb.Error{Message: err.Error()}
-		return stats
-	}
-	body, _, err := c.Do(req)
+	body, _, err := c.Request(c.Ctx, http.MethodGet, urn)
 	if err != nil {
 		stats.Error = &pb.Error{Message: err.Error()}
 		return stats

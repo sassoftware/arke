@@ -24,6 +24,15 @@ func (m *rabbitMQAMQP10ConnectionMock) DeclareExchange(ctx context.Context, spec
 	return info, args.Error(1)
 }
 
+func (m *rabbitMQAMQP10ConnectionMock) DeclareQueue(ctx context.Context, specification rabbitmqamqp.IQueueSpecification) (*rabbitmqamqp.AmqpQueueInfo, error) {
+	args := m.Called(ctx, specification)
+	var info *rabbitmqamqp.AmqpQueueInfo
+	if args.Get(0) != nil {
+		info = args.Get(0).(*rabbitmqamqp.AmqpQueueInfo)
+	}
+	return info, args.Error(1)
+}
+
 func (m *rabbitMQAMQP10ConnectionMock) Close(ctx context.Context) error {
 	args := m.Called(ctx)
 	return args.Error(0)
