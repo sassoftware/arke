@@ -18,11 +18,6 @@ type ManagementClientMock struct {
 
 var _ ManagementClientShim = (*ManagementClientMock)(nil)
 
-func (m *ManagementClientMock) Do(req *http.Request) ([]byte, int, error) {
-	args := m.Called(req)
-	return args.Get(0).([]byte), args.Int(1), args.Error(2)
-}
-
 func (m *ManagementClientMock) Request(ctx context.Context, method, path string) ([]byte, int, error) {
 	args := m.Called(ctx, method, path)
 	return args.Get(0).([]byte), args.Int(1), args.Error(2)

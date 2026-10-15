@@ -879,7 +879,6 @@ func Test_amqp10provider_declareQueueRedeclaresKnownAndIsolatesTrackers(t *testi
 	connectionOne.AssertNumberOfCalls(t, "DeclareQueue", 1)
 	connectionTwo.AssertNumberOfCalls(t, "DeclareQueue", 1)
 }
-
 func Test_amqp10provider_declareBindings(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -31,10 +31,6 @@ type managementRequest struct {
 	path   string
 }
 
-func (m *managementClientStub) Do(_ *http.Request) ([]byte, int, error) {
-	return nil, 0, nil
-}
-
 func (m *managementClientStub) Request(ctx context.Context, method, path string) ([]byte, int, error) {
 	m.requests = append(m.requests, managementRequest{method: method, path: path})
 	if m.request != nil {

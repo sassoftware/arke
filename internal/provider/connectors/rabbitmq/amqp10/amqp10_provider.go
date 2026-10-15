@@ -336,11 +336,9 @@ func queueSpecification(source *pb.Source) (rabbitmqamqp.IQueueSpecification, er
 
 	name := amqp.SourceName(source)
 	isQuorum := amqp.IsQuorum(source)
-	messageTTL := int64(0)
-	expires := int64(0)
-	hasExpires := false
-	deadLetterExchange := ""
-	deadLetterRoutingKey := ""
+	var messageTTL, expires int64
+	var hasExpires bool
+	var deadLetterExchange, deadLetterRoutingKey string
 	for option, value := range source.GetOptions() {
 		switch option {
 		case "MessageTTL":
