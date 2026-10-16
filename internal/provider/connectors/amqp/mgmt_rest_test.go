@@ -18,6 +18,11 @@ type ManagementClientMock struct {
 
 var _ ManagementClientShim = (*ManagementClientMock)(nil)
 
+func (m *ManagementClientMock) Request(ctx context.Context, method, path string) ([]byte, int, error) {
+	args := m.Called(ctx, method, path)
+	return args.Get(0).([]byte), args.Int(1), args.Error(2)
+}
+
 func (m *ManagementClientMock) SourceStats(vhost, queueName string) *pb.SourceStats {
 	args := m.Called(vhost, queueName)
 	return args.Get(0).(*pb.SourceStats)
@@ -109,6 +114,20 @@ func Test_AMQPManagementClient_RequestRespectsConfiguredContext(t *testing.T) {
 	_, _, err := client.Request(context.Background(), http.MethodGet, "/api/queues")
 
 	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func Test_ManagementClientMock_Request(t *testing.T) {
+	ctx := context.Background()
+	clientMock := &ManagementClientMock{Mock: &mock.Mock{}}
+	var client ManagementClientShim = clientMock
+	clientMock.On("Request", ctx, http.MethodGet, "/api/queues/%2F/orders").Return([]byte("{}"), http.StatusOK, nil).Once()
+
+	body, status, err := client.Request(ctx, http.MethodGet, "/api/queues/%2F/orders")
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, status)
+	assert.Equal(t, []byte("{}"), body)
+	clientMock.AssertExpectations(t)
 }
 
 func Test_AMQPManagementClient_SourceStats(t *testing.T) {

@@ -6,6 +6,7 @@ package amqp10
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -21,6 +22,21 @@ type managementClientStub struct {
 	vhost     string
 	queueName string
 	stats     *pb.SourceStats
+	request   func(context.Context, string, string) ([]byte, int, error)
+	requests  []managementRequest
+}
+
+type managementRequest struct {
+	method string
+	path   string
+}
+
+func (m *managementClientStub) Request(ctx context.Context, method, path string) ([]byte, int, error) {
+	m.requests = append(m.requests, managementRequest{method: method, path: path})
+	if m.request != nil {
+		return m.request(ctx, method, path)
+	}
+	return []byte("[]"), http.StatusOK, nil
 }
 
 func (m *managementClientStub) SourceStats(vhost, queueName string) *pb.SourceStats {

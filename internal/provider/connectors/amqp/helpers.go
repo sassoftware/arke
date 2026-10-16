@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	defaultAdminPort = 15672
-	EnvAdminPortName = "ARKE_BROKER_ADMIN_PORT"
+	defaultAdminPort   = 15672
+	EnvAdminPortName   = "ARKE_BROKER_ADMIN_PORT"
+	BindingMatchHeader = "x-match"
 )
 
 var (

@@ -20,6 +20,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/internal/provider"
+	iamqp "github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/sassoftware/arke/internal/provider/connectors/amqp/track"
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/stretchr/testify/assert"
@@ -1638,12 +1639,12 @@ func Test_Subscribe_Options(t *testing.T) {
 	expectedMatchHeaders1 := amqp091Table{}
 	expectedMatchHeaders1["key1"] = "value1"
 	expectedMatchHeaders1["key2"] = "value2"
-	expectedMatchHeaders1["x-match"] = testXMatchAny
+	expectedMatchHeaders1[iamqp.BindingMatchHeader] = testXMatchAny
 
 	expectedMatchHeaders2 := amqp091Table{}
 	expectedMatchHeaders2["key3"] = "value3"
 	expectedMatchHeaders2["key4"] = "value4"
-	expectedMatchHeaders2["x-match"] = testXMatchAny
+	expectedMatchHeaders2[iamqp.BindingMatchHeader] = testXMatchAny
 
 	cmock.On("SetPrefetch", 4).Return(nil)
 	cmock.On("Close").Return(nil)

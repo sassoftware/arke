@@ -7,8 +7,11 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -185,6 +188,9 @@ func (prov *rabbitMQAMQP10Provider) Subscribe(ctx context.Context, source *pb.So
 		return &pb.Error{Message: err.Error()}
 	}
 	if err := prov.declareQueue(source, bd); err != nil {
+		return &pb.Error{Message: err.Error()}
+	}
+	if err := prov.declareBindings(source, bd); err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
 	return nil
@@ -396,5 +402,152 @@ func (prov *rabbitMQAMQP10Provider) declareQueue(source *pb.Source, bd *BrokerDe
 		return declarationErr
 	}
 	bd.entityTracker().AddQueue(name)
+	return nil
+}
+
+func (prov *rabbitMQAMQP10Provider) declareBindings(source *pb.Source, bd *BrokerDetails) error {
+	address := source.GetAddress()
+	if source.GetType() == pb.Source_STREAM && address.GetType() == pb.Address_STREAM {
+		return nil
+	}
+
+	if err := prov.declareParentAddressBindings(address, bd); err != nil {
+		return err
+	}
+	return prov.bindAddressSubjects(source, address, bd)
+}
+
+func (prov *rabbitMQAMQP10Provider) bindAddressSubjects(source *pb.Source, address *pb.Address, bd *BrokerDetails) error {
+	matchHeadersList := bindingArguments(source, address)
+	subjects := append([]string(nil), address.GetSubjects()...)
+	if len(subjects) == 0 && len(matchHeadersList) > 0 {
+		subjects = append(subjects, "")
+	}
+
+	for _, subject := range subjects {
+		if len(matchHeadersList) == 0 {
+			prov.bindQueueOrStream(source, address, subject, nil, bd)
+			continue
+		}
+		for _, matchHeaders := range matchHeadersList {
+			prov.bindQueueOrStream(source, address, subject, matchHeaders, bd)
+		}
+	}
+	prov.cleanupQueueBindings(source, address, subjects, bd)
+	return nil
+}
+
+func (prov *rabbitMQAMQP10Provider) cleanupQueueBindings(source *pb.Source, address *pb.Address, subjects []string, bd *BrokerDetails) {
+	vhost := amqp.GetVhost(bd.connectionConfig)
+	queueName := amqp.SourceName(source)
+	if bd.mgmtClient == nil {
+		util.Logger.Debugf("Error listing bindings for %s: management client is unavailable", queueName)
+		return
+	}
+	bindingPath := fmt.Sprintf("/api/bindings/%s/e/%s/q/%s",
+		url.PathEscape(vhost), url.PathEscape(address.GetName()), url.PathEscape(queueName))
+
+	body, statusCode, err := bd.mgmtClient.Request(bd.ctx, http.MethodGet, bindingPath)
+	if err != nil {
+		util.Logger.Debugf("Error listing bindings for %s: %s", queueName, err.Error())
+		return
+	}
+	if statusCode != http.StatusOK {
+		util.Logger.Debugf("Error listing bindings for %s: management request returned %d", queueName, statusCode)
+		return
+	}
+
+	var bindings []struct {
+		RoutingKey    string `json:"routing_key"`
+		PropertiesKey string `json:"properties_key"`
+	}
+	if err := json.Unmarshal(body, &bindings); err != nil {
+		util.Logger.Debugf("Error decoding bindings for %s: %s", queueName, err.Error())
+		return
+	}
+
+	for _, binding := range bindings {
+		bindingExpected := false
+		for _, subject := range subjects {
+			if binding.RoutingKey == subject {
+				bindingExpected = true
+				break
+			}
+		}
+		if bindingExpected {
+			continue
+		}
+
+		deletePath := bindingPath + "/" + url.PathEscape(binding.PropertiesKey)
+		_, statusCode, err := bd.mgmtClient.Request(bd.ctx, http.MethodDelete, deletePath)
+		if err != nil {
+			util.Logger.Debugf("Error deleting binding %s from %s: %s", binding.PropertiesKey, queueName, err.Error())
+			continue
+		}
+		if statusCode != http.StatusNoContent {
+			util.Logger.Debugf("Error deleting binding %s from %s: management request returned %d", binding.PropertiesKey, queueName, statusCode)
+		}
+	}
+}
+
+func bindingArguments(source *pb.Source, address *pb.Address) []map[string]any {
+	if address.GetType() != pb.Address_FILTER {
+		return nil
+	}
+
+	matchHeadersList := make([]map[string]any, 0, len(source.GetFilters()))
+	for _, filter := range source.GetFilters() {
+		matchHeaders := make(map[string]any)
+		for _, match := range filter.GetMatches() {
+			matchHeaders[match.GetName()] = match.GetValue()
+		}
+		if len(matchHeaders) > 0 {
+			matchHeaders[amqp.BindingMatchHeader] = "all"
+			if filter.GetType() == pb.Filter_ANY {
+				matchHeaders[amqp.BindingMatchHeader] = "any"
+			}
+		}
+		matchHeadersList = append(matchHeadersList, matchHeaders)
+	}
+	return matchHeadersList
+}
+
+func (prov *rabbitMQAMQP10Provider) bindQueueOrStream(source *pb.Source, address *pb.Address, subject string, arguments map[string]any, bd *BrokerDetails) {
+	_, err := bd.Connection.DeclareBind(bd.ctx, &rabbitmqamqp.ExchangeToQueueBindingSpecification{
+		SourceExchange:   address.GetName(),
+		DestinationQueue: amqp.SourceName(source),
+		BindingKey:       subject,
+		Arguments:        arguments,
+	})
+	if err != nil {
+		// Queue binding failures are intentionally non-fatal, matching AMQP 0.9.1.
+		util.Logger.Warn(i18n.ClientQueueBindError, err.Error(), bd.ClientIdentifier)
+	}
+}
+
+func (prov *rabbitMQAMQP10Provider) declareParentAddressBindings(address *pb.Address, bd *BrokerDetails) error {
+	parent := address.GetParentAddress()
+	if parent == nil {
+		return nil
+	}
+	if err := prov.declareParentAddressBindings(parent, bd); err != nil {
+		return err
+	}
+	if err := prov.declareExchange(parent, bd); err != nil {
+		return err
+	}
+	if err := prov.declareExchange(address, bd); err != nil {
+		return err
+	}
+	for _, subject := range address.GetSubjects() {
+		_, err := bd.Connection.DeclareBind(bd.ctx, &rabbitmqamqp.ExchangeToExchangeBindingSpecification{
+			SourceExchange:      parent.GetName(),
+			DestinationExchange: address.GetName(),
+			BindingKey:          subject,
+		})
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }

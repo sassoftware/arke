@@ -36,8 +36,8 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 		hostname = "localhost"
 	}
 	t.Setenv("ARKE_BROKER_HOSTNAME", hostname)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
 
 	clientAddr := fmt.Sprintf("test-connect-integration-%d", time.Now().UnixNano())
 	ctx = peer.NewContext(ctx, &peer.Peer{Addr: mockPeerAddr{clientAddr: clientAddr}})
@@ -58,6 +58,115 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 	assert.Eventually(t, func() bool {
 		return prov.WaitForConnect(ctx)
 	}, 2*time.Second, 100*time.Millisecond)
+
+	source := &pb.Source{
+		Name: "queue-name",
+		Address: &pb.Address{
+			Name:     "queue-name",
+			Subjects: []string{},
+			Type:     pb.Address_QUEUE,
+		},
+	}
+	stats := prov.SourceStats(ctx, source)
+	assert.Nil(t, stats.Error)
+	assert.NotNil(t, stats)
+	// Used UI to create the queue queue-name.quorum and publish msgs.
+	// Ran this test and observed message_count and publish_rate.
+	t.Logf("Source stats: %+v", stats)
+
+	exchangeName := "arke-amqp10-bindings-" + uuid.NewString()
+	queueName := exchangeName + "-queue"
+	routingKeys := []string{"integration.subject.retained", "integration.subject.removed"}
+	bindingSource := &pb.Source{
+		Name:       queueName,
+		Type:       pb.Source_QUEUE,
+		AutoDelete: true,
+		Address: &pb.Address{
+			Name:     exchangeName,
+			Type:     pb.Address_TOPIC,
+			Subjects: routingKeys,
+		},
+	}
+	username, password := amqp.GetUsernamePassword(&connConfig)
+	management, err := amqp.NewManagementClient(ctx, amqp.GetMgmtEndpoint(&connConfig), username, password, nil)
+	require.NoError(t, err)
+	vhost := amqp.GetVhost(&connConfig)
+	queueName = amqp.SourceName(bindingSource)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if err := deleteQueue(cleanupCtx, management, vhost, queueName); err != nil {
+			t.Errorf("delete AMQP 1.0 binding test queue: %v", err)
+		}
+		exchangePath := "/api/exchanges/" + url.PathEscape(vhost) + "/" + url.PathEscape(exchangeName)
+		_, statusCode, err := management.Request(cleanupCtx, http.MethodDelete, exchangePath)
+		if err != nil {
+			t.Errorf("delete AMQP 1.0 binding test exchange: %v", err)
+		} else if statusCode != http.StatusNoContent && statusCode != http.StatusNotFound {
+			t.Errorf("delete AMQP 1.0 binding test exchange returned %d", statusCode)
+		}
+	})
+
+	require.Nil(t, prov.Subscribe(ctx, bindingSource, nil))
+	bindingPath := fmt.Sprintf("/api/bindings/%s/e/%s/q/%s",
+		url.PathEscape(vhost), url.PathEscape(exchangeName), url.PathEscape(queueName))
+	type bindingInfo struct {
+		Source          string `json:"source"`
+		Destination     string `json:"destination"`
+		DestinationType string `json:"destination_type"`
+		RoutingKey      string `json:"routing_key"`
+	}
+	var bindings []bindingInfo
+	var matchingBindings []bindingInfo
+	var bindingErr error
+	readMatchingBindings := func() bool {
+		body, statusCode, err := management.Request(ctx, http.MethodGet, bindingPath)
+		if err != nil {
+			bindingErr = err
+			return false
+		}
+		if statusCode != http.StatusOK {
+			bindingErr = fmt.Errorf("management API GET bindings returned %d", statusCode)
+			return false
+		}
+		bindingErr = json.Unmarshal(body, &bindings)
+		if bindingErr != nil {
+			return false
+		}
+		matchingBindings = matchingBindings[:0]
+		for _, binding := range bindings {
+			if binding.Source != exchangeName || binding.Destination != queueName || binding.DestinationType != "queue" {
+				continue
+			}
+			matchingBindings = append(matchingBindings, binding)
+		}
+		return true
+	}
+	expectedBindings := func(subjects []string) []bindingInfo {
+		bindings := make([]bindingInfo, 0, len(subjects))
+		for _, subject := range subjects {
+			bindings = append(bindings, bindingInfo{
+				Source:          exchangeName,
+				Destination:     queueName,
+				DestinationType: "queue",
+				RoutingKey:      subject,
+			})
+		}
+		return bindings
+	}
+	require.Eventually(t, func() bool {
+		return readMatchingBindings() && len(matchingBindings) == len(routingKeys)
+	},
+		5*time.Second, 100*time.Millisecond, "bindings unavailable: %v", bindingErr)
+	require.ElementsMatch(t, expectedBindings(routingKeys), matchingBindings)
+
+	bindingSource.Address.Subjects = []string{routingKeys[0]}
+	require.Nil(t, prov.Subscribe(ctx, bindingSource, nil))
+	require.Eventually(t, func() bool {
+		return readMatchingBindings() && len(matchingBindings) == len(bindingSource.Address.Subjects)
+	},
+		5*time.Second, 100*time.Millisecond, "stale binding cleanup unavailable: %v", bindingErr)
+	require.ElementsMatch(t, expectedBindings(bindingSource.Address.Subjects), matchingBindings)
 
 	prov.Disconnect(ctx)
 	assert.False(t, prov.ClientExists(clientIdentifier))

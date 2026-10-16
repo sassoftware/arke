@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net/http"
 	"os"
 	"sync/atomic"
 	"testing"
@@ -28,6 +29,34 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/peer"
+)
+
+const (
+	testExchangeName           = "exchange"
+	testBindingSubjectOne      = "one"
+	testBindingSubjectTwo      = "two"
+	testBindingSubjectKey      = "key"
+	testBindingSubjectCreated  = "created"
+	testParentAddressSubject   = "subject"
+	testBindingMatchKind       = "kind"
+	testBindingMatchEvent      = "event"
+	testBindingMatchRegion     = "region"
+	testBindingMatchWest       = "west"
+	testBindingMatchAny        = "any"
+	testBindingMatchAll        = "all"
+	testBindingQuorumQueueName = "orders.quorum"
+	testBindingStreamName      = "events"
+	testBindingQueueName       = "orders"
+	testBindingTemporaryQueue  = "binding-queue"
+	testBindingExchangeName    = "orders-exchange"
+	testBindingCallExchange    = "exchange"
+	testBindingCallQueue       = "queue-declared"
+	testBindingCallBinding     = "binding"
+	testCleanupQueueName       = "cleanup-queue"
+	testCleanupExchangeName    = "cleanup-exchange"
+	testCleanupTenant          = "tenant-a"
+	testCleanupBindingPath     = "/api/bindings/tenant-a/e/cleanup-exchange/q/cleanup-queue"
+	testCleanupStaleProperties = "stale-key"
 )
 
 type rabbitMQAMQP10ProviderAddr struct {
@@ -498,8 +527,6 @@ func Test_SupportedStreamSourceOptions(t *testing.T) {
 	assert.Equal(t, expected, supportedStreamSourceOptions)
 }
 
-const testExchangeName = "exchange"
-
 func Test_addressToExchangeSpecification(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -851,4 +878,460 @@ func Test_amqp10provider_declareQueueRedeclaresKnownAndIsolatesTrackers(t *testi
 	assert.True(t, bdTwo.queueExists("shared.quorum"))
 	connectionOne.AssertNumberOfCalls(t, "DeclareQueue", 1)
 	connectionTwo.AssertNumberOfCalls(t, "DeclareQueue", 1)
+}
+func Test_amqp10provider_declareBindings(t *testing.T) {
+	tests := []struct {
+		name     string
+		source   *pb.Source
+		expected []rabbitmqamqp.ExchangeToQueueBindingSpecification
+	}{
+		{
+			name: "one subject without filters",
+			source: &pb.Source{Name: testBindingTemporaryQueue, Type: pb.Source_TEMPORARY, Address: &pb.Address{
+				Name: testExchangeName, Type: pb.Address_TOPIC, Subjects: []string{testBindingSubjectOne},
+			}},
+			expected: []rabbitmqamqp.ExchangeToQueueBindingSpecification{{
+				SourceExchange: testExchangeName, DestinationQueue: testBindingTemporaryQueue, BindingKey: testBindingSubjectOne,
+			}},
+		},
+		{
+			name: "multiple subjects without filters",
+			source: &pb.Source{Name: testBindingTemporaryQueue, Type: pb.Source_TEMPORARY, Address: &pb.Address{
+				Name: testExchangeName, Type: pb.Address_TOPIC, Subjects: []string{testBindingSubjectOne, testBindingSubjectTwo},
+			}},
+			expected: []rabbitmqamqp.ExchangeToQueueBindingSpecification{
+				{SourceExchange: testExchangeName, DestinationQueue: testBindingTemporaryQueue, BindingKey: testBindingSubjectOne},
+				{SourceExchange: testExchangeName, DestinationQueue: testBindingTemporaryQueue, BindingKey: testBindingSubjectTwo},
+			},
+		},
+		{
+			name: "Filter_ANY uses x-match any",
+			source: &pb.Source{Name: testBindingTemporaryQueue, Type: pb.Source_TEMPORARY, Address: &pb.Address{
+				Name: testExchangeName, Type: pb.Address_FILTER, Subjects: []string{testBindingSubjectKey},
+			}, Filters: []*pb.Filter{{Type: pb.Filter_ANY, Matches: []*pb.Match{{Name: testBindingMatchKind, Value: testBindingMatchEvent}}}}},
+			expected: []rabbitmqamqp.ExchangeToQueueBindingSpecification{{
+				SourceExchange: testExchangeName, DestinationQueue: testBindingTemporaryQueue, BindingKey: testBindingSubjectKey,
+				Arguments: map[string]any{testBindingMatchKind: testBindingMatchEvent, amqp.BindingMatchHeader: testBindingMatchAny},
+			}},
+		},
+		{
+			name: "non-empty Filter_ALL uses x-match all",
+			source: &pb.Source{Name: testBindingTemporaryQueue, Type: pb.Source_TEMPORARY, Address: &pb.Address{
+				Name: testExchangeName, Type: pb.Address_FILTER, Subjects: []string{testBindingSubjectKey},
+			}, Filters: []*pb.Filter{{Type: pb.Filter_ALL, Matches: []*pb.Match{{Name: testBindingMatchKind, Value: testBindingMatchEvent}}}}},
+			expected: []rabbitmqamqp.ExchangeToQueueBindingSpecification{{
+				SourceExchange: testExchangeName, DestinationQueue: testBindingTemporaryQueue, BindingKey: testBindingSubjectKey,
+				Arguments: map[string]any{testBindingMatchKind: testBindingMatchEvent, amqp.BindingMatchHeader: testBindingMatchAll},
+			}},
+		},
+		{
+			name: "subjects and filters form a cross-product",
+			source: &pb.Source{Name: testBindingTemporaryQueue, Type: pb.Source_TEMPORARY, Address: &pb.Address{
+				Name: testExchangeName, Type: pb.Address_FILTER, Subjects: []string{testBindingSubjectOne, testBindingSubjectTwo},
+			}, Filters: []*pb.Filter{
+				{Type: pb.Filter_ANY, Matches: []*pb.Match{{Name: testBindingMatchKind, Value: testBindingMatchEvent}}},
+				{Type: pb.Filter_ALL, Matches: []*pb.Match{{Name: testBindingMatchRegion, Value: testBindingMatchWest}}},
+			}},
+			expected: []rabbitmqamqp.ExchangeToQueueBindingSpecification{
+				{SourceExchange: testExchangeName, DestinationQueue: testBindingTemporaryQueue, BindingKey: testBindingSubjectOne, Arguments: map[string]any{testBindingMatchKind: testBindingMatchEvent, amqp.BindingMatchHeader: testBindingMatchAny}},
+				{SourceExchange: testExchangeName, DestinationQueue: testBindingTemporaryQueue, BindingKey: testBindingSubjectOne, Arguments: map[string]any{testBindingMatchRegion: testBindingMatchWest, amqp.BindingMatchHeader: testBindingMatchAll}},
+				{SourceExchange: testExchangeName, DestinationQueue: testBindingTemporaryQueue, BindingKey: testBindingSubjectTwo, Arguments: map[string]any{testBindingMatchKind: testBindingMatchEvent, amqp.BindingMatchHeader: testBindingMatchAny}},
+				{SourceExchange: testExchangeName, DestinationQueue: testBindingTemporaryQueue, BindingKey: testBindingSubjectTwo, Arguments: map[string]any{testBindingMatchRegion: testBindingMatchWest, amqp.BindingMatchHeader: testBindingMatchAll}},
+			},
+		},
+		{
+			name: "filters without subjects use an empty binding key",
+			source: &pb.Source{Name: testBindingTemporaryQueue, Type: pb.Source_TEMPORARY, Address: &pb.Address{
+				Name: testExchangeName, Type: pb.Address_FILTER,
+			}, Filters: []*pb.Filter{{Type: pb.Filter_ALL, Matches: []*pb.Match{{Name: testBindingMatchKind, Value: testBindingMatchEvent}}}}},
+			expected: []rabbitmqamqp.ExchangeToQueueBindingSpecification{{
+				SourceExchange: testExchangeName, DestinationQueue: testBindingTemporaryQueue, BindingKey: "",
+				Arguments: map[string]any{testBindingMatchKind: testBindingMatchEvent, amqp.BindingMatchHeader: testBindingMatchAll},
+			}},
+		},
+		{
+			name: "empty filters still create a binding with empty arguments",
+			source: &pb.Source{Name: testBindingTemporaryQueue, Type: pb.Source_TEMPORARY, Address: &pb.Address{
+				Name: testExchangeName, Type: pb.Address_FILTER,
+			}, Filters: []*pb.Filter{{}}},
+			expected: []rabbitmqamqp.ExchangeToQueueBindingSpecification{{
+				SourceExchange: testExchangeName, DestinationQueue: testBindingTemporaryQueue, BindingKey: "", Arguments: map[string]any{},
+			}},
+		},
+		{
+			name: "no subjects and no filters create no binding",
+			source: &pb.Source{Name: testBindingTemporaryQueue, Type: pb.Source_TEMPORARY, Address: &pb.Address{
+				Name: testExchangeName, Type: pb.Address_FILTER,
+			}},
+		},
+		{
+			name: "quorum queue uses declared name",
+			source: &pb.Source{Name: testBindingQueueName, Type: pb.Source_QUEUE, Address: &pb.Address{
+				Name: testExchangeName, Type: pb.Address_TOPIC, Subjects: []string{testBindingSubjectKey},
+			}},
+			expected: []rabbitmqamqp.ExchangeToQueueBindingSpecification{{
+				SourceExchange: testExchangeName, DestinationQueue: testBindingQuorumQueueName, BindingKey: testBindingSubjectKey,
+			}},
+		},
+		{
+			name: "classic queue uses its unmodified name",
+			source: &pb.Source{Name: testBindingQueueName, Type: pb.Source_QUEUE, AutoDelete: true, Address: &pb.Address{
+				Name: testExchangeName, Type: pb.Address_TOPIC, Subjects: []string{testBindingSubjectKey},
+			}},
+			expected: []rabbitmqamqp.ExchangeToQueueBindingSpecification{{
+				SourceExchange: testExchangeName, DestinationQueue: testBindingQueueName, BindingKey: testBindingSubjectKey,
+			}},
+		},
+		{
+			name: "existing stream uses its declared name",
+			source: &pb.Source{Name: testBindingStreamName, Type: pb.Source_STREAM, Address: &pb.Address{
+				Name: testExchangeName, Type: pb.Address_TOPIC, Subjects: []string{testBindingSubjectKey},
+			}},
+			expected: []rabbitmqamqp.ExchangeToQueueBindingSpecification{{
+				SourceExchange: testExchangeName, DestinationQueue: testBindingStreamName, BindingKey: testBindingSubjectKey,
+			}},
+		},
+		{
+			name: "stream address does not create a queue binding",
+			source: &pb.Source{Name: testBindingStreamName, Type: pb.Source_STREAM, Address: &pb.Address{
+				Name: testBindingStreamName, Type: pb.Address_STREAM, Subjects: []string{testBindingSubjectKey},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			connection := &rabbitMQAMQP10ConnectionMock{}
+			bd := &BrokerDetails{ctx: context.Background(), Connection: connection}
+			var got []rabbitmqamqp.ExchangeToQueueBindingSpecification
+			if len(tt.expected) > 0 {
+				connection.On("DeclareBind", bd.ctx, mock.Anything).Run(func(args mock.Arguments) {
+					binding, ok := args.Get(1).(*rabbitmqamqp.ExchangeToQueueBindingSpecification)
+					require.True(t, ok)
+					got = append(got, *binding)
+				}).Return("binding-path", nil).Times(len(tt.expected))
+			}
+
+			err := newTestRabbitMQAMQP10Provider().declareBindings(tt.source, bd)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, got)
+			connection.AssertNumberOfCalls(t, "DeclareBind", len(tt.expected))
+		})
+	}
+}
+
+func Test_amqp10provider_cleanupQueueBindings(t *testing.T) {
+	t.Run("deletes stale routing keys and retains requested keys despite argument changes", func(t *testing.T) {
+		source := &pb.Source{Name: testCleanupQueueName, Type: pb.Source_QUEUE, AutoDelete: true, Address: &pb.Address{
+			Name: testCleanupExchangeName, Type: pb.Address_TOPIC,
+		}}
+		management := &managementClientStub{request: func(_ context.Context, method, _ string) ([]byte, int, error) {
+			if method == http.MethodGet {
+				return []byte(fmt.Sprintf(`[
+					{"routing_key":"keep.one","properties_key":"keep-one","arguments":{"header":"old"}},
+					{"routing_key":"keep.two","properties_key":"keep-two"},
+					{"routing_key":"stale","properties_key":%q}
+				]`, testCleanupStaleProperties)), http.StatusOK, nil
+			}
+			return nil, http.StatusNoContent, nil
+		}}
+		bd := &BrokerDetails{
+			ctx:              context.Background(),
+			mgmtClient:       management,
+			connectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant},
+		}
+
+		newTestRabbitMQAMQP10Provider().cleanupQueueBindings(source, source.GetAddress(), []string{"keep.one", "keep.two"}, bd)
+
+		assert.Equal(t, []managementRequest{
+			{method: http.MethodGet, path: testCleanupBindingPath},
+			{method: http.MethodDelete, path: testCleanupBindingPath + "/" + testCleanupStaleProperties},
+		}, management.requests)
+	})
+
+	t.Run("changed filter arguments with the same routing key are retained", func(t *testing.T) {
+		source := &pb.Source{Name: testCleanupQueueName, Type: pb.Source_QUEUE, AutoDelete: true, Filters: []*pb.Filter{{
+			Type: pb.Filter_ALL, Matches: []*pb.Match{{Name: "kind", Value: "new"}},
+		}}, Address: &pb.Address{Name: testCleanupExchangeName, Type: pb.Address_FILTER, Subjects: []string{"same-key"}}}
+		management := &managementClientStub{request: func(_ context.Context, method, _ string) ([]byte, int, error) {
+			if method == http.MethodGet {
+				return []byte(`[{"routing_key":"same-key","properties_key":"same-key","arguments":{"kind":"old"}}]`), http.StatusOK, nil
+			}
+			return nil, http.StatusNoContent, nil
+		}}
+		connection := &rabbitMQAMQP10ConnectionMock{}
+		bd := &BrokerDetails{ctx: context.Background(), Connection: connection, mgmtClient: management, connectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant}}
+		connection.On("DeclareBind", bd.ctx, mock.Anything).Return("binding-path", nil).Once()
+
+		err := newTestRabbitMQAMQP10Provider().bindAddressSubjects(source, source.GetAddress(), bd)
+
+		require.NoError(t, err)
+		assert.Equal(t, []managementRequest{{method: http.MethodGet, path: testCleanupBindingPath}}, management.requests)
+		connection.AssertExpectations(t)
+	})
+
+	t.Run("no subjects and no filters deletes every existing queue binding", func(t *testing.T) {
+		source := &pb.Source{Name: testCleanupQueueName, Type: pb.Source_QUEUE, AutoDelete: true, Address: &pb.Address{
+			Name: testCleanupExchangeName, Type: pb.Address_TOPIC,
+		}}
+		management := &managementClientStub{request: func(_ context.Context, method, _ string) ([]byte, int, error) {
+			if method == http.MethodGet {
+				return []byte(`[
+					{"routing_key":"one","properties_key":"one-key"},
+					{"routing_key":"two","properties_key":"two-key"}
+				]`), http.StatusOK, nil
+			}
+			return nil, http.StatusNoContent, nil
+		}}
+		bd := &BrokerDetails{ctx: context.Background(), mgmtClient: management, connectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant}}
+		connection := &rabbitMQAMQP10ConnectionMock{}
+		bd.Connection = connection
+
+		err := newTestRabbitMQAMQP10Provider().bindAddressSubjects(source, source.GetAddress(), bd)
+
+		require.NoError(t, err)
+		connection.AssertNotCalled(t, "DeclareBind", mock.Anything, mock.Anything)
+		assert.Equal(t, []managementRequest{
+			{method: http.MethodGet, path: testCleanupBindingPath},
+			{method: http.MethodDelete, path: testCleanupBindingPath + "/one-key"},
+			{method: http.MethodDelete, path: testCleanupBindingPath + "/two-key"},
+		}, management.requests)
+	})
+
+	t.Run("filters without subjects retain the empty routing key", func(t *testing.T) {
+		source := &pb.Source{Name: testCleanupQueueName, Type: pb.Source_QUEUE, AutoDelete: true, Filters: []*pb.Filter{{
+			Type: pb.Filter_ANY, Matches: []*pb.Match{{Name: "kind", Value: "new"}},
+		}}, Address: &pb.Address{Name: testCleanupExchangeName, Type: pb.Address_FILTER}}
+		management := &managementClientStub{request: func(_ context.Context, method, _ string) ([]byte, int, error) {
+			if method == http.MethodGet {
+				return []byte(fmt.Sprintf(`[
+					{"routing_key":"","properties_key":"empty-key","arguments":{"kind":"old"}},
+					{"routing_key":"stale","properties_key":%q}
+				]`, testCleanupStaleProperties)), http.StatusOK, nil
+			}
+			return nil, http.StatusNoContent, nil
+		}}
+		connection := &rabbitMQAMQP10ConnectionMock{}
+		bd := &BrokerDetails{ctx: context.Background(), Connection: connection, mgmtClient: management, connectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant}}
+		connection.On("DeclareBind", bd.ctx, mock.Anything).Run(func(args mock.Arguments) {
+			binding := args.Get(1).(*rabbitmqamqp.ExchangeToQueueBindingSpecification)
+			assert.Empty(t, binding.BindingKey)
+		}).Return("binding-path", nil).Once()
+
+		err := newTestRabbitMQAMQP10Provider().bindAddressSubjects(source, source.GetAddress(), bd)
+
+		require.NoError(t, err)
+		assert.Equal(t, []managementRequest{
+			{method: http.MethodGet, path: testCleanupBindingPath},
+			{method: http.MethodDelete, path: testCleanupBindingPath + "/" + testCleanupStaleProperties},
+		}, management.requests)
+		connection.AssertExpectations(t)
+	})
+}
+
+func Test_amqp10provider_subscribeSuppressesCleanupFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		request func(context.Context, string, string) ([]byte, int, error)
+		want    []managementRequest
+	}{
+		{
+			name: "listing failure",
+			request: func(context.Context, string, string) ([]byte, int, error) {
+				return nil, http.StatusInternalServerError, nil
+			},
+			want: []managementRequest{{method: http.MethodGet, path: testCleanupBindingPath}},
+		},
+		{
+			name: "deletion failure",
+			request: func(_ context.Context, method, _ string) ([]byte, int, error) {
+				if method == http.MethodGet {
+					return []byte(fmt.Sprintf(`[{"routing_key":"stale","properties_key":%q}]`, testCleanupStaleProperties)), http.StatusOK, nil
+				}
+				return nil, http.StatusInternalServerError, nil
+			},
+			want: []managementRequest{
+				{method: http.MethodGet, path: testCleanupBindingPath},
+				{method: http.MethodDelete, path: testCleanupBindingPath + "/" + testCleanupStaleProperties},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, clientIdentifier := newTestProviderContext(t, "subscribe-cleanup-error")
+			connection := &rabbitMQAMQP10ConnectionMock{}
+			management := &managementClientStub{request: tt.request}
+			bd := &BrokerDetails{
+				ctx:              ctx,
+				Connection:       connection,
+				mgmtClient:       management,
+				connectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant},
+			}
+			prov := newTestRabbitMQAMQP10Provider()
+			prov.connections.Add(clientIdentifier, bd)
+			source := &pb.Source{Name: testCleanupQueueName, Type: pb.Source_QUEUE, AutoDelete: true, Address: &pb.Address{
+				Name: testCleanupExchangeName, Type: pb.Address_TOPIC, Subjects: []string{"wanted"},
+			}}
+			connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
+			connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Once()
+			connection.On("DeclareBind", bd.ctx, mock.Anything).Return("binding-path", nil).Once()
+
+			err := prov.Subscribe(ctx, source, nil)
+
+			require.Nil(t, err)
+			assert.Equal(t, tt.want, management.requests)
+			connection.AssertExpectations(t)
+		})
+	}
+}
+
+func Test_amqp10provider_declareBindingsParentAddress(t *testing.T) {
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	management := &managementClientStub{}
+	bd := &BrokerDetails{
+		ctx:              context.Background(),
+		Connection:       connection,
+		mgmtClient:       management,
+		connectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant},
+	}
+	source := &pb.Source{Name: testBindingTemporaryQueue, Type: pb.Source_TEMPORARY, Address: &pb.Address{
+		Name: "child", Type: pb.Address_TOPIC, Subjects: []string{testParentAddressSubject},
+		ParentAddress: &pb.Address{Name: "parent", Type: pb.Address_TOPIC},
+	}}
+	var got []rabbitmqamqp.IBindingSpecification
+	var calls []string
+	connection.On("DeclareExchange", bd.ctx, mock.Anything).Run(func(mock.Arguments) {
+		calls = append(calls, "declare-exchange")
+	}).Return(nil, nil).Twice()
+	connection.On("DeclareBind", bd.ctx, mock.Anything).Run(func(args mock.Arguments) {
+		binding, ok := args.Get(1).(rabbitmqamqp.IBindingSpecification)
+		require.True(t, ok)
+		got = append(got, binding)
+		switch binding.(type) {
+		case *rabbitmqamqp.ExchangeToExchangeBindingSpecification:
+			calls = append(calls, "bind-exchange")
+		case *rabbitmqamqp.ExchangeToQueueBindingSpecification:
+			calls = append(calls, "bind-queue")
+		default:
+			require.FailNow(t, "unexpected binding specification type")
+		}
+	}).Return("binding-path", nil).Twice()
+
+	err := newTestRabbitMQAMQP10Provider().declareBindings(source, bd)
+
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	e2e, ok := got[0].(*rabbitmqamqp.ExchangeToExchangeBindingSpecification)
+	require.True(t, ok)
+	assert.Equal(t, "parent", e2e.SourceExchange)
+	assert.Equal(t, "child", e2e.DestinationExchange)
+	assert.Equal(t, testParentAddressSubject, e2e.BindingKey)
+	assert.Equal(t, &rabbitmqamqp.ExchangeToExchangeBindingSpecification{
+		SourceExchange: "parent", DestinationExchange: "child", BindingKey: testParentAddressSubject, Arguments: nil,
+	}, e2e)
+	queue, ok := got[1].(*rabbitmqamqp.ExchangeToQueueBindingSpecification)
+	require.True(t, ok)
+	assert.Equal(t, "child", queue.SourceExchange)
+	assert.Equal(t, testBindingTemporaryQueue, queue.DestinationQueue)
+	assert.Equal(t, testParentAddressSubject, queue.BindingKey)
+	assert.Equal(t, []string{"declare-exchange", "declare-exchange", "bind-exchange", "bind-queue"}, calls)
+	assert.Equal(t, []managementRequest{{
+		method: http.MethodGet, path: fmt.Sprintf("/api/bindings/%s/e/child/q/%s", testCleanupTenant, testBindingTemporaryQueue),
+	}}, management.requests)
+}
+
+func Test_amqp10provider_subscribeDeclaresQueueBeforeBindings(t *testing.T) {
+	ctx, clientIdentifier := newTestProviderContext(t, "subscribe-bind-order")
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	var calls []string
+	management := &managementClientStub{request: func(context.Context, string, string) ([]byte, int, error) {
+		calls = append(calls, "cleanup")
+		return []byte("[]"), http.StatusOK, nil
+	}}
+	bd := &BrokerDetails{ctx: ctx, Connection: connection, mgmtClient: management}
+	prov := newTestRabbitMQAMQP10Provider()
+	prov.connections.Add(clientIdentifier, bd)
+	source := &pb.Source{Name: testBindingQueueName, Type: pb.Source_QUEUE, Address: &pb.Address{
+		Name: testBindingExchangeName, Type: pb.Address_TOPIC, Subjects: []string{testBindingSubjectCreated},
+	}}
+	connection.On("DeclareExchange", bd.ctx, mock.Anything).Run(func(mock.Arguments) {
+		calls = append(calls, testBindingCallExchange)
+	}).Return(nil, nil).Once()
+	connection.On("DeclareQueue", bd.ctx, mock.Anything).Run(func(mock.Arguments) {
+		calls = append(calls, testBindingCallQueue)
+	}).Return(nil, nil).Once()
+	connection.On("DeclareBind", bd.ctx, mock.MatchedBy(func(specification rabbitmqamqp.IBindingSpecification) bool {
+		binding, ok := specification.(*rabbitmqamqp.ExchangeToQueueBindingSpecification)
+		return ok && binding.SourceExchange == testBindingExchangeName && binding.DestinationQueue == testBindingQuorumQueueName && binding.BindingKey == testBindingSubjectCreated
+	})).Run(func(mock.Arguments) {
+		calls = append(calls, testBindingCallBinding)
+	}).Return("binding-path", nil).Once()
+
+	err := prov.Subscribe(ctx, source, nil)
+
+	require.Nil(t, err)
+	assert.Equal(t, []string{testBindingCallExchange, testBindingCallQueue, testBindingCallBinding, "cleanup"}, calls)
+}
+
+func Test_amqp10provider_subscribeContinuesAfterBindingError(t *testing.T) {
+	ctx, clientIdentifier := newTestProviderContext(t, "subscribe-bind-error")
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	management := &managementClientStub{}
+	bd := &BrokerDetails{ctx: ctx, Connection: connection, mgmtClient: management}
+	prov := newTestRabbitMQAMQP10Provider()
+	prov.connections.Add(clientIdentifier, bd)
+	source := &pb.Source{Name: testBindingQueueName, Type: pb.Source_QUEUE, Address: &pb.Address{
+		Name: testBindingExchangeName, Type: pb.Address_TOPIC, Subjects: []string{testBindingSubjectCreated},
+	}}
+	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
+	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Once()
+	connection.On("DeclareBind", bd.ctx, mock.Anything).Return("", errors.New("bind failed")).Once()
+
+	err := prov.Subscribe(ctx, source, nil)
+
+	require.Nil(t, err)
+	connection.AssertNumberOfCalls(t, "DeclareBind", 1)
+	require.Len(t, management.requests, 1)
+	assert.Equal(t, http.MethodGet, management.requests[0].method)
+}
+
+func Test_amqp10provider_subscribeContinuesAfterPartialBindingFailure(t *testing.T) {
+	ctx, clientIdentifier := newTestProviderContext(t, "subscribe-partial-bind-error")
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	bd := &BrokerDetails{ctx: ctx, Connection: connection}
+	prov := newTestRabbitMQAMQP10Provider()
+	prov.connections.Add(clientIdentifier, bd)
+	source := &pb.Source{Name: testBindingQueueName, Type: pb.Source_QUEUE, Address: &pb.Address{
+		Name: testBindingExchangeName, Type: pb.Address_TOPIC, Subjects: []string{testBindingSubjectOne, testBindingSubjectTwo},
+	}}
+	var got []rabbitmqamqp.ExchangeToQueueBindingSpecification
+	captureBinding := func(args mock.Arguments) {
+		binding, ok := args.Get(1).(*rabbitmqamqp.ExchangeToQueueBindingSpecification)
+		require.True(t, ok)
+		got = append(got, *binding)
+	}
+	matchBindingKey := func(bindingKey string) interface{} {
+		return mock.MatchedBy(func(specification rabbitmqamqp.IBindingSpecification) bool {
+			binding, ok := specification.(*rabbitmqamqp.ExchangeToQueueBindingSpecification)
+			return ok && binding.SourceExchange == testBindingExchangeName &&
+				binding.DestinationQueue == testBindingQuorumQueueName && binding.BindingKey == bindingKey && binding.Arguments == nil
+		})
+	}
+	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
+	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Once()
+	connection.On("DeclareBind", bd.ctx, matchBindingKey(testBindingSubjectOne)).Run(captureBinding).Return("", errors.New("first binding failed")).Once()
+	connection.On("DeclareBind", bd.ctx, matchBindingKey(testBindingSubjectTwo)).Run(captureBinding).Return("second-binding", nil).Once()
+
+	err := prov.Subscribe(ctx, source, nil)
+
+	require.Nil(t, err)
+	assert.Equal(t, []rabbitmqamqp.ExchangeToQueueBindingSpecification{
+		{SourceExchange: testBindingExchangeName, DestinationQueue: testBindingQuorumQueueName, BindingKey: testBindingSubjectOne},
+		{SourceExchange: testBindingExchangeName, DestinationQueue: testBindingQuorumQueueName, BindingKey: testBindingSubjectTwo},
+	}, got)
+	connection.AssertNumberOfCalls(t, "DeclareExchange", 1)
+	connection.AssertNumberOfCalls(t, "DeclareQueue", 1)
+	connection.AssertNumberOfCalls(t, "DeclareBind", 2)
 }
