@@ -20,11 +20,11 @@ on:
       - main
       - release-*
 env:
-  GO_VERSION: 1.26.6
+  GO_VERSION: 1.27
   ARTIFACT_DIR: ./artifacts
   LINT_DIR: ./.github/linters
   COV_DIR: ./artifacts/cov
-  BETTERLEAKS_VERSION: 1.1.2
+  BETTERLEAKS_VERSION: 1.9.0
 
 jobs:
   lint-other-files:
@@ -117,7 +117,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a
         with:
-          version: v2.11
+          version: v2.15
           args: --config=${{ env.LINT_DIR }}/golangci-config.yaml --allow-parallel-runners
 
   go-test:
