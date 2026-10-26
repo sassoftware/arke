@@ -133,6 +133,7 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 		provider:         prov,
 		mgmtClient:       mgmtClient,
 		Env:              env,
+		StreamConnection: newStreamConnection(getStreamConnectionString(cf, cf.GetTls()), tlsConfig),
 		ClientIdentifier: clientIdentifier,
 		tlsConfig:        tlsConfig,
 		activeMessages:   util.NewConcurrentMap(),
