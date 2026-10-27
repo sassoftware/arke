@@ -1614,7 +1614,7 @@ func (prov *amqp091provider) publishOneStream(ctx context.Context, msg *pb.Messa
 func (prov *amqp091provider) getStreamConnection(bd *BrokerDetails) *pb.Error {
 	// Not all of our clients are using streams, so we only connect if streams are used.
 	if bd.StreamConnection == nil {
-		connStr := getStreamConnectionString(bd)
+		connStr := iamqp.GetStreamConnURL(bd.connectionConfig)
 		bd.Lock()
 		bd.StreamConnection = NewStreamConn(connStr, bd.ClientIdentifier, bd.tlsConfig)
 		bd.Unlock()
@@ -1982,7 +1982,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 		util.Logger.Debugf("%s connecting without TLS: %s:%d", bd.ClientIdentifier, cf.GetHost(), cf.GetPort())
 	}
 
-	connStr = iamqp.GetConnURL(cf)
+	connStr = iamqp.GetAMQPConnURL(cf)
 
 	conn = NewAmqpConn091(connStr, bd.ClientIdentifier, bd.tlsConfig)
 	err = conn.Connect()

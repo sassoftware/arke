@@ -142,6 +142,7 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 		lastPubSubEvent:  time.Now(),
 		shutdownChan:     make(chan struct{}),
 	}
+	bd.StreamConnection = newStreamConnection(amqp.GetStreamConnURL(cf), tlsConfig, bd)
 	ok, err := bd.connect()
 	if !ok {
 		return &pb.Error{Message: err.Error()}

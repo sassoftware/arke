@@ -50,6 +50,10 @@ func getAdminPort(cf *pb.ConnectionConfiguration) int32 {
 }
 
 func GetConnURL(cf *pb.ConnectionConfiguration) string {
+	return GetAMQPConnURL(cf)
+}
+
+func GetAMQPConnURL(cf *pb.ConnectionConfiguration) string {
 	username := cf.GetCredentials().GetUsername()
 	password := cf.GetCredentials().GetPassword()
 	host := cf.GetHost()
@@ -62,12 +66,37 @@ func GetConnURL(cf *pb.ConnectionConfiguration) string {
 	if cf.GetTls() {
 		scheme = "amqps"
 	}
-	return (&url.URL{
-		Scheme: scheme,
-		User:   url.UserPassword(username, password),
-		Host:   net.JoinHostPort(host, strconv.Itoa(int(port))),
-		Path:   tenant,
-	}).String()
+	userInfo := url.UserPassword(username, password).String()
+	hostPort := net.JoinHostPort(host, strconv.Itoa(int(port)))
+	path := (&url.URL{Path: tenant}).EscapedPath()
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return buildConnURL(scheme, userInfo, hostPort, path)
+}
+
+func GetStreamConnURL(cf *pb.ConnectionConfiguration) string {
+	username := cf.GetCredentials().GetUsername()
+	password := cf.GetCredentials().GetPassword()
+	tenant := cf.GetTenant()
+	if tenant == "" {
+		tenant = "/"
+	}
+
+	scheme := "rabbitmq-stream"
+	if cf.GetTls() {
+		scheme += "+tls"
+	}
+	userInfo := url.QueryEscape(username) + ":" + url.QueryEscape(password)
+	hostPort := fmt.Sprintf("%s:%d", cf.GetHost(), streamPort)
+	path := "/" + url.QueryEscape(tenant)
+	return buildConnURL(scheme, userInfo, hostPort, path)
+}
+
+const streamPort = 5552
+
+func buildConnURL(scheme, userInfo, hostPort, path string) string {
+	return fmt.Sprintf("%s://%s@%s%s", scheme, userInfo, hostPort, path)
 }
 
 func GetVhost(cf *pb.ConnectionConfiguration) string {

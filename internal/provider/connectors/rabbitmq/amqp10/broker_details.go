@@ -51,8 +51,7 @@ type BrokerDetails struct {
 	// pubChannels   *util.BlockingPool
 	// pubPCChannels *util.BlockingPool
 
-	// TODO: Issue 216 - Create streamConnectionShim
-	// StreamConnection streamConnectionShim
+	StreamConnection streamConnectionShim
 
 	ClientIdentifier string
 	knownEntities    *track.EntityTracker
@@ -219,33 +218,40 @@ func (bd *BrokerDetails) connect() (bool, error) {
 
 func (bd *BrokerDetails) disconnect() {
 	bd.Lock()
-	defer bd.Unlock()
-
-	if bd.state.Load() == provider.DISCONNECTED || bd.state.Load() == provider.CLOSED {
-		return
-	}
-
 	bd.clientDisconnect.Store(true)
-
 	if bd.shutdownChan != nil {
 		bd.shutdownOnce.Do(func() {
 			close(bd.shutdownChan)
 		})
 	}
 
-	// We don't call bd.Env.Close because all it does is close the connection, and
-	// we have a connection shim. The shim will do other stuff in addition to closing
-	// the actual connection.
-	if bd.Connection != nil {
-		err := bd.Connection.Close(bd.ctx)
-		if err != nil {
-			util.Logger.Warn(i18n.ErrorClosingConnection, bd.ClientIdentifier, err.Error())
+	state := bd.state.Load()
+	if state != provider.DISCONNECTED && state != provider.CLOSED {
+		// We don't call bd.Env.Close because all it does is close the connection, and
+		// we have a connection shim. The shim will do other stuff in addition to closing
+		// the actual connection.
+		if bd.Connection != nil {
+			err := bd.Connection.Close(bd.ctx)
+			if err != nil {
+				util.Logger.Warn(i18n.ErrorClosingConnection, bd.ClientIdentifier, err.Error())
+			}
+			bd.Connection = nil
 		}
-		bd.Connection = nil
+
+		bd.state.Store(provider.DISCONNECTED)
+		util.Logger.Info(i18n.ClientDisconnect, bd.ClientIdentifier)
 	}
 
-	bd.state.Store(provider.DISCONNECTED)
-	util.Logger.Info(i18n.ClientDisconnect, bd.ClientIdentifier)
+	streamConnection := bd.StreamConnection
+	bd.Unlock()
+
+	// Close outside the BrokerDetails lock: stream Connect holds its environment
+	// lock while checking clientDisconnect under this lock.
+	if streamConnection != nil {
+		if err := streamConnection.Close(); err != nil {
+			util.Logger.Warn(i18n.ErrorClosingConnection, bd.ClientIdentifier, err.Error())
+		}
+	}
 }
 
 func (bd *BrokerDetails) getStreamOrQueueStats(source *pb.Source) *pb.SourceStats {

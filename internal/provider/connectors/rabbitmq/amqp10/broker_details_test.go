@@ -13,6 +13,7 @@ import (
 	rabbitmqamqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/internal/provider"
+	"github.com/sassoftware/arke/internal/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -109,15 +110,18 @@ func Test_BrokerDetails_getStreamOrQueueStats(t *testing.T) {
 func Test_BrokerDetails_disconnect(t *testing.T) {
 	t.Run("connected broker details disconnects lifecycle", func(t *testing.T) {
 		conn := &rabbitMQAMQP10ConnectionMock{}
+		streamConn := &streamConnectionStub{}
 		bd := newTestBrokerDetails()
 		conn.On("Close", bd.ctx).Return(nil).Once()
 		bd.Connection = conn
+		bd.StreamConnection = streamConn
 		bd.state.Store(provider.CONNECTED)
 
 		bd.disconnect()
 
 		conn.AssertExpectations(t)
 		assert.Nil(t, bd.Connection)
+		assert.Equal(t, 1, streamConn.closeCall)
 		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
 		assert.True(t, bd.clientDisconnect.Load())
 	})
@@ -135,9 +139,11 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 
 	t.Run("disconnect is idempotent", func(t *testing.T) {
 		conn := &rabbitMQAMQP10ConnectionMock{}
+		streamConn := &streamConnectionStub{}
 		bd := newTestBrokerDetails()
 		conn.On("Close", bd.ctx).Return(nil).Once()
 		bd.Connection = conn
+		bd.StreamConnection = streamConn
 		bd.state.Store(provider.CONNECTED)
 
 		bd.disconnect()
@@ -145,6 +151,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 
 		conn.AssertExpectations(t)
 		assert.Nil(t, bd.Connection)
+		assert.Equal(t, 1, streamConn.closeCall)
 		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
 	})
 
@@ -163,7 +170,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 		assert.True(t, bd.clientDisconnect.Load())
 	})
 
-	t.Run("already disconnected or closed broker details are noops", func(t *testing.T) {
+	t.Run("already closed broker details record terminal disconnect without reclosing AMQP", func(t *testing.T) {
 		states := []uint32{provider.DISCONNECTED, provider.CLOSED}
 		for _, state := range states {
 			conn := &rabbitMQAMQP10ConnectionMock{}
@@ -176,8 +183,46 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 			conn.AssertNotCalled(t, "Close", mock.Anything)
 			assert.Same(t, conn, bd.Connection)
 			assert.Equal(t, state, bd.state.Load())
-			assert.False(t, bd.clientDisconnect.Load())
+			assert.True(t, bd.clientDisconnect.Load())
 		}
+	})
+
+	t.Run("closes stream connection when AMQP state is terminal", func(t *testing.T) {
+		for _, state := range []uint32{provider.DISCONNECTED, provider.CLOSED} {
+			conn := &rabbitMQAMQP10ConnectionMock{}
+			streamConn := &streamConnectionStub{}
+			bd := newTestBrokerDetails()
+			bd.Connection = conn
+			bd.StreamConnection = streamConn
+			bd.state.Store(state)
+
+			bd.disconnect()
+
+			conn.AssertNotCalled(t, "Close", mock.Anything)
+			assert.Equal(t, 1, streamConn.closeCall)
+			assert.Equal(t, state, bd.state.Load())
+		}
+	})
+
+	t.Run("stream close error is logged and teardown continues", func(t *testing.T) {
+		logger, cleanupLogger := util.GetTestLoggerWithCleanup()
+		defer cleanupLogger()
+
+		conn := &rabbitMQAMQP10ConnectionMock{}
+		streamConn := &streamConnectionStub{closeErr: errors.New("stream close failed")}
+		bd := newTestBrokerDetails()
+		conn.On("Close", bd.ctx).Return(nil).Once()
+		bd.Connection = conn
+		bd.StreamConnection = streamConn
+		bd.state.Store(provider.CONNECTED)
+
+		bd.disconnect()
+
+		assert.Equal(t, 1, streamConn.closeCall)
+		assert.Nil(t, bd.Connection)
+		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
+		assert.Contains(t, string(logger.GetOutput()), "stream close failed")
+		conn.AssertExpectations(t)
 	})
 }
 

@@ -7,29 +7,24 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/message"
-	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
+	rabbitstream "github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
+	"github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/stream"
 	"github.com/sassoftware/arke/internal/util"
 )
 
-const maxProducers = 100
 const maxPoolProducers = 10
-const maxConsumers = 10
-const port = 5552
 const poolKeyName = "PoolName"
 
 // NewStreamConnection Create a new streamConnection object with a connection string and tls config
 func NewStreamConnection(connStr string, clientIdentifier string, tlsCfg *tls.Config) streamConnectionShim {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &streamConnection{maxProducers: maxProducers,
-		maxConsumers:     maxConsumers,
-		connStr:          connStr,
-		tlsCfg:           tlsCfg,
+	return &streamConnection{
+		env:              stream.New(connStr, tlsCfg),
 		clientIdentifier: clientIdentifier,
 		publishers:       util.NewConcurrentMap(),
 		ctx:              ctx,
@@ -39,33 +34,6 @@ func NewStreamConnection(connStr string, clientIdentifier string, tlsCfg *tls.Co
 
 type CtxKey struct {
 	name string
-}
-
-func getStreamConnectionString(bd *BrokerDetails) string {
-	cf := bd.connectionConfig
-
-	var tenant = cf.GetTenant()
-	if tenant == "" {
-		tenant = "/"
-	}
-
-	scheme := "rabbitmq-stream"
-
-	// Use TLS if enabled
-	if bd.tlsEnabled {
-		scheme = fmt.Sprintf("%s+tls", scheme)
-	}
-
-	// URL-encode username and password
-	encodedUsername := url.QueryEscape(cf.GetCredentials().GetUsername())
-	encodedPassword := url.QueryEscape(cf.GetCredentials().GetPassword())
-	encodedTenant := url.QueryEscape(tenant)
-
-	// Build the connection string with encoded components
-	return fmt.Sprintf("%s://%s:%s@%s:%d/%s", scheme,
-		encodedUsername,
-		encodedPassword,
-		cf.GetHost(), port, encodedTenant)
 }
 
 func toStreamMessage(origMsg streamMessage) message.StreamMessage {
@@ -96,11 +64,11 @@ func fromStreamHeaders(orig map[string]interface{}) map[string]string {
 	return sMap
 }
 
-func toStreamOffset(offset string, lastOffset int64) (stream.OffsetSpecification, error) {
+func toStreamOffset(offset string, lastOffset int64) (rabbitstream.OffsetSpecification, error) {
 	switch strings.ToLower(offset) {
 	case "first":
 		// start consuming from 0
-		return stream.OffsetSpecification{}.First(), nil
+		return rabbitstream.OffsetSpecification{}.First(), nil
 	case "continue":
 		// Valid values for lastOffset:
 		// -1 : Start from the beginning of the stream
@@ -108,15 +76,15 @@ func toStreamOffset(offset string, lastOffset int64) (stream.OffsetSpecification
 		// > 0 : We have processed more than 1 message, start from the next
 		// message because the offset is 0 based.
 		lastOffset++
-		return stream.OffsetSpecification{}.Offset(lastOffset), nil
+		return rabbitstream.OffsetSpecification{}.Offset(lastOffset), nil
 	case "last":
-		return stream.OffsetSpecification{}.Last(), nil
+		return rabbitstream.OffsetSpecification{}.Last(), nil
 	case "next", "":
-		return stream.OffsetSpecification{}.Next(), nil
+		return rabbitstream.OffsetSpecification{}.Next(), nil
 	}
 	pOffset, pErr := strconv.Atoi(offset)
 	if pErr == nil {
-		return stream.OffsetSpecification{}.Offset(int64(pOffset)), nil
+		return rabbitstream.OffsetSpecification{}.Offset(int64(pOffset)), nil
 	}
-	return stream.OffsetSpecification{}, fmt.Errorf("invalid offset: %s", offset)
+	return rabbitstream.OffsetSpecification{}, fmt.Errorf("invalid offset: %s", offset)
 }

@@ -182,7 +182,7 @@ func mockSpyAmqp10Environment(t *testing.T) *rabbitMQAMQP10EnvironmentCall {
 		gotCall.ctx = ctx
 		gotCall.cf = cf
 		gotCall.tlsConfig = tlsConfig
-		gotCall.connURL = amqp.GetConnURL(cf)
+		gotCall.connURL = amqp.GetAMQPConnURL(cf)
 		gotCall.options = options
 		return env, nil
 	}
@@ -222,6 +222,30 @@ func newTestCABundle(t *testing.T) (string, *x509.Certificate) {
 }
 
 func Test_amqp10provider_Connect(t *testing.T) {
+	t.Run("initializes an unconnected stream shim", func(t *testing.T) {
+		ctx, clientIdentifier := newTestProviderContext(t, "connect-lazy-stream")
+		prov := newTestRabbitMQAMQP10Provider()
+		mockSpyAmqp10Environment(t)
+
+		connectErr := prov.Connect(ctx, newTestConnectionConfig(), false)
+		if connectErr == nil {
+			t.Cleanup(func() {
+				brokerDetails := prov.getBrokerDetailsByIdentifier(clientIdentifier)
+				if brokerDetails != nil && brokerDetails.Connection != nil {
+					brokerDetails.Connection.(*rabbitMQAMQP10ConnectionMock).On("Close", ctx).Return(nil).Once()
+				}
+				// Disconnect signals the existing watcher, which is not tracked for joining.
+				prov.Disconnect(ctx)
+			})
+		}
+		require.Nil(t, connectErr)
+
+		bd := prov.getBrokerDetailsByIdentifier(clientIdentifier)
+		require.NotNil(t, bd)
+		require.NotNil(t, bd.StreamConnection)
+		assert.True(t, bd.StreamConnection.IsClosed())
+	})
+
 	t.Run("rejects nil connection configuration", func(t *testing.T) {
 		prov := newTestRabbitMQAMQP10Provider()
 
