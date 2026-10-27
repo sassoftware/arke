@@ -127,11 +127,69 @@ func Test_GetConnURL(t *testing.T) {
 			},
 			expected: "amqp://user%40example.com:p%40ss%20word@[::1]:5672/",
 		},
+		{
+			name:     "nil configuration retains nil-safe getter behavior",
+			expected: "amqp://:@:0/",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.expected, GetConnURL(tt.config))
+			assert.Equal(t, tt.expected, GetAMQPConnURL(tt.config))
+		})
+	}
+}
+
+func Test_GetStreamConnURL(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     *pb.ConnectionConfiguration
+		tlsEnabled bool
+		expected   string
+	}{
+		{
+			name: "non TLS uses stream port and root tenant",
+			config: &pb.ConnectionConfiguration{
+				Host: "localhost",
+				Credentials: &pb.Credentials{
+					Username: "guest",
+					Password: "guest",
+				},
+			},
+			expected: "rabbitmq-stream://guest:guest@localhost:5552/%2F",
+		},
+		{
+			name:       "TLS escapes credentials and non-default tenant",
+			tlsEnabled: true,
+			config: &pb.ConnectionConfiguration{
+				Host:   "rabbit.example",
+				Tls:    true,
+				Tenant: "tenant/a b",
+				Credentials: &pb.Credentials{
+					Username: "user name@example",
+					Password: "p+?ss/w",
+				},
+			},
+			expected: "rabbitmq-stream+tls://user+name%40example:p%2B%3Fss%2Fw@rabbit.example:5552/tenant%2Fa+b",
+		},
+		{
+			name: "preserves existing stream IPv6 host formatting",
+			config: &pb.ConnectionConfiguration{
+				Host:        "::1",
+				Credentials: &pb.Credentials{Username: "user", Password: "pass"},
+			},
+			expected: "rabbitmq-stream://user:pass@::1:5552/%2F",
+		},
+		{
+			name:     "nil configuration retains nil-safe getter behavior",
+			expected: "rabbitmq-stream://:@:5552/%2F",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, GetStreamConnURL(tt.config, tt.tlsEnabled))
 		})
 	}
 }

@@ -170,7 +170,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 		assert.True(t, bd.clientDisconnect.Load())
 	})
 
-	t.Run("already disconnected or closed broker details are noops", func(t *testing.T) {
+	t.Run("already closed broker details record terminal disconnect without reclosing AMQP", func(t *testing.T) {
 		states := []uint32{provider.DISCONNECTED, provider.CLOSED}
 		for _, state := range states {
 			conn := &rabbitMQAMQP10ConnectionMock{}
@@ -183,7 +183,7 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 			conn.AssertNotCalled(t, "Close", mock.Anything)
 			assert.Same(t, conn, bd.Connection)
 			assert.Equal(t, state, bd.state.Load())
-			assert.False(t, bd.clientDisconnect.Load())
+			assert.True(t, bd.clientDisconnect.Load())
 		}
 	})
 

@@ -7,20 +7,19 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/message"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
+	arkeamqp "github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/sassoftware/arke/internal/util"
 )
 
 const maxProducers = 100
 const maxPoolProducers = 10
 const maxConsumers = 10
-const port = 5552
 const poolKeyName = "PoolName"
 
 // NewStreamConnection Create a new streamConnection object with a connection string and tls config
@@ -42,30 +41,7 @@ type CtxKey struct {
 }
 
 func getStreamConnectionString(bd *BrokerDetails) string {
-	cf := bd.connectionConfig
-
-	var tenant = cf.GetTenant()
-	if tenant == "" {
-		tenant = "/"
-	}
-
-	scheme := "rabbitmq-stream"
-
-	// Use TLS if enabled
-	if bd.tlsEnabled {
-		scheme = fmt.Sprintf("%s+tls", scheme)
-	}
-
-	// URL-encode username and password
-	encodedUsername := url.QueryEscape(cf.GetCredentials().GetUsername())
-	encodedPassword := url.QueryEscape(cf.GetCredentials().GetPassword())
-	encodedTenant := url.QueryEscape(tenant)
-
-	// Build the connection string with encoded components
-	return fmt.Sprintf("%s://%s:%s@%s:%d/%s", scheme,
-		encodedUsername,
-		encodedPassword,
-		cf.GetHost(), port, encodedTenant)
+	return arkeamqp.GetStreamConnURL(bd.connectionConfig, bd.tlsEnabled)
 }
 
 func toStreamMessage(origMsg streamMessage) message.StreamMessage {

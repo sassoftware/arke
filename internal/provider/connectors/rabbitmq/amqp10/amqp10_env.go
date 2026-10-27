@@ -29,7 +29,7 @@ type rabbitMQAMQP10Environment struct {
 }
 
 func newRabbitMQAMQP10Environment(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config) (rabbitMQAMQP10EnvironmentShim, error) {
-	connURL := amqp.GetConnURL(cf)
+	connURL := amqp.GetAMQPConnURL(cf)
 	options, err := getRabbitMQAMQP10ConnOptions(ctx, cf, tlsConfig)
 	if err != nil {
 		return nil, err

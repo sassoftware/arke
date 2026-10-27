@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"testing"
 
+	"github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +23,7 @@ import (
 //	  -run 'Test_(streamConnectionIntegrationLifecycle|amqp10ProviderConnectDoesNotRequireStreamConnection)' \
 //	  -count=1 -v
 func Test_streamConnectionIntegrationLifecycle(t *testing.T) {
-	connection := newStreamConnection(getStreamConnectionString(newTestConnectionConfig(), false), nil)
+	connection := newStreamConnection(amqp.GetStreamConnURL(newTestConnectionConfig(), false), nil, nil)
 	assert.True(t, connection.IsClosed())
 
 	require.NoError(t, connection.Connect())

@@ -5,16 +5,14 @@ package amqp10
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
-	"net/url"
 	"sync"
 
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
-	pb "github.com/sassoftware/arke/api"
 )
 
 const (
-	streamPort         = 5552
 	maxStreamProducers = 100
 	maxStreamConsumers = 10
 )
@@ -31,10 +29,12 @@ type streamEnvironmentShim interface {
 }
 
 type streamConnection struct {
-	envLock   sync.Mutex
-	env       streamEnvironmentShim
-	streamURI string
-	tlsConfig *tls.Config
+	envLock       sync.Mutex
+	env           streamEnvironmentShim
+	envClosed     bool
+	streamURI     string
+	tlsConfig     *tls.Config
+	brokerDetails *BrokerDetails
 }
 
 var newStreamEnvironmentFunc = func(uri string, tlsConfig *tls.Config) (streamEnvironmentShim, error) {
@@ -46,41 +46,51 @@ var newStreamEnvironmentFunc = func(uri string, tlsConfig *tls.Config) (streamEn
 	return stream.NewEnvironment(options)
 }
 
-func newStreamConnection(uri string, tlsConfig *tls.Config) *streamConnection {
-	return &streamConnection{streamURI: uri, tlsConfig: tlsConfig}
-}
-
-func getStreamConnectionString(cf *pb.ConnectionConfiguration, tlsEnabled bool) string {
-	tenant := cf.GetTenant()
-	if tenant == "" {
-		tenant = "/"
-	}
-
-	scheme := "rabbitmq-stream"
-	if tlsEnabled {
-		scheme += "+tls"
-	}
-
-	credentials := cf.GetCredentials()
-	return fmt.Sprintf("%s://%s:%s@%s:%d/%s", scheme,
-		url.QueryEscape(credentials.GetUsername()),
-		url.QueryEscape(credentials.GetPassword()),
-		cf.GetHost(), streamPort, url.QueryEscape(tenant))
+func newStreamConnection(uri string, tlsConfig *tls.Config, brokerDetails *BrokerDetails) *streamConnection {
+	return &streamConnection{streamURI: uri, tlsConfig: tlsConfig, brokerDetails: brokerDetails}
 }
 
 func (sc *streamConnection) Connect() error {
 	sc.envLock.Lock()
 	defer sc.envLock.Unlock()
 
-	if sc.env != nil && !sc.env.IsClosed() {
+	if sc.brokerDetails != nil && sc.brokerDetails.clientDisconnect.Load() {
+		return errors.New("provider has been disconnected")
+	}
+	if sc.env != nil && !sc.envClosed && !sc.env.IsClosed() {
 		return nil
 	}
 
 	env, err := newStreamEnvironmentFunc(sc.streamURI, sc.tlsConfig)
 	if err != nil {
+		if env != nil && !env.IsClosed() {
+			if closeErr := env.Close(); closeErr != nil {
+				err = fmt.Errorf("%w (closing partially created stream environment: %v)", err, closeErr)
+			}
+		}
 		return err
 	}
+	if env == nil {
+		return errors.New("stream environment factory returned a nil environment")
+	}
+
+	if sc.brokerDetails != nil {
+		sc.brokerDetails.Lock()
+		if sc.brokerDetails.clientDisconnect.Load() {
+			sc.brokerDetails.Unlock()
+			if closeErr := env.Close(); closeErr != nil {
+				return fmt.Errorf("provider has been disconnected (closing newly created stream environment: %v)", closeErr)
+			}
+			return errors.New("provider has been disconnected")
+		}
+		sc.env = env
+		sc.envClosed = false
+		sc.brokerDetails.Unlock()
+		return nil
+	}
+
 	sc.env = env
+	sc.envClosed = false
 	return nil
 }
 
@@ -88,9 +98,11 @@ func (sc *streamConnection) Close() error {
 	sc.envLock.Lock()
 	defer sc.envLock.Unlock()
 
-	if sc.env == nil || sc.env.IsClosed() {
+	if sc.env == nil || sc.envClosed || sc.env.IsClosed() {
+		sc.envClosed = true
 		return nil
 	}
+	sc.envClosed = true
 	return sc.env.Close()
 }
 

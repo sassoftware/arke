@@ -182,7 +182,7 @@ func mockSpyAmqp10Environment(t *testing.T) *rabbitMQAMQP10EnvironmentCall {
 		gotCall.ctx = ctx
 		gotCall.cf = cf
 		gotCall.tlsConfig = tlsConfig
-		gotCall.connURL = amqp.GetConnURL(cf)
+		gotCall.connURL = amqp.GetAMQPConnURL(cf)
 		gotCall.options = options
 		return env, nil
 	}

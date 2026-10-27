@@ -218,18 +218,15 @@ func (bd *BrokerDetails) connect() (bool, error) {
 
 func (bd *BrokerDetails) disconnect() {
 	bd.Lock()
-	defer bd.Unlock()
+	bd.clientDisconnect.Store(true)
+	if bd.shutdownChan != nil {
+		bd.shutdownOnce.Do(func() {
+			close(bd.shutdownChan)
+		})
+	}
 
 	state := bd.state.Load()
 	if state != provider.DISCONNECTED && state != provider.CLOSED {
-		bd.clientDisconnect.Store(true)
-
-		if bd.shutdownChan != nil {
-			bd.shutdownOnce.Do(func() {
-				close(bd.shutdownChan)
-			})
-		}
-
 		// We don't call bd.Env.Close because all it does is close the connection, and
 		// we have a connection shim. The shim will do other stuff in addition to closing
 		// the actual connection.
@@ -245,8 +242,13 @@ func (bd *BrokerDetails) disconnect() {
 		util.Logger.Info(i18n.ClientDisconnect, bd.ClientIdentifier)
 	}
 
-	if bd.StreamConnection != nil {
-		if err := bd.StreamConnection.Close(); err != nil {
+	streamConnection := bd.StreamConnection
+	bd.Unlock()
+
+	// Close outside the BrokerDetails lock: stream Connect holds its environment
+	// lock while checking clientDisconnect under this lock.
+	if streamConnection != nil {
+		if err := streamConnection.Close(); err != nil {
 			util.Logger.Warn(i18n.ErrorClosingConnection, bd.ClientIdentifier, err.Error())
 		}
 	}

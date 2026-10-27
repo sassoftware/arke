@@ -1982,7 +1982,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 		util.Logger.Debugf("%s connecting without TLS: %s:%d", bd.ClientIdentifier, cf.GetHost(), cf.GetPort())
 	}
 
-	connStr = iamqp.GetConnURL(cf)
+	connStr = iamqp.GetAMQPConnURL(cf)
 
 	conn = NewAmqpConn091(connStr, bd.ClientIdentifier, bd.tlsConfig)
 	err = conn.Connect()
