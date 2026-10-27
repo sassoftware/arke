@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 
@@ -16,6 +15,13 @@ import (
 	"github.com/sassoftware/arke/internal/provider"
 	_ "github.com/sassoftware/arke/internal/provider/connectors"
 	"github.com/stretchr/testify/assert"
+)
+
+const (
+	testMetricNamespace = "arke"
+	testMetricClient    = "client"
+	testMetricTotal     = "total"
+	testGaugeTwoName    = "arke_gauge_two"
 )
 
 func Test_Metrics(t *testing.T) {
@@ -28,23 +34,23 @@ func Test_Metrics(t *testing.T) {
 	}{
 		{
 			name:       "sperate key - match",
-			metricName: []string{"arke", "gauge", "one"},
+			metricName: []string{testMetricNamespace, "gauge", "one"},
 			metricDesc: "description for gauge1",
 			key:        "arke_gauge_one",
 			expected:   true,
 		},
 		{
 			name:       "one key - match",
-			metricName: []string{"arke_gauge_two"},
+			metricName: []string{testGaugeTwoName},
 			metricDesc: "description for gauge2",
-			key:        "arke_gauge_two",
+			key:        testGaugeTwoName,
 			expected:   true,
 		},
 		{
 			name:       "key - not match",
-			metricName: []string{"arke", "gauge", "three"},
+			metricName: []string{testMetricNamespace, "gauge", "three"},
 			metricDesc: "description for gauge3",
-			key:        "arke_gauge_two",
+			key:        testGaugeTwoName,
 			expected:   false,
 		},
 	}
@@ -79,14 +85,14 @@ func Test_Metrics(t *testing.T) {
 		})
 	}
 
-	assert.Equal(t, metrics.ClientActMessageGauge, []string{"arke", "client", "active", "messages"})
-	assert.Equal(t, metrics.ClientStreamsGauge, []string{"arke", "client", "streams"})
-	assert.Equal(t, metrics.ClientConsumedGauge, []string{"arke", "client", "consumed"})
-	assert.Equal(t, metrics.ClientProducedGauge, []string{"arke", "client", "produced"})
-	assert.Equal(t, metrics.RequestElapsedSummary, []string{"arke", "request", "elapsed"})
-	assert.Equal(t, metrics.RequestTotalCounter, []string{"arke", "request", "total"})
-	assert.Equal(t, metrics.RecvMsgCounter, []string{"arke", "recvmsg", "total"})
-	assert.Equal(t, metrics.SendMsgCounter, []string{"arke", "sendmsg", "total"})
+	assert.Equal(t, metrics.ClientActMessageGauge, []string{testMetricNamespace, testMetricClient, "active", "messages"})
+	assert.Equal(t, metrics.ClientStreamsGauge, []string{testMetricNamespace, testMetricClient, "streams"})
+	assert.Equal(t, metrics.ClientConsumedGauge, []string{testMetricNamespace, testMetricClient, "consumed"})
+	assert.Equal(t, metrics.ClientProducedGauge, []string{testMetricNamespace, testMetricClient, "produced"})
+	assert.Equal(t, metrics.RequestElapsedSummary, []string{testMetricNamespace, "request", "elapsed"})
+	assert.Equal(t, metrics.RequestTotalCounter, []string{testMetricNamespace, "request", testMetricTotal})
+	assert.Equal(t, metrics.RecvMsgCounter, []string{testMetricNamespace, "recvmsg", testMetricTotal})
+	assert.Equal(t, metrics.SendMsgCounter, []string{testMetricNamespace, "sendmsg", testMetricTotal})
 }
 
 func Test_gatherClientStats(t *testing.T) {
@@ -101,7 +107,9 @@ func Test_Serve(t *testing.T) {
 
 	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", ":50052")
 	assert.Nil(t, err)
-	defer lis.Close()
+	defer func() {
+		_ = lis.Close()
+	}()
 	go Serve(ctx, &lis)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost:50052/metrics", nil)
@@ -111,7 +119,9 @@ func Test_Serve(t *testing.T) {
 	res, err := client.Do(req)
 
 	assert.Nil(t, err)
-	defer res.Body.Close()
+	defer func() {
+		_ = res.Body.Close()
+	}()
 	assert.Equal(t, 200, res.StatusCode)
 	body, _ := io.ReadAll(res.Body)
 	sbody := string(body)
@@ -127,21 +137,25 @@ func Test_Serve(t *testing.T) {
 	res, err = client.Do(req)
 
 	assert.Nil(t, err)
-	defer res.Body.Close()
+	defer func() {
+		_ = res.Body.Close()
+	}()
 	assert.Equal(t, 404, res.StatusCode)
 	body, _ = io.ReadAll(res.Body)
 	assert.Contains(t, string(body), "404 page not found")
 }
 
 func Test_ServePprofEnabled(t *testing.T) {
-	os.Setenv(EnvPprofEnabled, "true")
+	t.Setenv(EnvPprofEnabled, "true")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	lis, err := (&net.ListenConfig{}).Listen(ctx, "tcp", ":50053")
 	assert.Nil(t, err)
-	defer lis.Close()
+	defer func() {
+		_ = lis.Close()
+	}()
 	go Serve(ctx, &lis)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost:50053/metrics", nil)
@@ -151,7 +165,9 @@ func Test_ServePprofEnabled(t *testing.T) {
 	res, err := client.Do(req)
 
 	assert.Nil(t, err)
-	defer res.Body.Close()
+	defer func() {
+		_ = res.Body.Close()
+	}()
 	assert.Equal(t, 200, res.StatusCode)
 	body, _ := io.ReadAll(res.Body)
 	sbody := string(body)
@@ -166,7 +182,9 @@ func Test_ServePprofEnabled(t *testing.T) {
 	res, err = client.Do(req)
 
 	assert.Nil(t, err)
-	defer res.Body.Close()
+	defer func() {
+		_ = res.Body.Close()
+	}()
 	assert.Equal(t, 200, res.StatusCode)
 	body, _ = io.ReadAll(res.Body)
 	assert.Contains(t, string(body), "full goroutine stack dump")

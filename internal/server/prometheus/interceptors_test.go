@@ -14,6 +14,8 @@ import (
 	"google.golang.org/grpc"
 )
 
+const testGRPCMethodPublish = "arke.Producer.Publish"
+
 // mockServerStream implements grpc.ServerStream for testing
 type mockServerStream struct {
 	grpc.ServerStream
@@ -206,7 +208,7 @@ func TestWrappedStream_RecvMsg_Success(t *testing.T) {
 	setupTestSink(t)
 
 	ms := &mockServerStream{recvErr: nil}
-	ws := &wrappedStream{ServerStream: ms, GRPCMethod: "arke.Producer.Publish"}
+	ws := &wrappedStream{ServerStream: ms, GRPCMethod: testGRPCMethodPublish}
 
 	err := ws.RecvMsg(nil)
 	if err != nil {
@@ -219,7 +221,7 @@ func TestWrappedStream_RecvMsg_Error(t *testing.T) {
 
 	expectedErr := errors.New("recv error")
 	ms := &mockServerStream{recvErr: expectedErr}
-	ws := &wrappedStream{ServerStream: ms, GRPCMethod: "arke.Producer.Publish"}
+	ws := &wrappedStream{ServerStream: ms, GRPCMethod: testGRPCMethodPublish}
 
 	err := ws.RecvMsg(nil)
 	if err != expectedErr {
@@ -254,7 +256,7 @@ func TestWrappedStream_SendMsg_Error(t *testing.T) {
 
 func TestNewWrappedStream_ReturnsWrappedStream(t *testing.T) {
 	ms := &mockServerStream{}
-	method := "arke.Producer.Publish"
+	method := testGRPCMethodPublish
 
 	ws := newWrappedStream(ms, method)
 	wrapped, ok := ws.(*wrappedStream)

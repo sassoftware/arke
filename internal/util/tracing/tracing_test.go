@@ -5,7 +5,6 @@ package tracing
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,56 +12,51 @@ import (
 )
 
 func TestGetTelemetryEnabled(t *testing.T) {
-	defer os.Setenv(EnvOtelSdkDisabled, "true")
 	// A true value for OTEL_SDK_DISABLED is the only way to disable the SDK according to the docs,
 	// even though this env var is not used in the Go SDK
 	// https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/#general-sdk-configuration
 
 	//    OTEL_SDK_DISABLED | true  | false |  ''  | other
 	// getTelementryEnabled | false | true  | true | true
-	os.Setenv(EnvOtelSdkDisabled, "true")
+	t.Setenv(EnvOtelSdkDisabled, "true")
 	enabled := getTelemetryEnabled()
 	assert.False(t, enabled)
 
-	os.Setenv(EnvOtelSdkDisabled, "false")
+	t.Setenv(EnvOtelSdkDisabled, "false")
 	enabled = getTelemetryEnabled()
 	assert.True(t, enabled)
 
-	os.Setenv(EnvOtelSdkDisabled, "")
+	t.Setenv(EnvOtelSdkDisabled, "")
 	enabled = getTelemetryEnabled()
 	assert.True(t, enabled)
 
-	os.Setenv(EnvOtelSdkDisabled, "other")
+	t.Setenv(EnvOtelSdkDisabled, "other")
 	enabled = getTelemetryEnabled()
 	assert.True(t, enabled)
 }
 
 func Test_InitTracerProvider_disabled(t *testing.T) {
-	os.Setenv(EnvOtelSdkDisabled, "true")
+	t.Setenv(EnvOtelSdkDisabled, "true")
 	tp, err := InitTracerProvider()
 	assert.Nil(t, tp)
 	assert.Nil(t, err)
 }
 
 func Test_InitTracerProvider_enabled(t *testing.T) {
-	os.Setenv(EnvOtelSdkDisabled, "false")
-	defer os.Setenv(EnvOtelSdkDisabled, "true")
+	t.Setenv(EnvOtelSdkDisabled, "false")
 	tp, err := InitTracerProvider()
 	assert.NotNil(t, tp)
 	assert.Nil(t, err)
 }
 
 func Test_getTelemetryCollectorAddress_unset(t *testing.T) {
-	os.Unsetenv(EnvOtelExporterOtlpEndpoint)
+	t.Setenv(EnvOtelExporterOtlpEndpoint, "")
 	addr := getTelemetryCollectorAddress()
 	assert.Equal(t, "localhost:4317", addr)
-
-	os.Getenv(EnvOtelExporterOtlpEndpoint)
 }
 
 func Test_getTelemetryCollectorAddress_set(t *testing.T) {
-	defer os.Unsetenv(EnvOtelExporterOtlpEndpoint)
-	os.Setenv(EnvOtelExporterOtlpEndpoint, "localhost:12345")
+	t.Setenv(EnvOtelExporterOtlpEndpoint, "localhost:12345")
 	addr := getTelemetryCollectorAddress()
 	assert.Equal(t, "localhost:12345", addr)
 }
@@ -80,8 +74,7 @@ func Test_initResource_returnsSamePointer(t *testing.T) {
 }
 
 func Test_SpanFromHeaders(t *testing.T) {
-	os.Setenv(EnvOtelSdkDisabled, "false")
-	defer os.Setenv(EnvOtelSdkDisabled, "true")
+	t.Setenv(EnvOtelSdkDisabled, "false")
 	tp, err := InitTracerProvider()
 	assert.NotNil(t, tp)
 	assert.Nil(t, err)

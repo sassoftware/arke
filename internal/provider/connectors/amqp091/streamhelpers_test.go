@@ -52,13 +52,13 @@ func Test_toStreamOffset(t *testing.T) {
 func Test_toStreamMessage(t *testing.T) {
 	origMsg := streamMessage{
 		Body:            []byte("test body"),
-		Headers:         map[string]string{"header1": "value1", "header2": "value2"},
+		Headers:         map[string]string{testHeader1: testValue1, testHeader2: testValue2},
 		ContentEncoding: "utf-8",
 		ContentType:     "text/plain",
 	}
 
 	expectedMsg := amqp.NewMessage(origMsg.Body)
-	expectedMsg.ApplicationProperties = map[string]interface{}{"header1": "value1", "header2": "value2"}
+	expectedMsg.ApplicationProperties = map[string]interface{}{testHeader1: testValue1, testHeader2: testValue2}
 	expectedMsg.Properties = &amqp.MessageProperties{
 		ContentEncoding: "utf-8",
 		ContentType:     "text/plain",
@@ -73,15 +73,15 @@ func Test_toStreamMessage(t *testing.T) {
 
 func Test_toStreamHeaders(t *testing.T) {
 	origHeaders := map[string]string{
-		"header1": "value1",
-		"header2": "value2",
-		"header3": "value3",
+		testHeader1: testValue1,
+		testHeader2: testValue2,
+		"header3":   testValue3,
 	}
 
 	expectedHeaders := map[string]interface{}{
-		"header1": "value1",
-		"header2": "value2",
-		"header3": "value3",
+		testHeader1: testValue1,
+		testHeader2: testValue2,
+		"header3":   testValue3,
 	}
 
 	resultHeaders := toStreamHeaders(origHeaders)
@@ -99,10 +99,10 @@ func Test_getStreamConnectionString(t *testing.T) {
 			bd: &BrokerDetails{
 				connectionConfig: &pb.ConnectionConfiguration{
 					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+						Username: testUser,
+						Password: testPass,
 					},
-					Host: "localhost",
+					Host: testLocalhost,
 				},
 				tlsEnabled: false,
 			},
@@ -113,10 +113,10 @@ func Test_getStreamConnectionString(t *testing.T) {
 			bd: &BrokerDetails{
 				connectionConfig: &pb.ConnectionConfiguration{
 					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+						Username: testUser,
+						Password: testPass,
 					},
-					Host:   "localhost",
+					Host:   testLocalhost,
 					Tenant: "tenant1",
 				},
 				tlsEnabled: false,
@@ -128,10 +128,10 @@ func Test_getStreamConnectionString(t *testing.T) {
 			bd: &BrokerDetails{
 				connectionConfig: &pb.ConnectionConfiguration{
 					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+						Username: testUser,
+						Password: testPass,
 					},
-					Host: "localhost",
+					Host: testLocalhost,
 				},
 				tlsEnabled: true,
 			},
@@ -142,10 +142,10 @@ func Test_getStreamConnectionString(t *testing.T) {
 			bd: &BrokerDetails{
 				connectionConfig: &pb.ConnectionConfiguration{
 					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+						Username: testUser,
+						Password: testPass,
 					},
-					Host:   "localhost",
+					Host:   testLocalhost,
 					Tenant: "tenant1",
 				},
 				tlsEnabled: true,
@@ -157,10 +157,10 @@ func Test_getStreamConnectionString(t *testing.T) {
 			bd: &BrokerDetails{
 				connectionConfig: &pb.ConnectionConfiguration{
 					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+						Username: testUser,
+						Password: testPass,
 					},
-					Host:   "localhost",
+					Host:   testLocalhost,
 					Tenant: "/",
 				},
 				tlsEnabled: false,
@@ -172,10 +172,10 @@ func Test_getStreamConnectionString(t *testing.T) {
 			bd: &BrokerDetails{
 				connectionConfig: &pb.ConnectionConfiguration{
 					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+						Username: testUser,
+						Password: testPass,
 					},
-					Host:   "localhost",
+					Host:   testLocalhost,
 					Tenant: "/",
 				},
 				tlsEnabled: true,

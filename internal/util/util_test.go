@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
 	"runtime"
 	"testing"
 	"time"
@@ -22,6 +21,9 @@ type fakeAddr struct {
 	s       string
 	network string
 }
+
+const testLoopbackAddr = "127.0.0.1"
+const testNetworkTCP = "tcp"
 
 func (f fakeAddr) String() string {
 	return f.s
@@ -41,17 +43,17 @@ func TestGenUUID(t *testing.T) {
 
 func Test_GetClientAddr(t *testing.T) {
 	p := &peer.Peer{}
-	p.Addr = fakeAddr{s: "127.0.0.1", network: "tcp"}
+	p.Addr = fakeAddr{s: testLoopbackAddr, network: testNetworkTCP}
 	ctx := peer.NewContext(context.Background(), p)
 
 	addr, err := GetClientAddr(ctx)
 	assert.Nil(t, err)
-	assert.Equal(t, addr, "127.0.0.1")
+	assert.Equal(t, addr, testLoopbackAddr)
 }
 
 func Test_SetClientIdentifier(t *testing.T) {
 	p := &peer.Peer{}
-	p.Addr = fakeAddr{s: "127.0.0.1", network: "tcp"}
+	p.Addr = fakeAddr{s: testLoopbackAddr, network: testNetworkTCP}
 	ctx := peer.NewContext(context.Background(), p)
 	id, err := SetClientIdentifier(ctx, "unitTest")
 	assert.Contains(t, id, "unitTest-")
@@ -71,7 +73,7 @@ func Test_SetClientIdentifier(t *testing.T) {
 
 func Test_RemoveClientIdentifier(t *testing.T) {
 	p := &peer.Peer{}
-	p.Addr = fakeAddr{s: "127.0.0.1", network: "tcp"}
+	p.Addr = fakeAddr{s: testLoopbackAddr, network: testNetworkTCP}
 	ctx := peer.NewContext(context.Background(), p)
 	id, err := SetClientIdentifier(ctx, "unitTest")
 	assert.Contains(t, id, "unitTest-")
@@ -96,7 +98,6 @@ func Test_TestProcessStats(t *testing.T) {
 
 func Test_GetConfig(t *testing.T) {
 	testVar := "TEST_ENV_VAR"
-	defer os.Unsetenv(testVar)
 
 	// Default value int
 	intVal := GetConfig(testVar, 11)
@@ -111,17 +112,17 @@ func Test_GetConfig(t *testing.T) {
 	assert.Equal(t, "test", strVal)
 
 	// Env var int
-	os.Setenv(testVar, "10")
+	t.Setenv(testVar, "10")
 	intVal = GetConfig(testVar, 11)
 	assert.Equal(t, 10, intVal)
 
 	// Env var bool
-	os.Setenv(testVar, "true")
+	t.Setenv(testVar, "true")
 	boolVal = GetConfig(testVar, false)
 	assert.Equal(t, true, boolVal)
 
 	// Env var string
-	os.Setenv(testVar, "foo")
+	t.Setenv(testVar, "foo")
 	strVal = GetConfig(testVar, "bar")
 	assert.Equal(t, "foo", strVal)
 }

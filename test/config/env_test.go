@@ -11,6 +11,24 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const testDefaultValue = "default_value"
+const testLocalhostName = "localhost"
+
+// unsetEnvForTest ensures an environment variable is truly absent (not just
+// set to an empty string) for the duration of the test, restoring the
+// previous state (present or absent) on cleanup. This is needed because
+// t.Setenv has no equivalent of os.Unsetenv and getenv() distinguishes
+// between an unset variable and one explicitly set to "".
+func unsetEnvForTest(t *testing.T, key string) {
+	t.Helper()
+	if old, ok := os.LookupEnv(key); ok {
+		_ = os.Unsetenv(key)
+		t.Cleanup(func() {
+			_ = os.Setenv(key, old)
+		})
+	}
+}
+
 func TestGetenv(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -23,14 +41,14 @@ func TestGetenv(t *testing.T) {
 		{
 			name:         "returns default when env var not set",
 			key:          "TEST_UNSET_VAR",
-			defaultValue: "default_value",
+			defaultValue: testDefaultValue,
 			setEnv:       false,
-			expected:     "default_value",
+			expected:     testDefaultValue,
 		},
 		{
 			name:         "returns env value when set",
 			key:          "TEST_SET_VAR",
-			defaultValue: "default_value",
+			defaultValue: testDefaultValue,
 			envValue:     "custom_value",
 			setEnv:       true,
 			expected:     "custom_value",
@@ -38,7 +56,7 @@ func TestGetenv(t *testing.T) {
 		{
 			name:         "returns empty string when env var is empty",
 			key:          "TEST_EMPTY_VAR",
-			defaultValue: "default_value",
+			defaultValue: testDefaultValue,
 			envValue:     "",
 			setEnv:       true,
 			expected:     "",
@@ -46,9 +64,9 @@ func TestGetenv(t *testing.T) {
 		{
 			name:         "returns default when key is empty",
 			key:          "",
-			defaultValue: "default_value",
+			defaultValue: testDefaultValue,
 			setEnv:       false,
-			expected:     "default_value",
+			expected:     testDefaultValue,
 		},
 		{
 			name:         "handles special characters in env value",
@@ -62,12 +80,8 @@ func TestGetenv(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Ensure clean state
-			os.Unsetenv(tt.key)
-			defer os.Unsetenv(tt.key)
-
 			if tt.setEnv {
-				os.Setenv(tt.key, tt.envValue)
+				t.Setenv(tt.key, tt.envValue)
 			}
 
 			result := getenv(tt.key, tt.defaultValue)
@@ -89,13 +103,8 @@ func TestConnectionConfigurationFromEnv_Defaults(t *testing.T) {
 	}
 
 	for _, v := range envVars {
-		os.Unsetenv(v)
+		unsetEnvForTest(t, v)
 	}
-	defer func() {
-		for _, v := range envVars {
-			os.Unsetenv(v)
-		}
-	}()
 
 	config := ConnectionConfigurationFromEnv()
 
@@ -110,23 +119,13 @@ func TestConnectionConfigurationFromEnv_Defaults(t *testing.T) {
 
 func TestConnectionConfigurationFromEnv_CustomValues(t *testing.T) {
 	// Set custom environment variables
-	os.Setenv("ARKE_BROKER_HOSTNAME", "custom-broker.example.com")
-	os.Setenv("ARKE_BROKER_PORT", "5671")
-	os.Setenv("ARKE_BROKER_ADMIN_PORT", "15672")
-	os.Setenv("ARKE_BROKER_USERNAME", "admin")
-	os.Setenv("ARKE_BROKER_PASSWORD", "secret123")
-	os.Setenv("ARKE_BROKER_TYPE", "amqp10")
-	os.Setenv("ARKE_BROKER_TENANT", "/custom-tenant")
-
-	defer func() {
-		os.Unsetenv("ARKE_BROKER_HOSTNAME")
-		os.Unsetenv("ARKE_BROKER_PORT")
-		os.Unsetenv("ARKE_BROKER_ADMIN_PORT")
-		os.Unsetenv("ARKE_BROKER_USERNAME")
-		os.Unsetenv("ARKE_BROKER_PASSWORD")
-		os.Unsetenv("ARKE_BROKER_TYPE")
-		os.Unsetenv("ARKE_BROKER_TENANT")
-	}()
+	t.Setenv("ARKE_BROKER_HOSTNAME", "custom-broker.example.com")
+	t.Setenv("ARKE_BROKER_PORT", "5671")
+	t.Setenv("ARKE_BROKER_ADMIN_PORT", "15672")
+	t.Setenv("ARKE_BROKER_USERNAME", "admin")
+	t.Setenv("ARKE_BROKER_PASSWORD", "secret123")
+	t.Setenv("ARKE_BROKER_TYPE", "amqp10")
+	t.Setenv("ARKE_BROKER_TENANT", "/custom-tenant")
 
 	config := ConnectionConfigurationFromEnv()
 
@@ -141,15 +140,9 @@ func TestConnectionConfigurationFromEnv_CustomValues(t *testing.T) {
 
 func TestConnectionConfigurationFromEnv_PartialCustomValues(t *testing.T) {
 	// Set only some custom values, others should use defaults
-	os.Setenv("ARKE_BROKER_HOSTNAME", "my-broker.local")
-	os.Setenv("ARKE_BROKER_USERNAME", "myuser")
-	os.Setenv("ARKE_BROKER_TYPE", "rabbitmq")
-
-	defer func() {
-		os.Unsetenv("ARKE_BROKER_HOSTNAME")
-		os.Unsetenv("ARKE_BROKER_USERNAME")
-		os.Unsetenv("ARKE_BROKER_TYPE")
-	}()
+	t.Setenv("ARKE_BROKER_HOSTNAME", "my-broker.local")
+	t.Setenv("ARKE_BROKER_USERNAME", "myuser")
+	t.Setenv("ARKE_BROKER_TYPE", "rabbitmq")
 
 	config := ConnectionConfigurationFromEnv()
 
@@ -202,13 +195,8 @@ func TestConnectionConfigurationFromEnv_PortParsing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			os.Setenv("ARKE_BROKER_PORT", tt.port)
-			os.Setenv("ARKE_BROKER_ADMIN_PORT", tt.adminPort)
-
-			defer func() {
-				os.Unsetenv("ARKE_BROKER_PORT")
-				os.Unsetenv("ARKE_BROKER_ADMIN_PORT")
-			}()
+			t.Setenv("ARKE_BROKER_PORT", tt.port)
+			t.Setenv("ARKE_BROKER_ADMIN_PORT", tt.adminPort)
 
 			config := ConnectionConfigurationFromEnv()
 
@@ -219,8 +207,8 @@ func TestConnectionConfigurationFromEnv_PortParsing(t *testing.T) {
 }
 
 func TestConnectionConfigurationFromEnv_CredentialsNotNil(t *testing.T) {
-	os.Unsetenv("ARKE_BROKER_USERNAME")
-	os.Unsetenv("ARKE_BROKER_PASSWORD")
+	unsetEnvForTest(t, "ARKE_BROKER_USERNAME")
+	unsetEnvForTest(t, "ARKE_BROKER_PASSWORD")
 
 	config := ConnectionConfigurationFromEnv()
 
@@ -259,8 +247,7 @@ func TestConnectionConfigurationFromEnv_BrokerTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			os.Setenv("ARKE_BROKER_TYPE", tt.brokerType)
-			defer os.Unsetenv("ARKE_BROKER_TYPE")
+			t.Setenv("ARKE_BROKER_TYPE", tt.brokerType)
 
 			config := ConnectionConfigurationFromEnv()
 
@@ -299,11 +286,10 @@ func TestConnectionConfigurationFromEnv_TenantValues(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.tenant != "" {
-				os.Setenv("ARKE_BROKER_TENANT", tt.tenant)
-				defer os.Unsetenv("ARKE_BROKER_TENANT")
+			if tt.tenant == "" {
+				unsetEnvForTest(t, "ARKE_BROKER_TENANT")
 			} else {
-				os.Unsetenv("ARKE_BROKER_TENANT")
+				t.Setenv("ARKE_BROKER_TENANT", tt.tenant)
 			}
 
 			config := ConnectionConfigurationFromEnv()
@@ -315,19 +301,11 @@ func TestConnectionConfigurationFromEnv_TenantValues(t *testing.T) {
 
 func TestConnectionConfigurationFromEnv_EmptyStringValues(t *testing.T) {
 	// Set all vars to empty strings
-	os.Setenv("ARKE_BROKER_HOSTNAME", "")
-	os.Setenv("ARKE_BROKER_USERNAME", "")
-	os.Setenv("ARKE_BROKER_PASSWORD", "")
-	os.Setenv("ARKE_BROKER_TYPE", "")
-	os.Setenv("ARKE_BROKER_TENANT", "")
-
-	defer func() {
-		os.Unsetenv("ARKE_BROKER_HOSTNAME")
-		os.Unsetenv("ARKE_BROKER_USERNAME")
-		os.Unsetenv("ARKE_BROKER_PASSWORD")
-		os.Unsetenv("ARKE_BROKER_TYPE")
-		os.Unsetenv("ARKE_BROKER_TENANT")
-	}()
+	t.Setenv("ARKE_BROKER_HOSTNAME", "")
+	t.Setenv("ARKE_BROKER_USERNAME", "")
+	t.Setenv("ARKE_BROKER_PASSWORD", "")
+	t.Setenv("ARKE_BROKER_TYPE", "")
+	t.Setenv("ARKE_BROKER_TENANT", "")
 
 	config := ConnectionConfigurationFromEnv()
 
@@ -346,9 +324,9 @@ func TestConnectionConfigurationFromEnv_HostnameVariations(t *testing.T) {
 		expectedHost string
 	}{
 		{
-			name:         "localhost",
-			hostname:     "localhost",
-			expectedHost: "localhost",
+			name:         testLocalhostName,
+			hostname:     testLocalhostName,
+			expectedHost: testLocalhostName,
 		},
 		{
 			name:         "IP address",
@@ -374,8 +352,7 @@ func TestConnectionConfigurationFromEnv_HostnameVariations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			os.Setenv("ARKE_BROKER_HOSTNAME", tt.hostname)
-			defer os.Unsetenv("ARKE_BROKER_HOSTNAME")
+			t.Setenv("ARKE_BROKER_HOSTNAME", tt.hostname)
 
 			config := ConnectionConfigurationFromEnv()
 

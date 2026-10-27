@@ -28,6 +28,11 @@ var cf *pb.ConnectionConfiguration
 var mockp *MockProvider
 var conSrv *s.ConsumerServer
 var proSrv *s.ProducerServer
+
+const testAddressName = "addressname"
+const testBreakingError = "breaking"
+const testSourceName = "asdf"
+
 var hlthSrv *s.HealthzServer
 var expectedErrorMessage = "this is my error"
 var errMsg pb.Error = pb.Error{Message: expectedErrorMessage}
@@ -716,14 +721,14 @@ func TestConsumerServerConsume(t *testing.T) {
 
 	sourceOptions := make(map[string]string)
 	sourceOptions["option1"] = "ok"
-	source := &pb.Source{Name: "asdf", Address: &pb.Address{Name: "addressname"}, Options: sourceOptions}
+	source := &pb.Source{Name: testSourceName, Address: &pb.Address{Name: testAddressName}, Options: sourceOptions}
 	stream := &MockConsumerConsumeServerStream{}
 	cnsm := &pb.Consume{Msg: &pb.Consume_Src{Src: source}}
 
 	messages := make([]*pb.Message, 0)
 
-	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("one")})
-	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("two")})
+	messages = append(messages, &pb.Message{Address: &pb.Address{Name: testAddressName}, Body: []byte("one")})
+	messages = append(messages, &pb.Message{Address: &pb.Address{Name: testAddressName}, Body: []byte("two")})
 
 	mockp.SetMockMessages(messages)
 
@@ -734,7 +739,7 @@ func TestConsumerServerConsume(t *testing.T) {
 	stream.On("Recv").Return(nil, errors.New("stop")).Once().After(500 * time.Millisecond)
 
 	// We are returning an error after 500 ms as a simple way of exiting the subscribe
-	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: "breaking"}).After(250 * time.Millisecond)
+	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: testBreakingError}).After(250 * time.Millisecond)
 	mockp.On("Ack", mock.Anything, mock.Anything).Return(nil)
 	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
@@ -751,14 +756,14 @@ func TestConsumerServerSubscribeReturnNil(t *testing.T) {
 
 	sourceOptions := make(map[string]string)
 	sourceOptions["option1"] = "ok"
-	source := &pb.Source{Name: "asdf", Address: &pb.Address{Name: "addressname"}, Options: sourceOptions}
+	source := &pb.Source{Name: testSourceName, Address: &pb.Address{Name: testAddressName}, Options: sourceOptions}
 	stream := &MockConsumerConsumeServerStream{}
 	cnsm := &pb.Consume{Msg: &pb.Consume_Src{Src: source}}
 
 	messages := make([]*pb.Message, 0)
 
-	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("one")})
-	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("two")})
+	messages = append(messages, &pb.Message{Address: &pb.Address{Name: testAddressName}, Body: []byte("one")})
+	messages = append(messages, &pb.Message{Address: &pb.Address{Name: testAddressName}, Body: []byte("two")})
 
 	mockp.SetMockMessages(messages)
 	mockp.SubscribeReturnDelay = 50 * time.Millisecond
@@ -785,7 +790,7 @@ func TestConsumerServerSubscribeReturnNil(t *testing.T) {
 }
 
 func TestSetSourceDefaultsWithNoOptions(t *testing.T) {
-	source := &pb.Source{Name: "asdf", Address: &pb.Address{Name: "addressname"}}
+	source := &pb.Source{Name: testSourceName, Address: &pb.Address{Name: testAddressName}}
 
 	s.SetSourceDefaults(source)
 	opts := source.GetOptions()
@@ -805,7 +810,7 @@ func TestSetSourceDefaultsWithNoOptions(t *testing.T) {
 func TestSetSourceDefaults(t *testing.T) {
 	sourceOptions := make(map[string]string)
 	sourceOptions["option1"] = "ok"
-	source := &pb.Source{Name: "asdf", Address: &pb.Address{Name: "addressname"}, Options: sourceOptions}
+	source := &pb.Source{Name: testSourceName, Address: &pb.Address{Name: testAddressName}, Options: sourceOptions}
 
 	s.SetSourceDefaults(source)
 	opts := source.GetOptions()
@@ -836,14 +841,14 @@ func TestConsumerServerConsume_Nack(t *testing.T) {
 
 	sourceOptions := make(map[string]string)
 	sourceOptions["option1"] = "ok"
-	source := &pb.Source{Name: "asdf", Address: &pb.Address{Name: "addressname"}, Options: sourceOptions}
+	source := &pb.Source{Name: testSourceName, Address: &pb.Address{Name: testAddressName}, Options: sourceOptions}
 	stream := &MockConsumerConsumeServerStream{}
 	cnsm := &pb.Consume{Msg: &pb.Consume_Src{Src: source}}
 
 	messages := make([]*pb.Message, 0)
 
-	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("one")})
-	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("two")})
+	messages = append(messages, &pb.Message{Address: &pb.Address{Name: testAddressName}, Body: []byte("one")})
+	messages = append(messages, &pb.Message{Address: &pb.Address{Name: testAddressName}, Body: []byte("two")})
 
 	mockp.SetMockMessages(messages)
 
@@ -854,7 +859,7 @@ func TestConsumerServerConsume_Nack(t *testing.T) {
 	stream.On("Recv").Return(nil, errors.New("stop")).Once().After(500 * time.Millisecond)
 
 	// We are returning an error after 500 ms as a simple way of exiting the subscribe
-	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: "breaking"}).After(250 * time.Millisecond)
+	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: testBreakingError}).After(250 * time.Millisecond)
 	mockp.On("Nack", mock.Anything, mock.Anything).Return(nil)
 	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
@@ -871,14 +876,14 @@ func TestConsumerServerConsume_DLQ(t *testing.T) {
 
 	sourceOptions := make(map[string]string)
 	sourceOptions["DeadLetterAddress"] = "dlq"
-	source := &pb.Source{Name: "asdf", Address: &pb.Address{Name: "addressname"}, Options: sourceOptions}
+	source := &pb.Source{Name: testSourceName, Address: &pb.Address{Name: testAddressName}, Options: sourceOptions}
 	stream := &MockConsumerConsumeServerStream{}
 	cnsm := &pb.Consume{Msg: &pb.Consume_Src{Src: source}}
 
 	messages := make([]*pb.Message, 0)
 
-	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("one")})
-	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("two")})
+	messages = append(messages, &pb.Message{Address: &pb.Address{Name: testAddressName}, Body: []byte("one")})
+	messages = append(messages, &pb.Message{Address: &pb.Address{Name: testAddressName}, Body: []byte("two")})
 
 	mockp.SetMockMessages(messages)
 
@@ -889,7 +894,7 @@ func TestConsumerServerConsume_DLQ(t *testing.T) {
 	stream.On("Recv").Return(nil, errors.New("stop")).Once().After(500 * time.Millisecond)
 
 	// We are returning an error after 500 ms as a simple way of exiting the subscribe
-	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: "breaking"}).After(250 * time.Millisecond)
+	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: testBreakingError}).After(250 * time.Millisecond)
 	mockp.On("DeadLetter", mock.Anything, source, mock.Anything).Return(nil)
 	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
@@ -906,14 +911,14 @@ func TestConsumerServerConsume_DLQFail(t *testing.T) {
 
 	sourceOptions := make(map[string]string)
 	sourceOptions["DeadLetterAddress"] = "dlq"
-	source := &pb.Source{Name: "asdf", Address: &pb.Address{Name: "addressname"}, Options: sourceOptions}
+	source := &pb.Source{Name: testSourceName, Address: &pb.Address{Name: testAddressName}, Options: sourceOptions}
 	stream := &MockConsumerConsumeServerStream{}
 	cnsm := &pb.Consume{Msg: &pb.Consume_Src{Src: source}}
 
 	messages := make([]*pb.Message, 0)
 
-	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("one")})
-	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("two")})
+	messages = append(messages, &pb.Message{Address: &pb.Address{Name: testAddressName}, Body: []byte("one")})
+	messages = append(messages, &pb.Message{Address: &pb.Address{Name: testAddressName}, Body: []byte("two")})
 
 	mockp.SetMockMessages(messages)
 
@@ -924,8 +929,8 @@ func TestConsumerServerConsume_DLQFail(t *testing.T) {
 	stream.On("Recv").Return(nil, errors.New("stop")).Once().After(500 * time.Millisecond)
 
 	// We are returning an error after 500 ms as a simple way of exiting the subscribe
-	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: "breaking"}).After(250 * time.Millisecond)
-	mockp.On("DeadLetter", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: "breaking"})
+	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: testBreakingError}).After(250 * time.Millisecond)
+	mockp.On("DeadLetter", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: testBreakingError})
 	mockp.On("Nack", mock.Anything, mock.Anything).Return(nil)
 	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
@@ -942,14 +947,14 @@ func TestConsumerServerConsume_Retry(t *testing.T) {
 
 	sourceOptions := make(map[string]string)
 	sourceOptions["option1"] = "ok"
-	source := &pb.Source{Name: "asdf", Address: &pb.Address{Name: "addressname"}, Options: sourceOptions}
+	source := &pb.Source{Name: testSourceName, Address: &pb.Address{Name: testAddressName}, Options: sourceOptions}
 	stream := &MockConsumerConsumeServerStream{}
 	cnsm := &pb.Consume{Msg: &pb.Consume_Src{Src: source}}
 
 	messages := make([]*pb.Message, 0)
 
-	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("one")})
-	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("two")})
+	messages = append(messages, &pb.Message{Address: &pb.Address{Name: testAddressName}, Body: []byte("one")})
+	messages = append(messages, &pb.Message{Address: &pb.Address{Name: testAddressName}, Body: []byte("two")})
 
 	mockp.SetMockMessages(messages)
 
@@ -960,7 +965,7 @@ func TestConsumerServerConsume_Retry(t *testing.T) {
 	stream.On("Recv").Return(nil, errors.New("stop")).Once().After(500 * time.Millisecond)
 
 	// We are returning an error after 500 ms as a simple way of exiting the subscribe
-	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: "breaking"}).After(250 * time.Millisecond)
+	mockp.On("Subscribe", mock.Anything, source, mock.Anything).Return(&pb.Error{Message: testBreakingError}).After(250 * time.Millisecond)
 	mockp.On("Retry", mock.Anything, source, mock.Anything, mock.Anything).Return(nil)
 	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
@@ -977,7 +982,7 @@ func TestConsumerServerConsume_BadOption(t *testing.T) {
 	sourceOptions := make(map[string]string)
 	sourceOptions["option1"] = "ok"
 	sourceOptions["badoption"] = "bad"
-	source := &pb.Source{Name: "asdf", Address: &pb.Address{Name: "addressname"}, Options: sourceOptions}
+	source := &pb.Source{Name: testSourceName, Address: &pb.Address{Name: testAddressName}, Options: sourceOptions}
 	stream := &MockConsumerConsumeServerStream{}
 	cnsm := &pb.Consume{Msg: &pb.Consume_Src{Src: source}}
 
@@ -996,14 +1001,14 @@ func TestConsumerServerConsume_AckErr(t *testing.T) {
 	mockp.On("Connect", mock.Anything, mock.AnythingOfType("*api.ConnectionConfiguration"), mock.AnythingOfType("bool")).Return(&pb.Error{})
 	mockp.On("WaitForConnect", mock.Anything).Return(true)
 
-	source := &pb.Source{Name: "asdf", Address: &pb.Address{Name: "addressname"}}
+	source := &pb.Source{Name: testSourceName, Address: &pb.Address{Name: testAddressName}}
 	stream := &MockConsumerConsumeServerStream{}
 	cnsm := &pb.Consume{Msg: &pb.Consume_Src{Src: source}}
 
 	messages := make([]*pb.Message, 0)
 
-	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("one")})
-	messages = append(messages, &pb.Message{Address: &pb.Address{Name: "addressname"}, Body: []byte("two")})
+	messages = append(messages, &pb.Message{Address: &pb.Address{Name: testAddressName}, Body: []byte("one")})
+	messages = append(messages, &pb.Message{Address: &pb.Address{Name: testAddressName}, Body: []byte("two")})
 
 	mockp.SetMockMessages(messages)
 
@@ -1014,7 +1019,7 @@ func TestConsumerServerConsume_AckErr(t *testing.T) {
 	stream.On("Recv").Return(nil, errors.New("stop")).Once().After(500 * time.Millisecond)
 
 	// We are returning an error after 500 ms as a simple way of exiting the subscribe
-	mockp.On("Subscribe", mock.Anything, mock.Anything, mock.Anything).Return(&pb.Error{Message: "breaking"}).After(250 * time.Millisecond)
+	mockp.On("Subscribe", mock.Anything, mock.Anything, mock.Anything).Return(&pb.Error{Message: testBreakingError}).After(250 * time.Millisecond)
 	mockp.On("Ack", mock.Anything, mock.Anything).Return(&pb.Error{Message: "ackerr"})
 	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
@@ -1031,7 +1036,7 @@ func TestConsumerServerConsume_SourceTwice(t *testing.T) {
 
 	sourceOptions := make(map[string]string)
 	sourceOptions["option1"] = "ok"
-	source := &pb.Source{Name: "asdf", Address: &pb.Address{Name: "addressname"}, Options: sourceOptions, PrefetchCount: 1}
+	source := &pb.Source{Name: testSourceName, Address: &pb.Address{Name: testAddressName}, Options: sourceOptions, PrefetchCount: 1}
 	stream := &MockConsumerConsumeServerStream{}
 	cnsm := &pb.Consume{Msg: &pb.Consume_Src{Src: source}}
 
@@ -1039,7 +1044,7 @@ func TestConsumerServerConsume_SourceTwice(t *testing.T) {
 	stream.On("Send", cnsmResp).Return(nil, nil).Once()
 	stream.On("Recv").Return(cnsm, nil).Twice()
 	stream.On("Recv").Return(nil, io.EOF).After(100 * time.Millisecond)
-	mockp.On("Subscribe", mock.Anything, mock.Anything, mock.Anything).Return(&pb.Error{Message: "breaking"}).After(250 * time.Millisecond)
+	mockp.On("Subscribe", mock.Anything, mock.Anything, mock.Anything).Return(&pb.Error{Message: testBreakingError}).After(250 * time.Millisecond)
 	conSrv.Connect(ctx, cf) //nolint:errcheck
 	err := conSrv.Consume(stream)
 	fmt.Println("err:", err)
@@ -1145,7 +1150,7 @@ func TestConsumerServerConsume_SubscribeDeclareOnly(t *testing.T) {
 				mockp.On("WaitForConnect", mock.Anything).Return(true)
 
 				sourceOptions := make(map[string]string)
-				source := &pb.Source{Name: "asdf", Address: &pb.Address{Name: "addressname"}, Options: sourceOptions, DeclareOnly: true}
+				source := &pb.Source{Name: testSourceName, Address: &pb.Address{Name: testAddressName}, Options: sourceOptions, DeclareOnly: true}
 				stream := &MockConsumerConsumeServerStream{}
 				cnsm := &pb.Consume{Msg: &pb.Consume_Src{Src: source}}
 

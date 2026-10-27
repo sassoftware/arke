@@ -128,7 +128,7 @@ func (sc *streamConnection) PutPublisher(confirm bool, pub streamPublisherShim) 
 	if ok {
 		if err := pool.(*util.BlockingPool).Put(pub); err != nil {
 			util.Logger.Debugf("Failed to return publisher to pool: %s", err.Error())
-			pub.Close()
+			_ = pub.Close()
 		}
 	}
 }
@@ -295,7 +295,9 @@ func (sc *streamConnection) GetStreamOffset(streamName string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer cons.Close()
+	defer func() {
+		_ = cons.Close()
+	}()
 	return sc.GetConsumerOffset(streamName, fakeConsumerName)
 }
 

@@ -32,25 +32,34 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const providerName string = "amqp091"
-const trustedCerts = "ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE"
-const streamOffsetHeaderName = "x-current-offset"
-const retryCountHeaderName = "x-retry-count"
-const rabbitReceivedTimeHeaderName = "x-opt-rabbitmq-received-time"
-const timeStampInMSHeaderName = "timestamp_in_ms"
-const transferEncodingHeaderName = "Transfer-Encoding"
+const (
+	providerName                 = "amqp091"
+	trustedCerts                 = "ARKE_TRUSTED_CA_CERTIFICATES_PEM_FILE"
+	streamOffsetHeaderName       = "x-current-offset"
+	retryCountHeaderName         = "x-retry-count"
+	rabbitReceivedTimeHeaderName = "x-opt-rabbitmq-received-time"
+	timeStampInMSHeaderName      = "timestamp_in_ms"
+	transferEncodingHeaderName   = "Transfer-Encoding"
+	errMsgConnectionClosed       = "connection to broker is closed"
+	offsetOption                 = "Offset"
+	messageTTLOption             = "MessageTTL"
+	deadLetterAddressOption      = "DeadLetterAddress"
+	deadLetterSubjectOption      = "DeadLetterSubject"
+	expiresOption                = "Expires"
+	consumerGroupOption          = "ConsumerGroup"
 
-const maxPubChannels = 10
-const maxPubPCChannels = 10
+	maxPubChannels   = 10
+	maxPubPCChannels = 10
 
-const queueTypeClassic = "classic"
-const queueTypeQuorum = "quorum"
-const xMatchAny = "any"
+	queueTypeClassic = "classic"
+	queueTypeQuorum  = "quorum"
+	xMatchAny        = "any"
+)
 
-var supportedSourceOptionsList = []string{"MessageTTL", "DeadLetterAddress", "DeadLetterSubject", "Expires", "Offset", "ConsumerGroup"}
+var supportedSourceOptionsList = []string{messageTTLOption, deadLetterAddressOption, deadLetterSubjectOption, expiresOption, offsetOption, consumerGroupOption}
 
 var supportedSourceOptions map[string]bool
-var supportedStreamSourceOptions = map[string]bool{"Offset": true, "MessageTTL": true, "ConsumerGroup": true}
+var supportedStreamSourceOptions = map[string]bool{offsetOption: true, messageTTLOption: true, consumerGroupOption: true}
 
 // NewAmqpConn091 allow overriding the connection for mocking in tests
 var NewAmqpConn091 = NewAmqp091Connection
@@ -149,7 +158,7 @@ func NewAMQP091Provider() provider.Provider {
 	prov.tlsConfig = &tls.Config{}
 
 	if caBundlePath != "" {
-		caBundle, err := os.ReadFile(filepath.FromSlash(filepath.Clean("/" + strings.Trim(caBundlePath, "/"))))
+		caBundle, err := os.ReadFile(filepath.FromSlash(filepath.Clean("/" + strings.Trim(caBundlePath, "/")))) //nolint:gosec
 		if err == nil {
 			prov.tlsConfig.RootCAs = x509.NewCertPool()
 			prov.tlsConfig.RootCAs.AppendCertsFromPEM(caBundle)
@@ -471,7 +480,7 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 
 	activeMessages := util.NewConcurrentMap()
 	pubChCtx := context.WithValue(context.Background(), CtxKey{name: "clientIdentifier"}, clientIdentifier)
-	pubChCtx, pubChCancel := context.WithCancel(pubChCtx) //nolint:gosec
+	pubChCtx, pubChCancel := context.WithCancel(pubChCtx)
 	// Allocate BrokerDetails as a pointer so closures and the connections map
 	// all share the same intentional heap object.  Previously, declaring bd as
 	// a value caused the compiler to detect 5 separate escape flows and emit 5
@@ -848,7 +857,9 @@ func (bd *BrokerDetails) doManagementRequestWithoutMarshal(method, urn string) (
 	var body []byte
 	var bodyErr error
 	if resp != nil {
-		defer resp.Body.Close()
+		defer func() {
+			_ = resp.Body.Close()
+		}()
 		body, bodyErr = io.ReadAll(resp.Body)
 	}
 
@@ -1032,7 +1043,7 @@ func (prov *amqp091provider) Subscribe(ctx context.Context, source *pb.Source, m
 
 func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetails, source *pb.Source, messageChannel chan<- *pb.Message) *pb.Error { //nolint:gocognit
 	if bd.Connection.IsClosed() {
-		return &pb.Error{Message: "connection to broker is closed"}
+		return &pb.Error{Message: errMsgConnectionClosed}
 	}
 
 	// AutoDelete queues are temporary, override what
@@ -1054,7 +1065,9 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
-	defer amqpChannel.Close()
+	defer func() {
+		_ = amqpChannel.Close()
+	}()
 
 	_ = prov.declareExchange(source.GetAddress(), bd)
 
@@ -1261,16 +1274,16 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 	}
 
 	if bd.StreamConnection.IsClosed() {
-		return &pb.Error{Message: "connection to broker is closed"}
+		return &pb.Error{Message: errMsgConnectionClosed}
 	}
 
 	offset := ""
 	opts := source.GetOptions()
-	if _, ok := opts["Offset"]; ok {
-		offset = opts["Offset"]
+	if _, ok := opts[offsetOption]; ok {
+		offset = opts[offsetOption]
 	}
 	var ttl int64
-	if sTTL, ok := opts["MessageTTL"]; ok {
+	if sTTL, ok := opts[messageTTLOption]; ok {
 		val, err := strconv.ParseInt(sTTL, 10, 64)
 		if err != nil {
 			return &pb.Error{Message: "value for MessageTTL option must be a quoted integer"}
@@ -1370,7 +1383,7 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 	bd.incrementStreamCount()
 	defer bd.decrementStreamCount()
 	<-ctx.Done()
-	consumer.Close()
+	_ = consumer.Close()
 	return nil
 }
 
@@ -1410,11 +1423,11 @@ func (prov *amqp091provider) disconnectClientByIdentifier(clientIdentifier strin
 	bd.shutdownChan <- true // shut down the connectionWatcher
 	// close the client if it is still connected
 	if bd.Connection != nil && !bd.Connection.IsClosed() {
-		bd.Connection.Close()
+		_ = bd.Connection.Close()
 	}
 
 	if bd.StreamConnection != nil {
-		bd.StreamConnection.Close()
+		_ = bd.StreamConnection.Close()
 	}
 	prov.connections.Delete(clientIdentifier)
 
@@ -1433,14 +1446,16 @@ func (prov *amqp091provider) Publish(ctx context.Context, messageChannel <-chan 
 	defer bd.decrementStreamCount()
 
 	if bd.Connection.IsClosed() {
-		return &pb.Error{Message: "connection to broker is closed"}
+		return &pb.Error{Message: errMsgConnectionClosed}
 	}
 
 	amqpChannel, err := bd.Connection.NewChannel(false)
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
-	defer amqpChannel.Close()
+	defer func() {
+		_ = amqpChannel.Close()
+	}()
 
 	connErrChan := make(chan amqp091Error, 1)
 	connErrChan = bd.Connection.NotifyClose(connErrChan)
@@ -1529,7 +1544,7 @@ func (prov *amqp091provider) PublishOne(ctx context.Context, msg *pb.Message) *p
 
 func (prov *amqp091provider) publishOneQueue(ctx context.Context, msg *pb.Message, bd *BrokerDetails) *pb.Error {
 	if bd.Connection.IsClosed() {
-		return &pb.Error{Message: "connection to broker is closed"}
+		return &pb.Error{Message: errMsgConnectionClosed}
 	}
 	if msg.GetPublishId() > 0 {
 		return &pb.Error{Message: "Message deduplication is not supported by Queue types"}
@@ -1549,14 +1564,14 @@ func (prov *amqp091provider) publishOneQueue(ctx context.Context, msg *pb.Messag
 		defer func() {
 			if err := bd.pubPCChannels.Put(amqpChannel); err != nil {
 				util.Logger.Debugf("Failed to return channel to pool: %s", err.Error())
-				(*amqpChannel).Close()
+				_ = (*amqpChannel).Close()
 			}
 		}()
 	} else {
 		defer func() {
 			if err := bd.pubChannels.Put(amqpChannel); err != nil {
 				util.Logger.Debugf("Failed to return channel to pool: %s", err.Error())
-				(*amqpChannel).Close()
+				_ = (*amqpChannel).Close()
 			}
 		}()
 	}
@@ -1571,7 +1586,7 @@ func (prov *amqp091provider) publishOneStream(ctx context.Context, msg *pb.Messa
 	}
 
 	if bd.StreamConnection.IsClosed() {
-		return &pb.Error{Message: "connection to broker is closed"}
+		return &pb.Error{Message: errMsgConnectionClosed}
 	}
 
 	if msg.GetPublishId() > 0 && msg.GetPublisherName() == "" {

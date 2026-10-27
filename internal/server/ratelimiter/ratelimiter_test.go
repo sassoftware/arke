@@ -6,7 +6,6 @@ package ratelimiter
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -18,12 +17,9 @@ import (
 	"google.golang.org/grpc/peer"
 )
 
-func resetRateLimitEnv() {
-	_ = os.Unsetenv(EnvRateLimitEnforced)
-	_ = os.Unsetenv(EnvRateLimitBucketSize)
-	_ = os.Unsetenv(EnvRateLimitRefill)
-	_ = os.Unsetenv(EnvRateLimitMaxAge)
-	os.Setenv(util.EnvLogLevel, "DEBUG")
+func resetRateLimitEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(util.EnvLogLevel, "DEBUG")
 }
 
 func TestInitializeClientLimitManager(t *testing.T) {
@@ -64,7 +60,7 @@ func TestInitializeClientLimitManager(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resetRateLimitEnv()
+			resetRateLimitEnv(t)
 			clm, err := NewClientLimitManager(tt.bucketSize, tt.refillInterval, tt.maxAgeStaleClients, tt.enforced)
 			if tt.shouldBeNil {
 				assert.NotNil(t, err)
@@ -127,7 +123,7 @@ func TestCullStaleClients(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resetRateLimitEnv()
+			resetRateLimitEnv(t)
 			clm, err := NewClientLimitManager(tt.bucketSize, tt.refillInterval, tt.maxAgeStaleClients, tt.enforced)
 			assert.Nil(t, err, "unexpected error: %v", err)
 			for i, lastActive := range tt.clientLastActive {
@@ -191,7 +187,7 @@ func TestLimit(t *testing.T) {
 
 	for testIndex, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resetRateLimitEnv()
+			resetRateLimitEnv(t)
 			clm, err := NewClientLimitManager(tt.bucketSize, tt.refillInterval, tt.maxAgeStaleClients, tt.enforced)
 			assert.Nil(t, err, "unexpected error: %v", err)
 			ctx := context.Background()
@@ -254,7 +250,7 @@ func TestStartClientCull(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resetRateLimitEnv()
+			resetRateLimitEnv(t)
 			clm, err := NewClientLimitManager(tt.bucketSize, tt.refillInterval, tt.maxAgeStaleClients, tt.enforced)
 			assert.Nil(t, err, "unexpected error: %v", err)
 
@@ -366,7 +362,7 @@ func TestNewClientLimitManager(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resetRateLimitEnv()
+			resetRateLimitEnv(t)
 
 			clm, err := NewClientLimitManager(tt.bucketSize, tt.refillInterval, tt.maxAgeStaleClients, tt.enforced)
 			if tt.expectedError {

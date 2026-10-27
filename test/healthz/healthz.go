@@ -37,18 +37,23 @@ func main() {
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		err = conn.Close()
+		if err != nil {
+			log.Printf("error closing connection: %v", err)
+		}
+	}()
 	c := pb.NewHealthzClient(conn)
 	ctx := context.Background()
 	stream, err := c.Check(ctx)
 	if err != nil {
-		fmt.Println("err on check", err)
+		log.Printf("error on check: %v", err)
 	}
 
 	go func() {
 		sig := <-sigs
 		fmt.Println()
-		fmt.Println(sig)
+		log.Printf("received signal: %v", sig)
 		os.Exit(1)
 	}()
 
@@ -57,11 +62,11 @@ func main() {
 		for {
 			hlth, err := stream.Recv()
 			if err != nil {
-				fmt.Printf("error on recv %s\n", err)
+				log.Printf("error on recv: %v", err)
 				return
 			}
 			if status := hlth.GetStatus(); status != nil {
-				fmt.Printf("health for uuid %s is %s, cpu availability is %v, memory availability is %v\n",
+				log.Printf("health for uuid %s is %s, cpu availability is %v, memory availability is %v",
 					status.GetUuid(),
 					status.GetCode(),
 					status.GetCpuAvailability(),
@@ -79,7 +84,7 @@ func main() {
 		hlth.Resp = hc
 		err := stream.Send(hlth)
 		if err != nil {
-			fmt.Println("error on send", err)
+			log.Printf("error on send: %v", err)
 			return
 		}
 		<-ticker.C

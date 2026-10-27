@@ -10,7 +10,11 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+const testLogLevelInfo = "info"
+const testLogLevelInvalid = "invalid"
 
 func TestLoadAndParseLevel(t *testing.T) {
 	tests := []struct {
@@ -35,7 +39,7 @@ func TestLoadAndParseLevel(t *testing.T) {
 		},
 		{
 			name:     "valid info level",
-			envValue: "info",
+			envValue: testLogLevelInfo,
 			expected: zerolog.InfoLevel,
 		},
 		{
@@ -50,7 +54,7 @@ func TestLoadAndParseLevel(t *testing.T) {
 		},
 		{
 			name:     "invalid level defaults to info",
-			envValue: "invalid",
+			envValue: testLogLevelInvalid,
 			expected: zerolog.InfoLevel,
 		},
 		{
@@ -64,7 +68,7 @@ func TestLoadAndParseLevel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(EnvLogLevel, tt.envValue)
 			gotLevel, err := loadAndParseLevel()
-			if tt.envValue == "invalid" {
+			if tt.envValue == testLogLevelInvalid {
 				assert.NotNil(t, err, "expected error for invalid log level")
 			} else {
 				assert.Nil(t, err, "did not expect error for valid log level")
@@ -83,10 +87,10 @@ func TestCreateFileLogger(t *testing.T) {
 	}{
 		{
 			name:      "creates logger with default settings",
-			logLevel:  "info",
+			logLevel:  testLogLevelInfo,
 			logFormat: "",
 			setupEnv: func() {
-				t.Setenv(EnvLogLevel, "info")
+				t.Setenv(EnvLogLevel, testLogLevelInfo)
 				t.Setenv(EnvLogFormat, "")
 			},
 		},
@@ -100,19 +104,19 @@ func TestCreateFileLogger(t *testing.T) {
 		},
 		{
 			name:      "creates logger with term format",
-			logLevel:  "info",
+			logLevel:  testLogLevelInfo,
 			logFormat: "term",
 			setupEnv: func() {
-				t.Setenv(EnvLogLevel, "info")
+				t.Setenv(EnvLogLevel, testLogLevelInfo)
 				t.Setenv(EnvLogFormat, "term")
 			},
 		},
 		{
 			name:      "creates logger with invalid level defaults to info",
-			logLevel:  "invalid",
+			logLevel:  testLogLevelInvalid,
 			logFormat: "",
 			setupEnv: func() {
-				t.Setenv(EnvLogLevel, "invalid")
+				t.Setenv(EnvLogLevel, testLogLevelInvalid)
 			},
 		},
 	}
@@ -139,7 +143,8 @@ func TestCreateFileLogger(t *testing.T) {
 			assert.Equal(t, expLevel, l.GetLevel(), "logger level should match expected level %s", tt.logLevel)
 
 			l.Info().Msg("Test log message")
-			w.Close()
+			err = w.Close()
+			require.Nil(t, err)
 			loggerOutput := make([]byte, 1024)
 			bytesRead, _ := r.Read(loggerOutput)
 			assert.Contains(t, string(loggerOutput[:bytesRead]), "Test log message")

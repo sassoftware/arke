@@ -11,6 +11,8 @@ import (
 	"testing"
 )
 
+const testCgroupMax = "max"
+
 // Helper function to reset the sync.Once for testing
 func resetCgroupSync() {
 	cgroupSyncOnce = sync.Once{}
@@ -135,7 +137,7 @@ func TestReadCgroupLimits_CgroupV2(t *testing.T) {
 		},
 		{
 			name:                  "max memory unlimited v2",
-			memLimit:              "max",
+			memLimit:              testCgroupMax,
 			cpuQuota:              "100000 100000",
 			expectedMemory:        0, // remains unchanged
 			expectedCPUMillicores: 1000,
@@ -149,8 +151,8 @@ func TestReadCgroupLimits_CgroupV2(t *testing.T) {
 		},
 		{
 			name:                  "both max v2",
-			memLimit:              "max",
-			cpuQuota:              "max",
+			memLimit:              testCgroupMax,
+			cpuQuota:              testCgroupMax,
 			expectedMemory:        0,
 			expectedCPUMillicores: runtime.NumCPU() * 1000,
 		},

@@ -11,6 +11,7 @@ import (
 
 	pb "github.com/sassoftware/arke/api"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/rest"
 )
 
@@ -19,14 +20,14 @@ func Test_MonitorHPA(t *testing.T) {
 	tests := []struct {
 		name           string
 		expectedMsg    string
-		setupFunc      func() func() // returns cleanup function
-		expectNoReturn bool          // whether function should return early
+		setupFunc      func(t *testing.T) func() // returns cleanup function
+		expectNoReturn bool                      // whether function should return early
 	}{
 		{
 			name:           "no namespace from file or env",
 			expectedMsg:    "No kubernetes namespace detected, not monitoring HPA for changes",
 			expectNoReturn: true,
-			setupFunc: func() func() {
+			setupFunc: func(t *testing.T) func() {
 				return func() {
 				}
 			},
@@ -35,12 +36,14 @@ func Test_MonitorHPA(t *testing.T) {
 			name:           "namespace from file ErrNotInCluster",
 			expectedMsg:    "Could not configure HPA cluster monitoring:",
 			expectNoReturn: true,
-			setupFunc: func() func() {
+			setupFunc: func(t *testing.T) func() {
 				origNamespaceFile := namespaceFile
 				tDir := os.TempDir()
 				ns, _ := os.CreateTemp(tDir, "namespace")
-				ns.WriteString("test-namespace") //nolint:errcheck
-				ns.Close()
+				_, err := ns.WriteString("test-namespace")
+				require.Nil(t, err)
+				err = ns.Close()
+				require.Nil(t, err)
 				namespaceFile = ns.Name()
 				// Restore original value on cleanup
 				return func() {
@@ -52,7 +55,7 @@ func Test_MonitorHPA(t *testing.T) {
 			name:           "namespace from file InClusterConfig error",
 			expectedMsg:    "Could not configure HPA cluster monitoring: file does not exist",
 			expectNoReturn: true,
-			setupFunc: func() func() {
+			setupFunc: func(t *testing.T) func() {
 				origNamespaceFile := namespaceFile
 				origInClusterConfig := inClusterConfig
 				inClusterConfig = func() (*rest.Config, error) {
@@ -60,8 +63,10 @@ func Test_MonitorHPA(t *testing.T) {
 				}
 				tDir := os.TempDir()
 				ns, _ := os.CreateTemp(tDir, "namespace")
-				ns.WriteString("test-namespace") //nolint:errcheck
-				ns.Close()
+				_, err := ns.WriteString("test-namespace")
+				require.Nil(t, err)
+				err = ns.Close()
+				require.Nil(t, err)
 				namespaceFile = ns.Name()
 				// Restore original value on cleanup
 				return func() {
@@ -74,18 +79,16 @@ func Test_MonitorHPA(t *testing.T) {
 			name:           "namespace from env var invalid namespace",
 			expectedMsg:    "Could not configure HPA cluster monitoring:",
 			expectNoReturn: true,
-			setupFunc: func() func() {
-				os.Setenv(EnvK8SNamespace, "test-namespace")
-				return func() {
-					os.Unsetenv(EnvK8SNamespace)
-				}
+			setupFunc: func(t *testing.T) func() {
+				t.Setenv(EnvK8SNamespace, "test-namespace")
+				return func() {}
 			},
 		},
 		{
 			name:           "Could not get HPA watcher",
 			expectedMsg:    "Could not get HPA watcher:",
 			expectNoReturn: true,
-			setupFunc: func() func() {
+			setupFunc: func(t *testing.T) func() {
 				origNamespaceFile := namespaceFile
 				origInClusterConfig := inClusterConfig
 				inClusterConfig = func() (*rest.Config, error) {
@@ -93,8 +96,10 @@ func Test_MonitorHPA(t *testing.T) {
 				}
 				tDir := os.TempDir()
 				ns, _ := os.CreateTemp(tDir, "namespace")
-				ns.WriteString("test-namespace") //nolint:errcheck
-				ns.Close()
+				_, err := ns.WriteString("test-namespace")
+				require.Nil(t, err)
+				err = ns.Close()
+				require.Nil(t, err)
 				namespaceFile = ns.Name()
 				return func() {
 					namespaceFile = origNamespaceFile
@@ -116,7 +121,7 @@ func Test_MonitorHPA(t *testing.T) {
 			defer cleanupLogger()
 
 			// Setup test conditions
-			cleanup := tt.setupFunc()
+			cleanup := tt.setupFunc(t)
 			defer cleanup()
 
 			// Run the function
