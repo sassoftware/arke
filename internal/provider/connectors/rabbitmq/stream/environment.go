@@ -1,8 +1,8 @@
 // Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package streamenv owns the physical RabbitMQ Stream client environment.
-package streamenv
+// Package stream owns the physical RabbitMQ Stream client environment.
+package stream
 
 import (
 	"crypto/tls"
@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
+	rabbitstream "github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
 )
 
 const (
@@ -21,14 +21,14 @@ const (
 type environmentShim interface {
 	Close() error
 	IsClosed() bool
-	client() *stream.Environment
+	client() *rabbitstream.Environment
 }
 
 type clientEnvironment struct {
-	*stream.Environment
+	*rabbitstream.Environment
 }
 
-func (e clientEnvironment) client() *stream.Environment {
+func (e clientEnvironment) client() *rabbitstream.Environment {
 	return e.Environment
 }
 
@@ -48,12 +48,12 @@ type Environment struct {
 }
 
 var newStreamEnvironment = func(config environmentConfig) (environmentShim, error) {
-	options := stream.NewEnvironmentOptions().
+	options := rabbitstream.NewEnvironmentOptions().
 		SetMaxProducersPerClient(config.maxProducersPerClient).
 		SetMaxConsumersPerClient(config.maxConsumersPerClient).
 		SetUri(config.uri).
 		SetTLSConfig(config.tlsConfig)
-	env, err := stream.NewEnvironment(options)
+	env, err := rabbitstream.NewEnvironment(options)
 	if env == nil {
 		return nil, err
 	}
@@ -124,7 +124,7 @@ func (e *Environment) IsClosed() bool {
 }
 
 // Client returns the underlying Stream client environment for Stream operations.
-func (e *Environment) Client() *stream.Environment {
+func (e *Environment) Client() *rabbitstream.Environment {
 	if e == nil {
 		return nil
 	}

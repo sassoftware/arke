@@ -13,8 +13,8 @@ import (
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/ha"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/message"
-	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
-	"github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/streamenv"
+	rabbitstream "github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
+	"github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/stream"
 	"github.com/sassoftware/arke/internal/util"
 )
 
@@ -24,7 +24,7 @@ type streamConnectionShim interface {
 	IsClosed() bool
 	GetPublisher(streamName, publisherName string, confirm bool) streamPublisherShim
 	PutPublisher(confirm bool, publisher streamPublisherShim)
-	NewConsumer(streamName string, consumerName string, offset string, handler stream.MessagesHandler, singleActive bool) (streamConsumerShim, error)
+	NewConsumer(streamName string, consumerName string, offset string, handler rabbitstream.MessagesHandler, singleActive bool) (streamConsumerShim, error)
 	DeclareStream(streamName string, ttl int64) error
 	GetConsumerOffset(streamName string, consumerName string) (int64, error)
 	StoreOffset(streamName string, consumerName string, offset int64) error
@@ -32,7 +32,7 @@ type streamConnectionShim interface {
 }
 
 type streamConnection struct {
-	env              *streamenv.Environment
+	env              *stream.Environment
 	envLock          sync.Mutex
 	clientIdentifier string
 	clientDisconnect atomic.Bool
@@ -162,15 +162,15 @@ func (sc *streamConnection) newPublisher(streamName, publisherName string, confi
 		return nil
 	}
 	var pcChan chan streamMessageResponseShim
-	options := stream.NewProducerOptions().SetClientProvidedName(sc.clientIdentifier)
+	options := rabbitstream.NewProducerOptions().SetClientProvidedName(sc.clientIdentifier)
 	if publisherName != "" {
 		options.SetProducerName(publisherName)
 	}
-	handler := func(_ []*stream.ConfirmationStatus) {}
+	handler := func(_ []*rabbitstream.ConfirmationStatus) {}
 	if confirm {
 		options.SetConfirmationTimeOut(5 * time.Second)
 		pcChan = make(chan streamMessageResponseShim, 1)
-		handler = func(messageStatus []*stream.ConfirmationStatus) {
+		handler = func(messageStatus []*rabbitstream.ConfirmationStatus) {
 			for _, msgStatus := range messageStatus {
 				pcChan <- msgStatus
 			}
@@ -188,7 +188,7 @@ func (sc *streamConnection) newPublisher(streamName, publisherName string, confi
 	return streamPublisher{streamName: streamName, publisherName: publisherName, publisher: producer, pcChannel: pcChan}
 }
 
-func (sc *streamConnection) NewConsumer(streamName string, consumerName string, offset string, handler stream.MessagesHandler, singleActive bool) (streamConsumerShim, error) {
+func (sc *streamConnection) NewConsumer(streamName string, consumerName string, offset string, handler rabbitstream.MessagesHandler, singleActive bool) (streamConsumerShim, error) {
 	sc.envLock.Lock()
 	defer sc.envLock.Unlock()
 	env := sc.env.Client()
@@ -204,20 +204,20 @@ func (sc *streamConnection) NewConsumer(streamName string, consumerName string, 
 		return nil, qErr
 	}
 
-	sac := &stream.SingleActiveConsumer{}
+	sac := &rabbitstream.SingleActiveConsumer{}
 	if singleActive {
 		sac.SetEnabled(true)
-		cuf := func(streamName string, _ bool) stream.OffsetSpecification {
+		cuf := func(streamName string, _ bool) rabbitstream.OffsetSpecification {
 			util.Logger.Debugf("client %s with consumer %s on stream %s promoted to active consumer", sc.clientIdentifier, consumerName, streamName)
 
 			offset, err := env.QueryOffset(consumerName, streamName)
 			if err != nil {
-				return stream.OffsetSpecification{}.First()
+				return rabbitstream.OffsetSpecification{}.First()
 			}
 
 			// if the offset is found, start at the next offset so we
 			// don't get a repeat message
-			return stream.OffsetSpecification{}.Offset(offset + 1)
+			return rabbitstream.OffsetSpecification{}.Offset(offset + 1)
 		}
 		sac.ConsumerUpdate = cuf
 	}
@@ -227,7 +227,7 @@ func (sc *streamConnection) NewConsumer(streamName string, consumerName string, 
 	consumer, err := ha.NewReliableConsumer(
 		env,
 		streamName,
-		stream.NewConsumerOptions().
+		rabbitstream.NewConsumerOptions().
 			SetManualCommit(). // disable auto commit
 			SetClientProvidedName(sc.clientIdentifier).
 			SetConsumerName(consumerName).
@@ -241,7 +241,7 @@ func (sc *streamConnection) NewConsumer(streamName string, consumerName string, 
 }
 
 func (sc *streamConnection) DeclareStream(streamName string, ttl int64) error {
-	opts := &stream.StreamOptions{}
+	opts := &rabbitstream.StreamOptions{}
 	if ttl > 0 {
 		dTTL := time.Duration(ttl * int64(time.Second))
 		opts.SetMaxAge(dTTL)
@@ -266,7 +266,7 @@ func (sc *streamConnection) GetStreamOffset(streamName string) (int64, error) {
 	util.Logger.Debugf("GetStreamOffset (%s)", streamName)
 	// create a new consumer with a fake consumer group name so we can find the offset at 'last'
 	fakeConsumerName := "arkeSourceStatsConsumer"
-	handleMessages := func(cc stream.ConsumerContext, _ *amqp.Message) {
+	handleMessages := func(cc rabbitstream.ConsumerContext, _ *amqp.Message) {
 		if cc.Consumer != nil {
 			// store the offset so requests to QueryOffset will be correct
 			_ = sc.StoreOffset(streamName, fakeConsumerName, cc.Consumer.GetOffset())

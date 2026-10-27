@@ -12,8 +12,8 @@ import (
 
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/message"
-	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
-	"github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/streamenv"
+	rabbitstream "github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
+	"github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/stream"
 	"github.com/sassoftware/arke/internal/util"
 )
 
@@ -24,7 +24,7 @@ const poolKeyName = "PoolName"
 func NewStreamConnection(connStr string, clientIdentifier string, tlsCfg *tls.Config) streamConnectionShim {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &streamConnection{
-		env:              streamenv.New(connStr, tlsCfg),
+		env:              stream.New(connStr, tlsCfg),
 		clientIdentifier: clientIdentifier,
 		publishers:       util.NewConcurrentMap(),
 		ctx:              ctx,
@@ -64,11 +64,11 @@ func fromStreamHeaders(orig map[string]interface{}) map[string]string {
 	return sMap
 }
 
-func toStreamOffset(offset string, lastOffset int64) (stream.OffsetSpecification, error) {
+func toStreamOffset(offset string, lastOffset int64) (rabbitstream.OffsetSpecification, error) {
 	switch strings.ToLower(offset) {
 	case "first":
 		// start consuming from 0
-		return stream.OffsetSpecification{}.First(), nil
+		return rabbitstream.OffsetSpecification{}.First(), nil
 	case "continue":
 		// Valid values for lastOffset:
 		// -1 : Start from the beginning of the stream
@@ -76,15 +76,15 @@ func toStreamOffset(offset string, lastOffset int64) (stream.OffsetSpecification
 		// > 0 : We have processed more than 1 message, start from the next
 		// message because the offset is 0 based.
 		lastOffset++
-		return stream.OffsetSpecification{}.Offset(lastOffset), nil
+		return rabbitstream.OffsetSpecification{}.Offset(lastOffset), nil
 	case "last":
-		return stream.OffsetSpecification{}.Last(), nil
+		return rabbitstream.OffsetSpecification{}.Last(), nil
 	case "next", "":
-		return stream.OffsetSpecification{}.Next(), nil
+		return rabbitstream.OffsetSpecification{}.Next(), nil
 	}
 	pOffset, pErr := strconv.Atoi(offset)
 	if pErr == nil {
-		return stream.OffsetSpecification{}.Offset(int64(pOffset)), nil
+		return rabbitstream.OffsetSpecification{}.Offset(int64(pOffset)), nil
 	}
-	return stream.OffsetSpecification{}, fmt.Errorf("invalid offset: %s", offset)
+	return rabbitstream.OffsetSpecification{}, fmt.Errorf("invalid offset: %s", offset)
 }

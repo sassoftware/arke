@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/streamenv"
+	"github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/stream"
 )
 
 type streamConnectionShim interface {
@@ -31,7 +31,7 @@ type streamConnection struct {
 }
 
 func newStreamConnection(uri string, tlsConfig *tls.Config, brokerDetails *BrokerDetails) *streamConnection {
-	return &streamConnection{env: streamenv.New(uri, tlsConfig), brokerDetails: brokerDetails}
+	return &streamConnection{env: stream.New(uri, tlsConfig), brokerDetails: brokerDetails}
 }
 
 func (sc *streamConnection) Connect() error {

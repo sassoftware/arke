@@ -1,7 +1,7 @@
 // Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-package streamenv
+package stream
 
 import (
 	"crypto/tls"
@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
+	rabbitstream "github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,7 +33,7 @@ func (e *environmentStub) IsClosed() bool {
 	return e.closed
 }
 
-func (e *environmentStub) client() *stream.Environment {
+func (e *environmentStub) client() *rabbitstream.Environment {
 	return nil
 }
 
