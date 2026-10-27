@@ -262,23 +262,20 @@ func (prov *rabbitMQAMQP10Provider) WaitForConnect(ctx context.Context) bool {
 }
 
 func (prov *rabbitMQAMQP10Provider) Stats() *provider.Stats {
-	clients := prov.connections.GetList()
-	stats := &provider.Stats{Clients: make([]*provider.ClientStats, 0, len(clients))}
-	for _, clientIdentifier := range clients {
+	return provider.CollectClientStats(prov.connections.GetList(), func(clientIdentifier string) *provider.ClientStats {
 		bd := prov.getBrokerDetailsByIdentifier(clientIdentifier)
 		if bd == nil {
-			continue
+			return nil
 		}
 
-		stats.Clients = append(stats.Clients, &provider.ClientStats{
+		return &provider.ClientStats{
 			ID:             bd.ClientIdentifier,
 			ActiveMessages: bd.activeMessages.Length(),
 			Streams:        int(atomic.LoadInt64(&bd.ActiveStreams)),
 			Produced:       int(atomic.LoadInt64(&bd.produced)),
 			Consumed:       int(atomic.LoadInt64(&bd.consumed)),
-		})
-	}
-	return stats
+		}
+	})
 }
 
 func (prov *rabbitMQAMQP10Provider) SourceStats(ctx context.Context, source *pb.Source) *pb.SourceStats {

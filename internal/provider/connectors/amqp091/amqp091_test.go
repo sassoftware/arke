@@ -376,6 +376,63 @@ func TestConnect_Stats(t *testing.T) {
 	amock.AssertExpectations(t)
 }
 
+func Test_amqp091provider_Stats(t *testing.T) {
+	t.Run("empty provider returns non-nil stats with no clients", func(t *testing.T) {
+		prov := NewAMQP091Provider().(*amqp091provider)
+
+		stats := prov.Stats()
+
+		assert.NotNil(t, stats)
+		assert.NotNil(t, stats.Clients)
+		assert.Empty(t, stats.Clients)
+	})
+
+	t.Run("returns every client with existing metric fields", func(t *testing.T) {
+		prov := NewAMQP091Provider().(*amqp091provider)
+		first := &BrokerDetails{
+			ClientIdentifier: "client-one",
+			activeMessages:   util.NewConcurrentMap(),
+			ActiveStreams:    2,
+			produced:         3,
+			consumed:         4,
+		}
+		first.activeMessages.Add("message-one", struct{}{})
+		first.activeMessages.Add("message-two", struct{}{})
+		second := &BrokerDetails{
+			ClientIdentifier: "client-two",
+			activeMessages:   util.NewConcurrentMap(),
+			ActiveStreams:    6,
+			produced:         7,
+			consumed:         8,
+		}
+		second.activeMessages.Add("message-three", struct{}{})
+		prov.connections.Add(first.ClientIdentifier, first)
+		prov.connections.Add(second.ClientIdentifier, second)
+
+		stats := prov.Stats()
+
+		assert.Len(t, stats.Clients, 2)
+		clientsByID := make(map[string]*provider.ClientStats, len(stats.Clients))
+		for _, client := range stats.Clients {
+			clientsByID[client.ID] = client
+		}
+		assert.Equal(t, &provider.ClientStats{
+			ID:             "client-one",
+			ActiveMessages: 2,
+			Streams:        2,
+			Produced:       3,
+			Consumed:       4,
+		}, clientsByID["client-one"])
+		assert.Equal(t, &provider.ClientStats{
+			ID:             "client-two",
+			ActiveMessages: 1,
+			Streams:        6,
+			Produced:       7,
+			Consumed:       8,
+		}, clientsByID["client-two"])
+	})
+}
+
 func setupProviderWithSimpleConn(t *testing.T) (provider.Provider, context.Context, func()) {
 	t.Helper()
 	prov := NewAMQP091Provider()

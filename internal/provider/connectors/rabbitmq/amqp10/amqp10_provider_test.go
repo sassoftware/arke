@@ -569,6 +569,19 @@ func Test_amqp10provider_Stats(t *testing.T) {
 		}, clientsByID["client-two"])
 	})
 
+	t.Run("skips entries without broker details", func(t *testing.T) {
+		prov := newTestRabbitMQAMQP10Provider()
+		bd := newStatsTestBrokerDetails("client-one", 1, 2, 3, 4)
+		prov.connections.Add(bd.ClientIdentifier, bd)
+		prov.connections.Add("missing-details", struct{}{})
+
+		stats := prov.Stats()
+
+		require.Len(t, stats.Clients, 1)
+		assert.Equal(t, "client-one", stats.Clients[0].ID)
+		assert.NotContains(t, stats.Clients, (*provider.ClientStats)(nil))
+	})
+
 	t.Run("reads counters prepared with atomic additions", func(t *testing.T) {
 		prov := newTestRabbitMQAMQP10Provider()
 		bd := &BrokerDetails{
