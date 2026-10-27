@@ -61,7 +61,8 @@ Configure the message broker that Arke connects to:
 - **Broker Port**: The broker port (default: `5672` for RabbitMQ)
 - **Username**: Broker authentication username (default: `guest`)
 - **Password**: Broker authentication password (default: `guest`)
-- **Tenant**: Optional tenant passed in the connection configuration (config file key: `broker_tenant`)
+- **Tenant**: Optional tenant passed in the connection configuration
+(config file key: `broker_tenant`)
 - **Broker TLS**: Enable TLS for broker connection (`true`/`false`)
 
 ### 3. Connection Configuration
