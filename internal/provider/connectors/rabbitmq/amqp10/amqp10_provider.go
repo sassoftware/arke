@@ -262,8 +262,9 @@ func (prov *rabbitMQAMQP10Provider) WaitForConnect(ctx context.Context) bool {
 }
 
 func (prov *rabbitMQAMQP10Provider) Stats() *provider.Stats {
-	stats := &provider.Stats{Clients: make([]*provider.ClientStats, 0)}
-	for _, clientIdentifier := range prov.connections.GetList() {
+	clients := prov.connections.GetList()
+	stats := &provider.Stats{Clients: make([]*provider.ClientStats, 0, len(clients))}
+	for _, clientIdentifier := range clients {
 		bd := prov.getBrokerDetailsByIdentifier(clientIdentifier)
 		if bd == nil {
 			continue
