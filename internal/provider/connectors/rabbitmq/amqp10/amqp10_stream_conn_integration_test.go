@@ -6,7 +6,6 @@
 package amqp10
 
 import (
-	"crypto/tls"
 	"testing"
 
 	"github.com/sassoftware/arke/internal/provider/connectors/amqp"
@@ -41,13 +40,6 @@ func Test_streamConnectionIntegrationLifecycle(t *testing.T) {
 func Test_amqp10ProviderConnectDoesNotRequireStreamConnection(t *testing.T) {
 	ctx, clientIdentifier := newTestProviderContext(t, "connect-without-stream")
 	prov := newTestRabbitMQAMQP10Provider()
-	originalFactory := newStreamEnvironmentFunc
-	t.Cleanup(func() { newStreamEnvironmentFunc = originalFactory })
-	streamFactoryCalls := 0
-	newStreamEnvironmentFunc = func(string, *tls.Config) (streamEnvironmentShim, error) {
-		streamFactoryCalls++
-		return nil, assert.AnError
-	}
 
 	connectErr := prov.Connect(ctx, newTestConnectionConfig(), false)
 	if connectErr == nil {
@@ -59,5 +51,4 @@ func Test_amqp10ProviderConnectDoesNotRequireStreamConnection(t *testing.T) {
 	require.NotNil(t, brokerDetails)
 	require.NotNil(t, brokerDetails.StreamConnection)
 	assert.True(t, brokerDetails.StreamConnection.IsClosed())
-	assert.Zero(t, streamFactoryCalls)
 }

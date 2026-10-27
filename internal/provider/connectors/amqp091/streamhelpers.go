@@ -13,21 +13,18 @@ import (
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/message"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
+	"github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/streamenv"
 	"github.com/sassoftware/arke/internal/util"
 )
 
-const maxProducers = 100
 const maxPoolProducers = 10
-const maxConsumers = 10
 const poolKeyName = "PoolName"
 
 // NewStreamConnection Create a new streamConnection object with a connection string and tls config
 func NewStreamConnection(connStr string, clientIdentifier string, tlsCfg *tls.Config) streamConnectionShim {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &streamConnection{maxProducers: maxProducers,
-		maxConsumers:     maxConsumers,
-		connStr:          connStr,
-		tlsCfg:           tlsCfg,
+	return &streamConnection{
+		env:              streamenv.New(connStr, tlsCfg),
 		clientIdentifier: clientIdentifier,
 		publishers:       util.NewConcurrentMap(),
 		ctx:              ctx,

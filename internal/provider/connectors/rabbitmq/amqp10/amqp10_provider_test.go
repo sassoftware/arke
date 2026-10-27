@@ -226,13 +226,6 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		ctx, clientIdentifier := newTestProviderContext(t, "connect-lazy-stream")
 		prov := newTestRabbitMQAMQP10Provider()
 		mockSpyAmqp10Environment(t)
-		originalFactory := newStreamEnvironmentFunc
-		t.Cleanup(func() { newStreamEnvironmentFunc = originalFactory })
-		streamFactoryCalls := 0
-		newStreamEnvironmentFunc = func(string, *tls.Config) (streamEnvironmentShim, error) {
-			streamFactoryCalls++
-			return nil, fmt.Errorf("stream connection should remain lazy")
-		}
 
 		connectErr := prov.Connect(ctx, newTestConnectionConfig(), false)
 		if connectErr == nil {
@@ -251,7 +244,6 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		require.NotNil(t, bd)
 		require.NotNil(t, bd.StreamConnection)
 		assert.True(t, bd.StreamConnection.IsClosed())
-		assert.Equal(t, 0, streamFactoryCalls)
 	})
 
 	t.Run("rejects nil connection configuration", func(t *testing.T) {

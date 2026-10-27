@@ -5,7 +5,6 @@ package amqp091
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -15,6 +14,7 @@ import (
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/ha"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/message"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
+	"github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/streamenv"
 	"github.com/sassoftware/arke/internal/util"
 )
 
@@ -32,12 +32,8 @@ type streamConnectionShim interface {
 }
 
 type streamConnection struct {
-	env              *stream.Environment
+	env              *streamenv.Environment
 	envLock          sync.Mutex
-	maxProducers     int
-	maxConsumers     int
-	connStr          string
-	tlsCfg           *tls.Config
 	clientIdentifier string
 	clientDisconnect atomic.Bool
 	publishers       *util.ConcurrentMap
@@ -90,19 +86,7 @@ type streamMessageResponseShim interface {
 func (sc *streamConnection) Connect() error {
 	sc.envLock.Lock()
 	defer sc.envLock.Unlock()
-	env, err := stream.NewEnvironment(
-		stream.NewEnvironmentOptions().
-			SetMaxProducersPerClient(sc.getMaxProducers()).
-			SetMaxConsumersPerClient(sc.getMaxConsumers()).
-			SetUri(sc.connStr).
-			SetTLSConfig(sc.tlsCfg))
-
-	if err != nil {
-		return err
-	}
-	sc.env = env
-
-	return nil
+	return sc.env.Connect()
 }
 
 func (sc *streamConnection) Close() error {
@@ -110,9 +94,6 @@ func (sc *streamConnection) Close() error {
 	sc.envLock.Lock()
 	defer sc.envLock.Unlock()
 	sc.cancel()
-	if sc.env.IsClosed() {
-		return nil
-	}
 	return sc.env.Close()
 }
 
@@ -198,7 +179,7 @@ func (sc *streamConnection) newPublisher(streamName, publisherName string, confi
 
 	sc.envLock.Lock()
 	defer sc.envLock.Unlock()
-	producer, err := ha.NewReliableProducer(sc.env, streamName, options, handler)
+	producer, err := ha.NewReliableProducer(sc.env.Client(), streamName, options, handler)
 	if err != nil {
 		util.Logger.Debugf("Error creating publisher : %v\n", err)
 		return nil
@@ -210,10 +191,11 @@ func (sc *streamConnection) newPublisher(streamName, publisherName string, confi
 func (sc *streamConnection) NewConsumer(streamName string, consumerName string, offset string, handler stream.MessagesHandler, singleActive bool) (streamConsumerShim, error) {
 	sc.envLock.Lock()
 	defer sc.envLock.Unlock()
+	env := sc.env.Client()
 	// QueryOffset returns an error if the consumer has yet to store an
 	// offset, so we ignore any errors and use the offset returned which
 	// is 0 on error
-	lastOffset, oErr := sc.env.QueryOffset(consumerName, streamName)
+	lastOffset, oErr := env.QueryOffset(consumerName, streamName)
 	if oErr != nil {
 		lastOffset = -1
 	}
@@ -228,7 +210,7 @@ func (sc *streamConnection) NewConsumer(streamName string, consumerName string, 
 		cuf := func(streamName string, _ bool) stream.OffsetSpecification {
 			util.Logger.Debugf("client %s with consumer %s on stream %s promoted to active consumer", sc.clientIdentifier, consumerName, streamName)
 
-			offset, err := sc.env.QueryOffset(consumerName, streamName)
+			offset, err := env.QueryOffset(consumerName, streamName)
 			if err != nil {
 				return stream.OffsetSpecification{}.First()
 			}
@@ -243,7 +225,7 @@ func (sc *streamConnection) NewConsumer(streamName string, consumerName string, 
 	util.Logger.Debugf("Creating consumer %s for stream %s with offset %d", consumerName, streamName, sOffset)
 
 	consumer, err := ha.NewReliableConsumer(
-		sc.env,
+		env,
 		streamName,
 		stream.NewConsumerOptions().
 			SetManualCommit(). // disable auto commit
@@ -266,18 +248,18 @@ func (sc *streamConnection) DeclareStream(streamName string, ttl int64) error {
 	}
 	sc.envLock.Lock()
 	defer sc.envLock.Unlock()
-	return sc.env.DeclareStream(streamName, opts)
+	return sc.env.Client().DeclareStream(streamName, opts)
 }
 
 func (sc *streamConnection) GetConsumerOffset(streamName string, consumerName string) (int64, error) {
-	offset, qErr := sc.env.QueryOffset(consumerName, streamName)
+	offset, qErr := sc.env.Client().QueryOffset(consumerName, streamName)
 	util.Logger.Debugf("GetConsumerOffset (%s)(%s)(%d) [%v]", consumerName, streamName, offset, qErr)
 	return offset, qErr
 }
 
 func (sc *streamConnection) StoreOffset(streamName string, consumerName string, offset int64) error {
 	util.Logger.Tracef("StoreOffset (%s)(%s)(%d)", consumerName, streamName, offset)
-	return sc.env.StoreOffset(consumerName, streamName, offset)
+	return sc.env.Client().StoreOffset(consumerName, streamName, offset)
 }
 
 func (sc *streamConnection) GetStreamOffset(streamName string) (int64, error) {
@@ -297,20 +279,6 @@ func (sc *streamConnection) GetStreamOffset(streamName string) (int64, error) {
 	}
 	defer cons.Close()
 	return sc.GetConsumerOffset(streamName, fakeConsumerName)
-}
-
-func (sc *streamConnection) getMaxProducers() int {
-	if sc.maxProducers < 1 {
-		return 1
-	}
-	return sc.maxProducers
-}
-
-func (sc *streamConnection) getMaxConsumers() int {
-	if sc.maxConsumers < 1 {
-		return 1
-	}
-	return sc.maxConsumers
 }
 
 func (sp streamPublisher) GetPublisherName() string {

@@ -4,7 +4,6 @@
 package amqp10
 
 import (
-	"crypto/tls"
 	"errors"
 	"testing"
 	"time"
@@ -15,16 +14,31 @@ import (
 )
 
 type streamEnvironmentStub struct {
-	closed    bool
-	closeErr  error
-	closeCall int
+	closed      bool
+	closeErr    error
+	closeCall   int
+	connectCall int
+	connectFunc func() error
+}
+
+func (e *streamEnvironmentStub) Connect() error {
+	e.connectCall++
+	var err error
+	if e.connectFunc != nil {
+		err = e.connectFunc()
+	}
+	if err == nil {
+		e.closed = false
+	}
+	return err
 }
 
 func (e *streamEnvironmentStub) Close() error {
-	e.closeCall++
-	if e.closeErr == nil {
-		e.closed = true
+	if e.closed {
+		return nil
 	}
+	e.closeCall++
+	e.closed = true
 	return e.closeErr
 }
 
@@ -59,76 +73,40 @@ func (c *streamConnectionStub) IsClosed() bool {
 }
 
 func Test_streamConnection_Connect(t *testing.T) {
-	t.Run("creates and stores environment with configured URI and TLS", func(t *testing.T) {
-		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-		connection := newStreamConnection("rabbitmq-stream+tls://guest:guest@localhost:5552/%2F", tlsConfig, nil)
-		environment := &streamEnvironmentStub{}
-		originalFactory := newStreamEnvironmentFunc
-		t.Cleanup(func() { newStreamEnvironmentFunc = originalFactory })
-		calls := 0
-		newStreamEnvironmentFunc = func(uri string, gotTLSConfig *tls.Config) (streamEnvironmentShim, error) {
-			calls++
-			assert.Equal(t, connection.streamURI, uri)
-			assert.Same(t, tlsConfig, gotTLSConfig)
-			return environment, nil
-		}
+	t.Run("connects the shared environment", func(t *testing.T) {
+		connection := newStreamConnection("rabbitmq-stream://guest:guest@localhost:5552/%2F", nil, nil)
+		environment := &streamEnvironmentStub{closed: true}
+		connection.env = environment
 
 		require.NoError(t, connection.Connect())
 
-		assert.Equal(t, 1, calls)
-		assert.Same(t, environment, connection.env)
+		assert.Equal(t, 1, environment.connectCall)
 		assert.False(t, connection.IsClosed())
 	})
 
-	t.Run("failed creation is retryable", func(t *testing.T) {
+	t.Run("failed environment connection is retryable", func(t *testing.T) {
 		connection := newStreamConnection("rabbitmq-stream://guest:guest@localhost:5552/%2F", nil, nil)
-		environment := &streamEnvironmentStub{}
-		originalFactory := newStreamEnvironmentFunc
-		t.Cleanup(func() { newStreamEnvironmentFunc = originalFactory })
-		calls := 0
+		environment := &streamEnvironmentStub{closed: true}
 		creationErr := errors.New("stream environment creation failed")
-		newStreamEnvironmentFunc = func(string, *tls.Config) (streamEnvironmentShim, error) {
-			calls++
-			if calls == 1 {
-				return nil, creationErr
+		environment.connectFunc = func() error {
+			if environment.connectCall == 1 {
+				return creationErr
 			}
-			return environment, nil
+			return nil
 		}
+		connection.env = environment
 
 		assert.ErrorIs(t, connection.Connect(), creationErr)
-		assert.Nil(t, connection.env)
 		require.NoError(t, connection.Connect())
-		assert.Same(t, environment, connection.env)
-		assert.Equal(t, 2, calls)
-	})
-
-	t.Run("cleans up a partially created environment", func(t *testing.T) {
-		connection := newStreamConnection("rabbitmq-stream://guest:guest@localhost:5552/%2F", nil, nil)
-		environment := &streamEnvironmentStub{}
-		creationErr := errors.New("stream environment setup failed")
-		originalFactory := newStreamEnvironmentFunc
-		t.Cleanup(func() { newStreamEnvironmentFunc = originalFactory })
-		newStreamEnvironmentFunc = func(string, *tls.Config) (streamEnvironmentShim, error) {
-			return environment, creationErr
-		}
-
-		assert.ErrorIs(t, connection.Connect(), creationErr)
-		assert.Nil(t, connection.env)
-		assert.Equal(t, 1, environment.closeCall)
+		assert.Equal(t, 2, environment.connectCall)
 	})
 
 	t.Run("does not replace an existing open environment", func(t *testing.T) {
 		environment := &streamEnvironmentStub{}
 		connection := &streamConnection{env: environment}
-		originalFactory := newStreamEnvironmentFunc
-		t.Cleanup(func() { newStreamEnvironmentFunc = originalFactory })
-		newStreamEnvironmentFunc = func(string, *tls.Config) (streamEnvironmentShim, error) {
-			t.Fatal("factory should not be called for an open environment")
-			return nil, nil
-		}
 
 		require.NoError(t, connection.Connect())
-		assert.Same(t, environment, connection.env)
+		assert.Zero(t, environment.connectCall)
 	})
 }
 
@@ -140,12 +118,7 @@ func Test_streamConnection_Close(t *testing.T) {
 
 	t.Run("repeated close is safe", func(t *testing.T) {
 		environment := &streamEnvironmentStub{}
-		connection := newStreamConnection("rabbitmq-stream://guest:guest@localhost:5552/%2F", nil, nil)
-		originalFactory := newStreamEnvironmentFunc
-		t.Cleanup(func() { newStreamEnvironmentFunc = originalFactory })
-		newStreamEnvironmentFunc = func(string, *tls.Config) (streamEnvironmentShim, error) {
-			return environment, nil
-		}
+		connection := &streamConnection{env: environment}
 		require.NoError(t, connection.Connect())
 
 		require.NoError(t, connection.Close())
@@ -185,18 +158,13 @@ func Test_streamConnection_ConnectAfterDisconnect(t *testing.T) {
 		bd := newTestBrokerDetails()
 		bd.state.Store(provider.DISCONNECTED)
 		bd.clientDisconnect.Store(true)
-		factoryCalls := 0
-		originalFactory := newStreamEnvironmentFunc
-		t.Cleanup(func() { newStreamEnvironmentFunc = originalFactory })
-		newStreamEnvironmentFunc = func(string, *tls.Config) (streamEnvironmentShim, error) {
-			factoryCalls++
-			return &streamEnvironmentStub{}, nil
-		}
 		connection := newStreamConnection("rabbitmq-stream://guest:guest@localhost:5552/%2F", nil, bd)
+		environment := &streamEnvironmentStub{closed: true}
+		connection.env = environment
 
 		require.ErrorContains(t, connection.Connect(), "disconnected")
 
-		assert.Zero(t, factoryCalls)
+		assert.Zero(t, environment.connectCall)
 		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
 		assert.True(t, connection.IsClosed())
 	})
@@ -204,17 +172,16 @@ func Test_streamConnection_ConnectAfterDisconnect(t *testing.T) {
 	t.Run("closes a newly created environment if disconnect races with creation", func(t *testing.T) {
 		bd := newTestBrokerDetails()
 		bd.state.Store(provider.CONNECTED)
-		environment := &streamEnvironmentStub{}
+		environment := &streamEnvironmentStub{closed: true}
 		started := make(chan struct{})
 		release := make(chan struct{})
-		originalFactory := newStreamEnvironmentFunc
-		t.Cleanup(func() { newStreamEnvironmentFunc = originalFactory })
-		newStreamEnvironmentFunc = func(string, *tls.Config) (streamEnvironmentShim, error) {
+		environment.connectFunc = func() error {
 			close(started)
 			<-release
-			return environment, nil
+			return nil
 		}
 		connection := newStreamConnection("rabbitmq-stream://guest:guest@localhost:5552/%2F", nil, bd)
+		connection.env = environment
 		bd.StreamConnection = connection
 		connectResult := make(chan error, 1)
 		go func() { connectResult <- connection.Connect() }()
@@ -234,7 +201,6 @@ func Test_streamConnection_ConnectAfterDisconnect(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("disconnect did not finish after stream setup completed")
 		}
-		assert.Nil(t, connection.env)
 		assert.Equal(t, 1, environment.closeCall)
 		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
 	})
@@ -245,16 +211,11 @@ func Test_streamConnection_ConnectAfterDisconnect(t *testing.T) {
 		connection := newStreamConnection("rabbitmq-stream://guest:guest@localhost:5552/%2F", nil, bd)
 		bd.disconnect()
 
-		factoryCalls := 0
-		originalFactory := newStreamEnvironmentFunc
-		t.Cleanup(func() { newStreamEnvironmentFunc = originalFactory })
-		newStreamEnvironmentFunc = func(string, *tls.Config) (streamEnvironmentShim, error) {
-			factoryCalls++
-			return &streamEnvironmentStub{}, nil
-		}
+		environment := &streamEnvironmentStub{closed: true}
+		connection.env = environment
 
 		require.ErrorContains(t, connection.Connect(), "disconnected")
-		assert.Zero(t, factoryCalls)
+		assert.Zero(t, environment.connectCall)
 		assert.Equal(t, uint32(provider.CLOSED), bd.state.Load())
 	})
 }
