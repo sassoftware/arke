@@ -143,10 +143,9 @@ func Test_GetConnURL(t *testing.T) {
 
 func Test_GetStreamConnURL(t *testing.T) {
 	tests := []struct {
-		name       string
-		config     *pb.ConnectionConfiguration
-		tlsEnabled bool
-		expected   string
+		name     string
+		config   *pb.ConnectionConfiguration
+		expected string
 	}{
 		{
 			name: "non TLS uses stream port and root tenant",
@@ -160,8 +159,7 @@ func Test_GetStreamConnURL(t *testing.T) {
 			expected: "rabbitmq-stream://guest:guest@localhost:5552/%2F",
 		},
 		{
-			name:       "TLS escapes credentials and non-default tenant",
-			tlsEnabled: true,
+			name: "TLS escapes credentials and non-default tenant",
 			config: &pb.ConnectionConfiguration{
 				Host:   "rabbit.example",
 				Tls:    true,
@@ -189,7 +187,7 @@ func Test_GetStreamConnURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, GetStreamConnURL(tt.config, tt.tlsEnabled))
+			assert.Equal(t, tt.expected, GetStreamConnURL(tt.config))
 		})
 	}
 }

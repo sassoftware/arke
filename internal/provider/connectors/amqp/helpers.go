@@ -75,7 +75,7 @@ func GetAMQPConnURL(cf *pb.ConnectionConfiguration) string {
 	return buildConnURL(scheme, userInfo, hostPort, path)
 }
 
-func GetStreamConnURL(cf *pb.ConnectionConfiguration, tlsEnabled bool) string {
+func GetStreamConnURL(cf *pb.ConnectionConfiguration) string {
 	username := cf.GetCredentials().GetUsername()
 	password := cf.GetCredentials().GetPassword()
 	tenant := cf.GetTenant()
@@ -84,7 +84,7 @@ func GetStreamConnURL(cf *pb.ConnectionConfiguration, tlsEnabled bool) string {
 	}
 
 	scheme := "rabbitmq-stream"
-	if tlsEnabled {
+	if cf.GetTls() {
 		scheme += "+tls"
 	}
 	userInfo := url.QueryEscape(username) + ":" + url.QueryEscape(password)

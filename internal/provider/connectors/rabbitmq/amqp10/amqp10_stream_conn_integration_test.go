@@ -23,7 +23,7 @@ import (
 //	  -run 'Test_(streamConnectionIntegrationLifecycle|amqp10ProviderConnectDoesNotRequireStreamConnection)' \
 //	  -count=1 -v
 func Test_streamConnectionIntegrationLifecycle(t *testing.T) {
-	connection := newStreamConnection(amqp.GetStreamConnURL(newTestConnectionConfig(), false), nil, nil)
+	connection := newStreamConnection(amqp.GetStreamConnURL(newTestConnectionConfig()), nil, nil)
 	assert.True(t, connection.IsClosed())
 
 	require.NoError(t, connection.Connect())

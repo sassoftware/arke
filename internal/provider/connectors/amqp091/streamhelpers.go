@@ -13,7 +13,6 @@ import (
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/message"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
-	arkeamqp "github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/sassoftware/arke/internal/util"
 )
 
@@ -38,10 +37,6 @@ func NewStreamConnection(connStr string, clientIdentifier string, tlsCfg *tls.Co
 
 type CtxKey struct {
 	name string
-}
-
-func getStreamConnectionString(bd *BrokerDetails) string {
-	return arkeamqp.GetStreamConnURL(bd.connectionConfig, bd.tlsEnabled)
 }
 
 func toStreamMessage(origMsg streamMessage) message.StreamMessage {
