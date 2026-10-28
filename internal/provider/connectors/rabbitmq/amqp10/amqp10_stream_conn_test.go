@@ -5,20 +5,38 @@ package amqp10
 
 import (
 	"errors"
+	"reflect"
+	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
+	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
+	rabbitstream "github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
 	"github.com/sassoftware/arke/internal/provider"
+	"github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/stream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type streamEnvironmentStub struct {
-	closed      bool
-	closeErr    error
-	closeCall   int
-	connectCall int
-	connectFunc func() error
+	closed         bool
+	closeErr       error
+	closeCall      int
+	connectCall    int
+	connectFunc    func() error
+	consumer       stream.Consumer
+	consumerErr    error
+	queryOffset    int64
+	queryErr       error
+	storeErr       error
+	storedOffset   int64
+	storedName     string
+	storedStream   string
+	options        *rabbitstream.ConsumerOptions
+	handler        rabbitstream.MessagesHandler
+	handlerDelay   time.Duration
+	consumerStream string
 }
 
 func (e *streamEnvironmentStub) Connect() error {
@@ -46,10 +64,68 @@ func (e *streamEnvironmentStub) IsClosed() bool {
 	return e.closed
 }
 
+func (e *streamEnvironmentStub) NewConsumer(streamName string, handler rabbitstream.MessagesHandler, options *rabbitstream.ConsumerOptions) (stream.Consumer, error) {
+	e.consumerStream = streamName
+	e.handler = handler
+	e.options = options
+	if e.consumerErr != nil {
+		return nil, e.consumerErr
+	}
+	if handler != nil && e.consumer != nil {
+		deliver := func() {
+			handler(testStreamConsumerContext(e.queryOffset), &amqp.Message{})
+		}
+		if e.handlerDelay > 0 {
+			go func() {
+				time.Sleep(e.handlerDelay)
+				deliver()
+			}()
+		} else {
+			deliver()
+		}
+	}
+	return e.consumer, nil
+}
+
+func (e *streamEnvironmentStub) QueryOffset(string, string) (int64, error) {
+	if e.queryErr != nil {
+		return 0, e.queryErr
+	}
+	return e.storedOffset, nil
+}
+
+func (e *streamEnvironmentStub) StoreOffset(consumerName string, streamName string, offset int64) error {
+	e.storedName = consumerName
+	e.storedStream = streamName
+	e.storedOffset = offset
+	return e.storeErr
+}
+
+type streamOffsetConsumerStub struct {
+	closeCalls int
+	closeErr   error
+}
+
+func (c *streamOffsetConsumerStub) Close() error {
+	c.closeCalls++
+	return c.closeErr
+}
+
+func testStreamConsumerContext(offset int64) rabbitstream.ConsumerContext {
+	consumer := &rabbitstream.Consumer{}
+	value := reflect.ValueOf(consumer).Elem().FieldByName("currentOffset")
+	reflect.NewAt(value.Type(), unsafe.Pointer(value.UnsafeAddr())).Elem().SetInt(offset)
+	mutex := reflect.ValueOf(consumer).Elem().FieldByName("mutex")
+	reflect.NewAt(mutex.Type(), unsafe.Pointer(mutex.UnsafeAddr())).Elem().Set(reflect.ValueOf(&sync.RWMutex{}))
+	return rabbitstream.ConsumerContext{Consumer: consumer}
+}
+
 type streamConnectionStub struct {
 	closed    bool
 	closeErr  error
 	closeCall int
+	offset    int64
+	offsetErr error
 }
 
 func (c *streamConnectionStub) Connect() error {
@@ -70,6 +146,10 @@ func (c *streamConnectionStub) Close() error {
 
 func (c *streamConnectionStub) IsClosed() bool {
 	return c.closed
+}
+
+func (c *streamConnectionStub) GetStreamOffset(string) (int64, error) {
+	return c.offset, c.offsetErr
 }
 
 func Test_streamConnection_Connect(t *testing.T) {
@@ -150,6 +230,83 @@ func Test_streamConnection_IsClosed(t *testing.T) {
 
 		connection.env.(*streamEnvironmentStub).closed = true
 		assert.True(t, connection.IsClosed())
+	})
+}
+
+func Test_streamConnection_GetStreamOffset(t *testing.T) {
+	t.Run("returns an environment connection error", func(t *testing.T) {
+		connectErr := errors.New("stream environment connection failed")
+		environment := &streamEnvironmentStub{closed: true, connectFunc: func() error { return connectErr }}
+		connection := &streamConnection{env: environment}
+
+		_, err := connection.GetStreamOffset("orders")
+
+		assert.ErrorIs(t, err, connectErr)
+	})
+
+	t.Run("returns the stored offset and closes the temporary consumer", func(t *testing.T) {
+		consumer := &streamOffsetConsumerStub{}
+		environment := &streamEnvironmentStub{consumer: consumer, queryOffset: 17}
+		connection := &streamConnection{env: environment}
+
+		offset, err := connection.GetStreamOffset("orders")
+
+		require.NoError(t, err)
+		assert.Equal(t, int64(17), offset)
+		assert.Equal(t, "orders", environment.consumerStream)
+		assert.Equal(t, statsConsumerName, environment.options.ConsumerName)
+		assert.Equal(t, statsConsumerName, environment.options.ClientProvidedName)
+		assert.Equal(t, "last", environment.options.Offset.String())
+		assert.Equal(t, statsConsumerName, environment.storedName)
+		assert.Equal(t, "orders", environment.storedStream)
+		assert.Equal(t, int64(17), environment.storedOffset)
+		assert.Equal(t, 1, consumer.closeCalls)
+	})
+
+	t.Run("waits for asynchronous tail delivery before querying the offset", func(t *testing.T) {
+		consumer := &streamOffsetConsumerStub{}
+		environment := &streamEnvironmentStub{consumer: consumer, queryOffset: 19, handlerDelay: 10 * time.Millisecond}
+		connection := &streamConnection{env: environment}
+
+		offset, err := connection.GetStreamOffset("orders")
+
+		require.NoError(t, err)
+		assert.Equal(t, int64(19), offset)
+		assert.Equal(t, int64(19), environment.storedOffset)
+		assert.Equal(t, 1, consumer.closeCalls)
+	})
+
+	t.Run("preserves the empty stream error and closes the temporary consumer", func(t *testing.T) {
+		consumer := &streamOffsetConsumerStub{}
+		environment := &streamEnvironmentStub{consumer: consumer, queryErr: errors.New("Offset not found")}
+		connection := &streamConnection{env: environment}
+
+		_, err := connection.GetStreamOffset("empty")
+
+		require.EqualError(t, err, "Offset not found")
+		assert.Equal(t, 1, consumer.closeCalls)
+	})
+
+	t.Run("does not close a consumer that failed to be created", func(t *testing.T) {
+		consumerErr := errors.New("consumer creation failed")
+		environment := &streamEnvironmentStub{consumerErr: consumerErr}
+		connection := &streamConnection{env: environment}
+
+		_, err := connection.GetStreamOffset("orders")
+
+		assert.ErrorIs(t, err, consumerErr)
+	})
+
+	t.Run("returns a close error after successful retrieval", func(t *testing.T) {
+		closeErr := errors.New("consumer close failed")
+		consumer := &streamOffsetConsumerStub{closeErr: closeErr}
+		environment := &streamEnvironmentStub{consumer: consumer, queryOffset: 17}
+		connection := &streamConnection{env: environment}
+
+		_, err := connection.GetStreamOffset("orders")
+
+		assert.ErrorIs(t, err, closeErr)
+		assert.Equal(t, 1, consumer.closeCalls)
 	})
 }
 

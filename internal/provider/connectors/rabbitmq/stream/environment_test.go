@@ -15,9 +15,17 @@ import (
 )
 
 type environmentStub struct {
-	closed    bool
-	closeErr  error
-	closeCall int
+	closed         bool
+	closeErr       error
+	closeCall      int
+	consumer       Consumer
+	consumerErr    error
+	queryOffset    int64
+	queryOffsetErr error
+	storedConsumer string
+	storedStream   string
+	storedOffset   int64
+	storeOffsetErr error
 }
 
 func (e *environmentStub) Close() error {
@@ -35,6 +43,21 @@ func (e *environmentStub) IsClosed() bool {
 
 func (e *environmentStub) client() *rabbitstream.Environment {
 	return nil
+}
+
+func (e *environmentStub) NewConsumer(string, rabbitstream.MessagesHandler, *rabbitstream.ConsumerOptions) (Consumer, error) {
+	return e.consumer, e.consumerErr
+}
+
+func (e *environmentStub) QueryOffset(string, string) (int64, error) {
+	return e.queryOffset, e.queryOffsetErr
+}
+
+func (e *environmentStub) StoreOffset(consumerName string, streamName string, offset int64) error {
+	e.storedConsumer = consumerName
+	e.storedStream = streamName
+	e.storedOffset = offset
+	return e.storeOffsetErr
 }
 
 func replaceEnvironmentFactory(t *testing.T, factory func(environmentConfig) (environmentShim, error)) {
@@ -125,6 +148,33 @@ func TestEnvironment_Connect(t *testing.T) {
 		assert.Equal(t, 1, calls)
 	})
 }
+
+func TestEnvironment_StreamOffsetOperations(t *testing.T) {
+	connection := New("rabbitmq-stream://localhost:5552/%2F", nil)
+	consumer := &consumerStub{}
+	environment := &environmentStub{consumer: consumer, queryOffset: 17}
+	replaceEnvironmentFactory(t, func(environmentConfig) (environmentShim, error) {
+		return environment, nil
+	})
+	require.NoError(t, connection.Connect())
+
+	gotConsumer, err := connection.NewConsumer("orders", nil, nil)
+	require.NoError(t, err)
+	assert.Same(t, consumer, gotConsumer)
+
+	offset, err := connection.QueryOffset("stats", "orders")
+	require.NoError(t, err)
+	assert.Equal(t, int64(17), offset)
+
+	require.NoError(t, connection.StoreOffset("stats", "orders", offset))
+	assert.Equal(t, "stats", environment.storedConsumer)
+	assert.Equal(t, "orders", environment.storedStream)
+	assert.Equal(t, int64(17), environment.storedOffset)
+}
+
+type consumerStub struct{}
+
+func (*consumerStub) Close() error { return nil }
 
 func TestEnvironment_Close(t *testing.T) {
 	t.Run("is safe before Connect", func(t *testing.T) {
