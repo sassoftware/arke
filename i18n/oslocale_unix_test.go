@@ -7,34 +7,33 @@
 package i18n
 
 import (
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
 func TestDetectIETF_LC_ALL(t *testing.T) {
-	os.Setenv(EnvLcAll, "fr_FR.UTF-8")
+	t.Setenv(EnvLcAll, "fr_FR.UTF-8")
 	result, _ := DetectIETF()
 	assert.Equal(t, result, "fr-FR")
 }
 
 func TestDetectIETF_LANG(t *testing.T) {
-	os.Setenv(EnvLang, "fr_FR.UTF-8")
+	t.Setenv(EnvLang, "fr_FR.UTF-8")
 	result, _ := DetectIETF()
 	assert.Equal(t, result, "fr-FR")
 }
 
 func TestDetectIETF_Blank(t *testing.T) {
-	os.Setenv(EnvLcAll, "")
-	os.Setenv(EnvLang, "")
+	t.Setenv(EnvLcAll, "")
+	t.Setenv(EnvLang, "")
 	result, _ := DetectIETF()
 	assert.Equal(t, result, "")
 }
 
 func TestStandardInit(t *testing.T) {
-	os.Unsetenv(EnvLang)
-	os.Unsetenv(EnvLcAll)
+	t.Setenv(EnvLang, "")
+	t.Setenv(EnvLcAll, "")
 	locale, _ := DetectIETF()
 	if locale == "" {
 		locale = defaultLanguage
@@ -43,23 +42,21 @@ func TestStandardInit(t *testing.T) {
 }
 
 func TestLangC(t *testing.T) {
-	os.Unsetenv(EnvLcAll)
-	os.Setenv(EnvLang, "C")
+	t.Setenv(EnvLcAll, "")
+	t.Setenv(EnvLang, "C")
 	locale, err := DetectIETF()
 	assert.NotNil(t, err)
 	assert.Equal(t, "", locale)
 
-	os.Setenv(EnvLang, "C.UTF-8")
-	defer os.Unsetenv(EnvLang)
+	t.Setenv(EnvLang, "C.UTF-8")
 	locale, err = DetectIETF()
 	assert.NotNil(t, err)
 	assert.Equal(t, "", locale)
 }
 
 func TestInvalidLang(t *testing.T) {
-	os.Unsetenv(EnvLcAll)
-	os.Setenv(EnvLang, "invalid")
-	defer os.Unsetenv(EnvLang)
+	t.Setenv(EnvLcAll, "")
+	t.Setenv(EnvLang, "invalid")
 	locale, err := DetectIETF()
 	assert.NotNil(t, err)
 	assert.Equal(t, "", locale)

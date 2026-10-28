@@ -29,43 +29,37 @@ func TestArgsInit(t *testing.T) {
 		},
 		{
 			name:     "cli args override",
-			Lang:     "en-US",
+			Lang:     localeEnUS,
 			LcAll:    "",
 			args:     []string{"a", "--locale", "zh"},
 			expected: "zh",
 		},
 		{
 			name:     EnvLang,
-			Lang:     "en-US",
+			Lang:     localeEnUS,
 			LcAll:    "",
 			args:     []string{"a"},
-			expected: "en-US",
+			expected: localeEnUS,
 		},
 		{
 			name:     EnvLcAll,
 			Lang:     "",
-			LcAll:    "de-DE",
+			LcAll:    localeDeDE,
 			args:     []string{"a"},
-			expected: "de-DE",
+			expected: localeDeDE,
 		},
 		{
 			name:     EnvLcAll + " priority",
 			Lang:     "zh-Hans",
-			LcAll:    "de-DE",
+			LcAll:    localeDeDE,
 			args:     []string{"a"},
-			expected: "de-DE",
+			expected: localeDeDE,
 		},
 	}
 	for _, c := range cases {
-		oldLang := os.Getenv(EnvLang)
-		oldLCAll := os.Getenv(EnvLcAll)
-		defer func() {
-			os.Setenv(EnvLang, oldLang)
-			os.Setenv(EnvLcAll, oldLCAll)
-		}()
 		t.Run(c.name, func(t *testing.T) {
-			os.Setenv(EnvLang, c.Lang)
-			os.Setenv(EnvLcAll, c.LcAll)
+			t.Setenv(EnvLang, c.Lang)
+			t.Setenv(EnvLcAll, c.LcAll)
 			os.Args = c.args
 			l10Messages = nil
 			SystemLocale = ""

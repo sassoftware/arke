@@ -10,14 +10,14 @@ import (
 )
 
 func Test_Constants(t *testing.T) {
-	assert.Equal(t, ClientActMessageGauge, []string{"arke", "client", "active", "messages"})
-	assert.Equal(t, ClientStreamsGauge, []string{"arke", "client", "streams"})
-	assert.Equal(t, ClientConsumedGauge, []string{"arke", "client", "consumed"})
-	assert.Equal(t, ClientProducedGauge, []string{"arke", "client", "produced"})
-	assert.Equal(t, RequestElapsedSummary, []string{"arke", "request", "elapsed"})
-	assert.Equal(t, RequestTotalCounter, []string{"arke", "request", "total"})
-	assert.Equal(t, RecvMsgCounter, []string{"arke", "recvmsg", "total"})
-	assert.Equal(t, SendMsgCounter, []string{"arke", "sendmsg", "total"})
+	assert.Equal(t, ClientActMessageGauge, []string{metricNamespace, metricClient, "active", "messages"})
+	assert.Equal(t, ClientStreamsGauge, []string{metricNamespace, metricClient, "streams"})
+	assert.Equal(t, ClientConsumedGauge, []string{metricNamespace, metricClient, "consumed"})
+	assert.Equal(t, ClientProducedGauge, []string{metricNamespace, metricClient, "produced"})
+	assert.Equal(t, RequestElapsedSummary, []string{metricNamespace, "request", "elapsed"})
+	assert.Equal(t, RequestTotalCounter, []string{metricNamespace, "request", metricTotal})
+	assert.Equal(t, RecvMsgCounter, []string{metricNamespace, "recvmsg", metricTotal})
+	assert.Equal(t, SendMsgCounter, []string{metricNamespace, "sendmsg", metricTotal})
 }
 
 func Test_LabelSet(t *testing.T) {

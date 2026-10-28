@@ -16,7 +16,8 @@ func TestConnectToArke(t *testing.T) {
 	assert.Nil(t, err, "error when connecting to arke: %v", err)
 	assert.NotNil(t, conn, "got a nil connection")
 	if conn != nil {
-		conn.Close()
+		err = conn.Close()
+		assert.NoError(t, err)
 	}
 }
 

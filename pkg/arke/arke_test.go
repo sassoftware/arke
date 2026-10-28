@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"testing"
 	"time"
 
@@ -16,6 +15,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+const testEnforcedTrue = "true"
+const testInvalidValue = "invalid"
 
 func Test_DefaultArkeServer(t *testing.T) {
 	a := DefaultArkeServer().WithCertFilePath("/cert").WithCertKeyPath("/key").WithTLSSkipVerify(true)
@@ -40,13 +42,13 @@ func Test_defaultKAEP(t *testing.T) {
 }
 
 func Test_DefaultArkeServerWithPortEnv(t *testing.T) {
-	os.Setenv("ARKE_PORT", "1234")
+	t.Setenv("ARKE_PORT", "1234")
 	a := DefaultArkeServer()
 	assert.Equal(t, 1234, a.port)
 }
 
 func Test_DefaultArkeServerWithPortEnvWithPortCall(t *testing.T) {
-	os.Setenv("ARKE_PORT", "1234")
+	t.Setenv("ARKE_PORT", "1234")
 	a := DefaultArkeServer().WithPort(1235)
 	assert.Equal(t, 1235, a.port)
 }
@@ -129,7 +131,12 @@ func testHealth(port int) error {
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		err = conn.Close()
+		if err != nil {
+			log.Printf("error closing connection: %v", err)
+		}
+	}()
 	c := pb.NewHealthzClient(conn)
 	ctx := context.Background()
 	_, err = c.Check(ctx)
@@ -179,7 +186,7 @@ func Test_GetRateLimitParameters(t *testing.T) {
 			bucketSize:           "10",
 			refillIntervalSec:    "30",
 			maxAgeStaleClientSec: "60",
-			enforced:             "true",
+			enforced:             testEnforcedTrue,
 			expectedParams: &RateLimitParameters{
 				BucketSize:        10,
 				RefillInterval:    30 * time.Second,
@@ -190,19 +197,19 @@ func Test_GetRateLimitParameters(t *testing.T) {
 		},
 		{
 			name:                 "Invalid bucket size",
-			bucketSize:           "invalid",
+			bucketSize:           testInvalidValue,
 			refillIntervalSec:    "30",
 			maxAgeStaleClientSec: "60",
-			enforced:             "true",
+			enforced:             testEnforcedTrue,
 			expectedParams:       nil,
 			expectError:          true,
 		},
 		{
 			name:                 "Invalid refill interval",
 			bucketSize:           "10",
-			refillIntervalSec:    "invalid",
+			refillIntervalSec:    testInvalidValue,
 			maxAgeStaleClientSec: "60",
-			enforced:             "true",
+			enforced:             testEnforcedTrue,
 			expectedParams:       nil,
 			expectError:          true,
 		},
@@ -210,8 +217,8 @@ func Test_GetRateLimitParameters(t *testing.T) {
 			name:                 "Invalid max age stale client",
 			bucketSize:           "10",
 			refillIntervalSec:    "30",
-			maxAgeStaleClientSec: "invalid",
-			enforced:             "true",
+			maxAgeStaleClientSec: testInvalidValue,
+			enforced:             testEnforcedTrue,
 			expectedParams:       nil,
 			expectError:          true,
 		},

@@ -205,7 +205,7 @@ func stockStreamConsumerContext() stream.ConsumerContext {
 
 func setFieldValue(target any, fieldName string, value any) {
 	rv := reflect.ValueOf(target)
-	for rv.Kind() == reflect.Ptr && !rv.IsNil() {
+	for rv.Kind() == reflect.Pointer && !rv.IsNil() {
 		rv = rv.Elem()
 	}
 	if !rv.CanAddr() {
@@ -537,9 +537,9 @@ func Test_SubscribeStream(t *testing.T) {
 	subjects = append(subjects, "subject1")
 	address := stockAddress()
 	address.Type = pb.Address_STREAM
-	src := &pb.Source{Name: "srcname",
+	src := &pb.Source{Name: testSrcName,
 		Address:       address,
-		Options:       map[string]string{"Offset": "0", "MessageTTL": "500"},
+		Options:       map[string]string{offsetOption: "0", testMessageTTLOption: "500"},
 		Type:          pb.Source_STREAM,
 		PrefetchCount: 4}
 
@@ -646,9 +646,9 @@ func Test_SubscribeStreamBadOpt(t *testing.T) {
 
 	address := stockAddress()
 	address.Type = pb.Address_STREAM
-	src := &pb.Source{Name: "srcname",
+	src := &pb.Source{Name: testSrcName,
 		Address:       address,
-		Options:       map[string]string{"Offset": "0", "BadOpt": "true"},
+		Options:       map[string]string{offsetOption: "0", "BadOpt": "true"},
 		Type:          pb.Source_STREAM,
 		PrefetchCount: 4}
 
@@ -690,9 +690,9 @@ func Test_streamSubscribe(t *testing.T) {
 
 	address := stockAddress()
 	address.Type = pb.Address_STREAM
-	source := &pb.Source{Name: "srcname",
+	source := &pb.Source{Name: testSrcName,
 		Address:       address,
-		Options:       map[string]string{"Offset": "0"},
+		Options:       map[string]string{offsetOption: "0"},
 		Type:          pb.Source_STREAM,
 		PrefetchCount: 4}
 
@@ -806,9 +806,9 @@ func Test_SubscribeStreamAutoDeleteOrExclusive(t *testing.T) {
 
 	address := stockAddress()
 	address.Type = pb.Address_STREAM
-	src := &pb.Source{Name: "srcname",
+	src := &pb.Source{Name: testSrcName,
 		Address:       address,
-		Options:       map[string]string{"Offset": "0"},
+		Options:       map[string]string{offsetOption: "0"},
 		Exclusive:     false,
 		AutoDelete:    true,
 		Type:          pb.Source_STREAM,
@@ -881,9 +881,9 @@ func Test_SubscribeStreamInvalidTTL(t *testing.T) {
 
 	address := stockAddress()
 	address.Type = pb.Address_STREAM
-	src := &pb.Source{Name: "srcname",
+	src := &pb.Source{Name: testSrcName,
 		Address:       address,
-		Options:       map[string]string{"Offset": "0", "MessageTTL": "true"},
+		Options:       map[string]string{offsetOption: "0", testMessageTTLOption: "true"},
 		Type:          pb.Source_STREAM,
 		PrefetchCount: 4}
 
@@ -945,9 +945,9 @@ func Test_SubscribeStreamFailedConn(t *testing.T) {
 
 	address := stockAddress()
 	address.Type = pb.Address_STREAM
-	src := &pb.Source{Name: "srcname",
+	src := &pb.Source{Name: testSrcName,
 		Address:       address,
-		Options:       map[string]string{"Offset": "0"},
+		Options:       map[string]string{offsetOption: "0"},
 		Type:          pb.Source_STREAM,
 		PrefetchCount: 4}
 
@@ -1008,9 +1008,9 @@ func Test_SubscribeStreamNotConn(t *testing.T) {
 
 	address := stockAddress()
 	address.Type = pb.Address_STREAM
-	src := &pb.Source{Name: "srcname",
+	src := &pb.Source{Name: testSrcName,
 		Address:       address,
-		Options:       map[string]string{"Offset": "0"},
+		Options:       map[string]string{offsetOption: "0"},
 		Type:          pb.Source_STREAM,
 		PrefetchCount: 4}
 
@@ -1072,9 +1072,9 @@ func Test_SubscribeStreamFailedDeclare(t *testing.T) {
 
 	address := stockAddress()
 	address.Type = pb.Address_STREAM
-	src := &pb.Source{Name: "srcname",
+	src := &pb.Source{Name: testSrcName,
 		Address:       address,
-		Options:       map[string]string{"Offset": "0", "MessageTTL": "500"},
+		Options:       map[string]string{offsetOption: "0", testMessageTTLOption: "500"},
 		Type:          pb.Source_STREAM,
 		PrefetchCount: 4}
 
@@ -1111,9 +1111,9 @@ func Test_StreamRetry(t *testing.T) {
 
 	address := stockAddress()
 	address.Type = pb.Address_STREAM
-	src := &pb.Source{Name: "srcname",
+	src := &pb.Source{Name: testSrcName,
 		Address:       address,
-		Options:       map[string]string{"Offset": "0", "MessageTTL": "500"},
+		Options:       map[string]string{offsetOption: "0", testMessageTTLOption: "500"},
 		Type:          pb.Source_STREAM,
 		PrefetchCount: 4}
 
@@ -1124,7 +1124,7 @@ func Test_StreamRetry(t *testing.T) {
 
 	pmock := &streamConsumerMock{}
 	pmock.On("Close").Return(nil)
-	smock.On("NewConsumer", src.GetName(), src.GetName(), src.GetOptions()["Offset"], mock.Anything, mock.AnythingOfType("bool")).Return(pmock, nil)
+	smock.On("NewConsumer", src.GetName(), src.GetName(), src.GetOptions()[offsetOption], mock.Anything, mock.AnythingOfType("bool")).Return(pmock, nil)
 	oldNewStreamConn := NewStreamConn
 	NewStreamConn = func(string, string, *tls.Config) streamConnectionShim {
 		return smock
@@ -1206,8 +1206,8 @@ func Test_Subscribe_Stream_DeclareOnly(t *testing.T) {
 			func(t *testing.T) {
 				prov := NewAMQP091Provider()
 
-				addr := &pb.Address{Subjects: []string{"routingkey"}, Name: "address", Type: pb.Address_STREAM}
-				src := &pb.Source{Address: addr, Name: "queue", Type: pb.Source_STREAM, DeclareOnly: true}
+				addr := &pb.Address{Subjects: []string{testRoutingKey}, Name: testAddress, Type: pb.Address_STREAM}
+				src := &pb.Source{Address: addr, Name: testQueue, Type: pb.Source_STREAM, DeclareOnly: true}
 
 				smock := &streamConnectionMock{}
 				smock.On("Connect").Return(nil)
@@ -1307,7 +1307,7 @@ func Test_streamSubscribe_ExchangeAndBindingDeclaration(t *testing.T) {
 				Name:        sourceName,
 				Address:     addr,
 				Type:        pb.Source_STREAM,
-				Options:     map[string]string{"Offset": "0"},
+				Options:     map[string]string{offsetOption: "0"},
 				DeclareOnly: true, // stop after declare; avoids consumer setup
 			}
 
@@ -1447,7 +1447,7 @@ func setupStreamStatsTest(t *testing.T, guard *unconnectedGuardStreamConn) (*amq
 	port, _ := strconv.Atoi(u.Port())
 
 	bd := &BrokerDetails{connectionConfig: &pb.ConnectionConfiguration{
-		Credentials: &pb.Credentials{Username: "user", Password: "password"},
+		Credentials: &pb.Credentials{Username: testUser, Password: testPassword},
 		Host:        u.Hostname(),
 		Tenant:      testTenant,
 		AdminPort:   int32(port), //nolint:gosec
@@ -1458,7 +1458,7 @@ func setupStreamStatsTest(t *testing.T, guard *unconnectedGuardStreamConn) (*amq
 	src := &pb.Source{
 		Name:    "sourceStream",
 		Type:    pb.Source_STREAM,
-		Address: &pb.Address{Name: "addressStream", Type: pb.Address_STREAM, Subjects: []string{"routingkey"}},
+		Address: &pb.Address{Name: "addressStream", Type: pb.Address_STREAM, Subjects: []string{testRoutingKey}},
 	}
 	return prov, bd, src
 }

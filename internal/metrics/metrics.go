@@ -12,17 +12,24 @@ type LabelSet struct {
 	Labels []met.Label
 }
 
+// Metric name segments reused across multiple metric definitions
+const (
+	metricNamespace = "arke"
+	metricClient    = "client"
+	metricTotal     = "total"
+)
+
 // Stats global Stats variable for access to the sinks
 var (
-	ClientActMessageGauge    = []string{"arke", "client", "active", "messages"}
-	ClientStreamsGauge       = []string{"arke", "client", "streams"}
-	ClientConsumedGauge      = []string{"arke", "client", "consumed"}
-	ClientProducedGauge      = []string{"arke", "client", "produced"}
-	RequestElapsedSummary    = []string{"arke", "request", "elapsed"}
-	RequestTotalCounter      = []string{"arke", "request", "total"}
-	RecvMsgCounter           = []string{"arke", "recvmsg", "total"}
-	SendMsgCounter           = []string{"arke", "sendmsg", "total"}
-	RateLimitEnforcedSummary = []string{"arke", "rate", "limit", "enforced", "summary"}
+	ClientActMessageGauge    = []string{metricNamespace, metricClient, "active", "messages"}
+	ClientStreamsGauge       = []string{metricNamespace, metricClient, "streams"}
+	ClientConsumedGauge      = []string{metricNamespace, metricClient, "consumed"}
+	ClientProducedGauge      = []string{metricNamespace, metricClient, "produced"}
+	RequestElapsedSummary    = []string{metricNamespace, "request", "elapsed"}
+	RequestTotalCounter      = []string{metricNamespace, "request", metricTotal}
+	RecvMsgCounter           = []string{metricNamespace, "recvmsg", metricTotal}
+	SendMsgCounter           = []string{metricNamespace, "sendmsg", metricTotal}
+	RateLimitEnforcedSummary = []string{metricNamespace, "rate", "limit", "enforced", "summary"}
 )
 
 // NewLabelSet Create a new label set

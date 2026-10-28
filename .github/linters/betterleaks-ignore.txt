@@ -1,0 +1,9 @@
+tests/integration/certs/server/rabbitmq_combined.pem:private-key:21
+tests/integration/certs/server/rabbitmq.key:private-key:1
+tests/integration/certs/server/arke.key:private-key:1
+tests/integration/certs/testca/private/ca_private_key.pem:private-key:1
+doc/design/client-publish-consume.md:generic-password:124
+Makefile:generic-password:187
+tools/anarkey/example-config-queue.json:generic-password:9
+tools/anarkey/example-config-stream.json:generic-password:9
+examples/all_in_one/main.go:generic-password:46

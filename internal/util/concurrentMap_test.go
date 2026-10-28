@@ -15,6 +15,8 @@ type TestItem struct {
 	name string
 }
 
+const testItemName = "test item"
+
 func TestNewConcurrentMap(t *testing.T) {
 	cMap := NewConcurrentMap()
 	assert.NotNil(t, cMap)
@@ -22,7 +24,7 @@ func TestNewConcurrentMap(t *testing.T) {
 
 func TestConcurrentMapAdd(t *testing.T) {
 	cMap := NewConcurrentMap()
-	testItem := TestItem{"test item"}
+	testItem := TestItem{testItemName}
 	testItem2 := TestItem{"test item 2"}
 	assert.NotNil(t, cMap)
 	cMap.Add("testItem", &testItem)
@@ -41,7 +43,7 @@ func TestConcurrentMapAdd(t *testing.T) {
 func TestConcurrentMapDelete(t *testing.T) {
 	cMap := NewConcurrentMap()
 	assert.NotNil(t, cMap)
-	testItem := TestItem{"test item"}
+	testItem := TestItem{testItemName}
 	cMap.Add("testItem", testItem)
 	cItem, ok := cMap.Get("testItem")
 	assert.True(t, ok)
@@ -54,7 +56,7 @@ func TestConcurrentMapDelete(t *testing.T) {
 
 func TestConcurrentMapDeleteIfEqual(t *testing.T) {
 	cMap := NewConcurrentMap()
-	testItem := TestItem{"test item"}
+	testItem := TestItem{testItemName}
 	staleItem := TestItem{"stale item"}
 	replacementItem := TestItem{"replacement item"}
 
@@ -88,7 +90,7 @@ func TestConcurrentMapDeleteIfEqual(t *testing.T) {
 func TestConcurrentMapGetList(t *testing.T) {
 	cMap := NewConcurrentMap()
 	assert.NotNil(t, cMap)
-	testItem := TestItem{"test item"}
+	testItem := TestItem{testItemName}
 	cMap.Add("testItem", testItem)
 	cMap.Add("testItem2", testItem)
 	assert.Len(t, cMap.GetList(), 2)

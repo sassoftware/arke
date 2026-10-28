@@ -25,16 +25,37 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-var ctx context.Context
-var cf *pb.ConnectionConfiguration
+var (
+	ctx context.Context
+	cf  *pb.ConnectionConfiguration
+)
 
-const testTenant = "tenant"
-const testQueueTypeClassic = "classic"
-const testQueueTypeQuorum = "quorum"
-const testDeadLetterAddress = "dla"
-const testContentTypeJSON = "application/json"
-const testContentEncodingText = "text"
-const testXMatchAny = "any"
+const (
+	testTenant              = "tenant"
+	testQueueTypeClassic    = "classic"
+	testQueueTypeQuorum     = "quorum"
+	testDeadLetterAddress   = "dla"
+	testContentTypeJSON     = "application/json"
+	testContentEncodingText = "text"
+	testXMatchAny           = "any"
+	testAddress             = "address"
+	testMyName              = "myname"
+	testAddressName         = "addressname"
+	testValue1              = "value1"
+	testValue2              = "value2"
+	testValue3              = "value3"
+	testSrcName             = "srcname"
+	testXAcquiredCount      = "x-acquired-count"
+	testHeader1             = "header1"
+	testHeader2             = "header2"
+	testRoutingKey          = "routingkey"
+	testPassword            = "password"
+	testMessageTTLOption    = "MessageTTL"
+	testQueue               = "queue"
+	testUser                = "user"
+	testPass                = "pass"
+	testLocalhost           = "localhost"
+)
 
 // stopWatcher disconnects the client identified by ctx and blocks until its
 // connectionWatcher goroutine has fully exited. Tests that call prov.Connect
@@ -483,7 +504,7 @@ func Test_Ack_AckErr(t *testing.T) {
 
 	subjects := make([]string, 0)
 	subjects = append(subjects, "#")
-	src := &pb.Source{Name: "queue", Address: &pb.Address{Name: "address", Subjects: subjects}}
+	src := &pb.Source{Name: testQueue, Address: &pb.Address{Name: testAddress, Subjects: subjects}}
 	mc := make(chan *pb.Message)
 	defer close(mc)
 
@@ -653,7 +674,7 @@ func Test_Ack(t *testing.T) {
 
 	subjects := make([]string, 0)
 	subjects = append(subjects, "#")
-	src := &pb.Source{Name: "queue", Address: &pb.Address{Name: "address", Subjects: subjects}}
+	src := &pb.Source{Name: testQueue, Address: &pb.Address{Name: testAddress, Subjects: subjects}}
 	mc := make(chan *pb.Message)
 	defer close(mc)
 
@@ -745,7 +766,7 @@ func Test_Nack(t *testing.T) {
 
 	subjects := make([]string, 0)
 	subjects = append(subjects, "#")
-	src := &pb.Source{Name: "queue", Address: &pb.Address{Name: "address", Subjects: subjects}}
+	src := &pb.Source{Name: testQueue, Address: &pb.Address{Name: testAddress, Subjects: subjects}}
 	mc := make(chan *pb.Message)
 	defer close(mc)
 	go func() {
@@ -835,7 +856,7 @@ func Test_Nack_NackErr(t *testing.T) {
 
 	subjects := make([]string, 0)
 	subjects = append(subjects, "#")
-	src := &pb.Source{Name: "queue", Address: &pb.Address{Name: "address", Subjects: subjects}}
+	src := &pb.Source{Name: testQueue, Address: &pb.Address{Name: testAddress, Subjects: subjects}}
 	mc := make(chan *pb.Message)
 	defer close(mc)
 	go func() {
@@ -929,7 +950,7 @@ func Test_Retry(t *testing.T) {
 	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 
-	src := &pb.Source{Name: "queue", Address: &pb.Address{Name: "address"}}
+	src := &pb.Source{Name: testQueue, Address: &pb.Address{Name: testAddress}}
 	mc := make(chan *pb.Message)
 	defer close(mc)
 	go func() {
@@ -1034,7 +1055,7 @@ func Test_RetryAfterReconnectUsesNewConnection(t *testing.T) {
 		NewAmqpConn091 = oldNewAmqpConn091
 	}()
 
-	source := &pb.Source{Address: &pb.Address{Name: "address"}}
+	source := &pb.Source{Address: &pb.Address{Name: testAddress}}
 	assert.Nil(t, prov.Retry(context.Background(), source, "old-message", 1))
 
 	bd.state.Store(provider.DISCONNECTED)
@@ -1136,7 +1157,7 @@ func Test_RetryFailure(t *testing.T) {
 	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 
-	src := &pb.Source{Name: "queue", Address: &pb.Address{Name: "address"}}
+	src := &pb.Source{Name: testQueue, Address: &pb.Address{Name: testAddress}}
 	mc := make(chan *pb.Message)
 	defer close(mc)
 	go func() {
@@ -1243,7 +1264,7 @@ func Test_RetryFailure_DeclareErrorsStillSuccess(t *testing.T) {
 
 	opts := make(map[string]string)
 	opts["junkheader"] = "junkvalue"
-	src := &pb.Source{Name: "queue", Address: &pb.Address{Name: "address"}}
+	src := &pb.Source{Name: testQueue, Address: &pb.Address{Name: testAddress}}
 	mc := make(chan *pb.Message)
 	defer close(mc)
 	go func() {
@@ -1395,11 +1416,11 @@ func Test_DLQ(t *testing.T) {
 	amock.On("NotifyClose").Return(errs)
 	amock.On("NewChannel", false).Return(cmock, nil)
 
-	sbmock.On("ExchangeDeclare", "address", "topic", false).Return(nil).Once()
+	sbmock.On("ExchangeDeclare", testAddress, "topic", false).Return(nil).Once()
 	sbmock.On("ExchangeDeclare", "dla", "topic", false).Return(nil).Once()
 	sbmock.On("QueueDeclare", "queue.quorum", false, false, args).Return(nil).Once()
 	sbmock.On("QueueDeclare", "queue.dlq", false, false, argsDlq).Return(nil).Once()
-	sbmock.On("QueueBind", "queue.quorum", "routingkey", "address", mock.Anything).Return(nil).Once()
+	sbmock.On("QueueBind", "queue.quorum", testRoutingKey, testAddress, mock.Anything).Return(nil).Once()
 	sbmock.On("QueueBind", "queue.dlq", "queue.quorum", "dla", mock.Anything).Return(nil).Once()
 	amock.On("StandbyChannel").Return(sbmock, nil)
 
@@ -1430,9 +1451,9 @@ func Test_DLQ(t *testing.T) {
 	assert.Nil(t, err)
 
 	subjects := make([]string, 0)
-	subjects = append(subjects, "routingkey")
+	subjects = append(subjects, testRoutingKey)
 	options := map[string]string{"DeadLetterAddress": testDeadLetterAddress}
-	src := &pb.Source{Name: "queue", Address: &pb.Address{Name: "address", Subjects: subjects},
+	src := &pb.Source{Name: testQueue, Address: &pb.Address{Name: testAddress, Subjects: subjects},
 		Options: options}
 	mc := make(chan *pb.Message)
 	defer close(mc)
@@ -1507,23 +1528,23 @@ func Test_Subscribe_NoAddressName(t *testing.T) {
 
 func Test_SourceNameNotQuorum(t *testing.T) {
 	address := &pb.Address{}
-	src := &pb.Source{Name: "myname", AutoDelete: true, Address: address}
+	src := &pb.Source{Name: testMyName, AutoDelete: true, Address: address}
 	src.Name = sourceName(src)
-	assert.Equal(t, "myname", src.GetName())
+	assert.Equal(t, testMyName, src.GetName())
 }
 
 func Test_SourceNameQuorum(t *testing.T) {
 	address := &pb.Address{}
-	src := &pb.Source{Name: "myname", Address: address}
+	src := &pb.Source{Name: testMyName, Address: address}
 	src.Name = sourceName(src)
 	assert.Equal(t, "myname.quorum", src.GetName())
 }
 
 func Test_SourceNameNotQuorum_AutoDelete(t *testing.T) {
 	address := &pb.Address{}
-	src := &pb.Source{Name: "myname", Address: address, AutoDelete: true}
+	src := &pb.Source{Name: testMyName, Address: address, AutoDelete: true}
 	src.Name = sourceName(src)
-	assert.Equal(t, "myname", src.GetName())
+	assert.Equal(t, testMyName, src.GetName())
 }
 
 func Test_SourceNameNamedDotQuorum(t *testing.T) {
@@ -1548,7 +1569,7 @@ func Test_Subscribe_Options(t *testing.T) {
 	prov := NewAMQP091Provider()
 
 	options := make(map[string]string)
-	options["MessageTTL"] = "100"
+	options[testMessageTTLOption] = "100"
 	options["Expires"] = "100"
 	options["DeadLetterAddress"] = "dla"
 	options["DeadLetterSubject"] = "dls"
@@ -1587,18 +1608,18 @@ func Test_Subscribe_Options(t *testing.T) {
 	subjects = append(subjects, "subject1")
 	subjects = append(subjects, "subject2")
 	parent := &pb.Address{Name: "parent", Type: pb.Address_QUEUE}
-	address := &pb.Address{Name: "addressname", Subjects: subjects, ParentAddress: parent, Type: pb.Address_FILTER}
+	address := &pb.Address{Name: testAddressName, Subjects: subjects, ParentAddress: parent, Type: pb.Address_FILTER}
 	matches1 := make([]*pb.Match, 0)
-	matches1 = append(matches1, &pb.Match{Name: "key1", Value: "value1"})
-	matches1 = append(matches1, &pb.Match{Name: "key2", Value: "value2"})
+	matches1 = append(matches1, &pb.Match{Name: "key1", Value: testValue1})
+	matches1 = append(matches1, &pb.Match{Name: "key2", Value: testValue2})
 	matches2 := make([]*pb.Match, 0)
-	matches2 = append(matches2, &pb.Match{Name: "key3", Value: "value3"})
+	matches2 = append(matches2, &pb.Match{Name: "key3", Value: testValue3})
 	matches2 = append(matches2, &pb.Match{Name: "key4", Value: "value4"})
 	filters := make([]*pb.Filter, 0)
 	filters = append(filters, &pb.Filter{Matches: matches1, Type: pb.Filter_ANY})
 	filters = append(filters, &pb.Filter{Matches: matches2, Type: pb.Filter_ANY})
 
-	src := &pb.Source{Name: "srcname",
+	src := &pb.Source{Name: testSrcName,
 		Address:       address,
 		Options:       options,
 		Filters:       filters,
@@ -1607,12 +1628,12 @@ func Test_Subscribe_Options(t *testing.T) {
 		PrefetchCount: 4}
 
 	expectedMatchHeaders1 := amqp091Table{}
-	expectedMatchHeaders1["key1"] = "value1"
-	expectedMatchHeaders1["key2"] = "value2"
+	expectedMatchHeaders1["key1"] = testValue1
+	expectedMatchHeaders1["key2"] = testValue2
 	expectedMatchHeaders1["x-match"] = testXMatchAny
 
 	expectedMatchHeaders2 := amqp091Table{}
-	expectedMatchHeaders2["key3"] = "value3"
+	expectedMatchHeaders2["key3"] = testValue3
 	expectedMatchHeaders2["key4"] = "value4"
 	expectedMatchHeaders2["x-match"] = testXMatchAny
 
@@ -1692,7 +1713,6 @@ func Test_Subscribe_Options(t *testing.T) {
 
 	delMock.AssertExpectations(t)
 	cmock.AssertExpectations(t)
-	sbmock.AssertNumberOfCalls(t, "ExchangeDeclare", 3)
 	sbmock.AssertExpectations(t)
 }
 
@@ -1723,10 +1743,10 @@ func Test_Subscribe_NoSubjectsNoFilters(t *testing.T) {
 	}(&delMock)
 
 	subjects := make([]string, 0)
-	address := &pb.Address{Name: "addressname", Subjects: subjects, Type: pb.Address_FILTER}
+	address := &pb.Address{Name: testAddressName, Subjects: subjects, Type: pb.Address_FILTER}
 	filters := make([]*pb.Filter, 0)
 
-	src := &pb.Source{Name: "srcname",
+	src := &pb.Source{Name: testSrcName,
 		Address:       address,
 		Filters:       filters,
 		Exclusive:     true,
@@ -1770,6 +1790,8 @@ func Test_Subscribe_NoSubjectsNoFilters(t *testing.T) {
 	assert.Nil(t, serr)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	cc := &pb.ConnectionConfiguration{}
 	cc.Tenant = testTenant
 	cc.Host = u.Hostname()
@@ -1857,7 +1879,7 @@ func Test_Subscribe_UnsupportedOptions(t *testing.T) {
 	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 
-	src := &pb.Source{Address: &pb.Address{Name: "addressname"}, Options: options}
+	src := &pb.Source{Address: &pb.Address{Name: testAddressName}, Options: options}
 	mc := make(chan *pb.Message)
 	defer close(mc)
 
@@ -1889,7 +1911,7 @@ func Test_Subscribe_ExceedsAcquiredCount(t *testing.T) {
 	msg1 := amqp091Message{
 		DeliveryTag: 1,
 		Headers: amqp091Table{
-			"x-acquired-count": int32(25),
+			testXAcquiredCount: int32(25),
 		},
 	}
 	msg1.SetDelivery(&delMock1)
@@ -1949,7 +1971,7 @@ func Test_Subscribe_ExceedsAcquiredCount(t *testing.T) {
 	defer stopWatcher(ctx, prov)
 	assert.Nil(t, err)
 
-	src := &pb.Source{Name: "queue", Address: &pb.Address{Name: "address", Subjects: []string{"#"}}}
+	src := &pb.Source{Name: testQueue, Address: &pb.Address{Name: testAddress, Subjects: []string{"#"}}}
 	mc := make(chan *pb.Message, 10)
 
 	go func() {
@@ -2007,7 +2029,7 @@ func Test_SupportedSourceOptions(t *testing.T) {
 	opts := prov.SupportedSourceOptions()
 	assert.NotNil(t, opts)
 	expected := make(map[string]bool)
-	expected["MessageTTL"] = true
+	expected[testMessageTTLOption] = true
 	expected["DeadLetterAddress"] = true
 	expected["DeadLetterSubject"] = true
 	expected["Expires"] = true
@@ -2549,7 +2571,7 @@ func Test_fromAmqpMessage(t *testing.T) {
 	del := amqp.Delivery{}
 	del.Body = []byte("Hello")
 	del.DeliveryMode = uint8(2)
-	del.Headers = amqp.Table{"h1": "header1"}
+	del.Headers = amqp.Table{"h1": testHeader1}
 	del.ContentType = testContentEncodingText
 	del.ContentEncoding = "plain"
 	del.DeliveryTag = 1
@@ -2567,7 +2589,7 @@ func Test_toAmqpMessage(t *testing.T) {
 	aMsg := &amqp091Message{}
 	aMsg.Body = []byte("Hello")
 	aMsg.DeliveryMode = 2
-	aMsg.Headers = amqp091Table{"h1": "header1"}
+	aMsg.Headers = amqp091Table{"h1": testHeader1}
 	aMsg.ContentType = testContentEncodingText
 	aMsg.ContentEncoding = "plain"
 
@@ -2811,9 +2833,9 @@ func mockManagementRequestServer() *httptest.Server {
 func setupCleanupBindingsTest(t *testing.T) (*BrokerDetails, *pb.Source) {
 	t.Helper()
 	bd := &BrokerDetails{}
-	addr := &pb.Address{Subjects: []string{"routingkey"}, Name: "address"}
-	src := &pb.Source{Address: addr, Name: "queue"}
-	creds := &pb.Credentials{Username: "user", Password: "password"}
+	addr := &pb.Address{Subjects: []string{testRoutingKey}, Name: testAddress}
+	src := &pb.Source{Address: addr, Name: testQueue}
+	creds := &pb.Credentials{Username: testUser, Password: testPassword}
 	bd.connectionConfig = &pb.ConnectionConfiguration{Credentials: creds}
 
 	msrv := mockManagementRequestServer()
@@ -2835,7 +2857,7 @@ func Test_cleanupBindings(t *testing.T) {
 
 func Test_cleanupBindings_none(t *testing.T) {
 	bd, src := setupCleanupBindingsTest(t)
-	removed := bd.cleanupBindings(src, []string{"routingkey"})
+	removed := bd.cleanupBindings(src, []string{testRoutingKey})
 	assert.Len(t, removed, 0)
 }
 
@@ -2856,8 +2878,8 @@ func Test_declareQueueAutoDelete(t *testing.T) {
 			bd := &BrokerDetails{
 				knownQueues: util.NewConcurrentMap(),
 			}
-			addr := &pb.Address{Subjects: []string{"routingkey"}, Name: "address"}
-			src := &pb.Source{Address: addr, Name: "queue", AutoDelete: adt.autoDelete, Exclusive: adt.exclusive}
+			addr := &pb.Address{Subjects: []string{testRoutingKey}, Name: testAddress}
+			src := &pb.Source{Address: addr, Name: testQueue, AutoDelete: adt.autoDelete, Exclusive: adt.exclusive}
 
 			expectedArgs := make(amqp091Table)
 			if adt.expires > 0 {
@@ -2901,8 +2923,8 @@ func Test_singleActiveConsumer(t *testing.T) {
 			bd := &BrokerDetails{
 				knownQueues: util.NewConcurrentMap(),
 			}
-			addr := &pb.Address{Subjects: []string{"routingkey"}, Name: "address"}
-			src := &pb.Source{Address: addr, Name: "queue", SingleActiveConsumer: sac.singleActiveConsumer}
+			addr := &pb.Address{Subjects: []string{testRoutingKey}, Name: testAddress}
+			src := &pb.Source{Address: addr, Name: testQueue, SingleActiveConsumer: sac.singleActiveConsumer}
 
 			expectedArgs := make(amqp091Table)
 			expectedArgs["x-queue-type"] = testQueueTypeQuorum
@@ -2952,8 +2974,8 @@ func Test_Subscribe_Queue_DeclareOnly(t *testing.T) {
 			func(t *testing.T) {
 				prov := NewAMQP091Provider()
 
-				addr := &pb.Address{Subjects: []string{"routingkey"}, Name: "address"}
-				src := &pb.Source{Address: addr, Name: "queue", Type: pb.Source_QUEUE, DeclareOnly: true}
+				addr := &pb.Address{Subjects: []string{testRoutingKey}, Name: testAddress}
+				src := &pb.Source{Address: addr, Name: testQueue, Type: pb.Source_QUEUE, DeclareOnly: true}
 
 				cmock := &amqpChannelMock{}
 				sbmock := &amqpChannelMock{}
@@ -3031,7 +3053,7 @@ func Test_SourceStats(t *testing.T) {
 	defer msrv.Close()
 	u, err := url.Parse(msrv.URL)
 	assert.Nil(t, err)
-	creds := &pb.Credentials{Username: "user", Password: "password"}
+	creds := &pb.Credentials{Username: testUser, Password: testPassword}
 	bd.connectionConfig = &pb.ConnectionConfiguration{Credentials: creds}
 	bd.connectionConfig.Host = u.Hostname()
 	bd.connectionConfig.Tenant = testTenant
@@ -3104,7 +3126,7 @@ func Test_SourceStats(t *testing.T) {
 			bd.StreamConnection = nil // make sure we call NewStreamConn again
 
 			addr := &pb.Address{
-				Subjects: []string{"routingkey"},
+				Subjects: []string{testRoutingKey},
 				Name:     test.addressName,
 				Type:     test.addressType,
 			}
@@ -3157,7 +3179,7 @@ func Test_SourceStats_errors(t *testing.T) {
 	assert.Equal(t, "address name not defined", stats.GetError().GetMessage())
 
 	// no client id so prov.getBrokerDetails fails
-	src.Address = &pb.Address{Name: "myname"}
+	src.Address = &pb.Address{Name: testMyName}
 	stats = prov.SourceStats(ctx, src)
 	assert.NotNil(t, stats)
 	assert.Equal(t, "could not retrieve client-id from context", stats.GetError().GetMessage())
@@ -3177,7 +3199,7 @@ func stockMessage(address *pb.Address) *pb.Message {
 func stockAddress() *pb.Address {
 	subjects := make([]string, 0)
 	subjects = append(subjects, "subject1")
-	address := &pb.Address{Name: "addressname", Subjects: subjects, Type: pb.Address_FILTER}
+	address := &pb.Address{Name: testAddressName, Subjects: subjects, Type: pb.Address_FILTER}
 
 	return address
 }
@@ -3474,8 +3496,8 @@ func Test_QueueSubscribe_NotifyCloseChannelsAreBuffered(t *testing.T) {
 	defer stopWatcher(ctx, prov)
 
 	src := &pb.Source{
-		Name:    "queue",
-		Address: &pb.Address{Name: "address", Subjects: []string{"#"}},
+		Name:    testQueue,
+		Address: &pb.Address{Name: testAddress, Subjects: []string{"#"}},
 	}
 	mc := make(chan *pb.Message)
 

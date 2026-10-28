@@ -24,7 +24,9 @@ func testHealth(port int) error {
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 	c := pb.NewHealthzClient(conn)
 	ctx := context.Background()
 	_, err = c.Check(ctx)
@@ -39,8 +41,7 @@ func TestMonitorProcessStats(t *testing.T) {
 		assert.Nil(t, err)
 		cancel()
 	}()
-	os.Setenv(arke.EnvPort, "50058")
-	defer os.Unsetenv(arke.EnvPort)
+	t.Setenv(arke.EnvPort, "50058")
 	run(ctx)
 }
 
@@ -49,11 +50,15 @@ func TestRunWithCPUAndMemProfile(t *testing.T) {
 
 	cpuFile, err := os.CreateTemp(tmpDir, "cpuprofile-*.prof")
 	assert.Nil(t, err)
-	cpuFile.Close()
+	defer func() {
+		_ = cpuFile.Close()
+	}()
 
 	memFile, err := os.CreateTemp(tmpDir, "memprofile-*.prof")
 	assert.Nil(t, err)
-	memFile.Close()
+	defer func() {
+		_ = memFile.Close()
+	}()
 
 	*cpuprofile = cpuFile.Name()
 	*memprofile = memFile.Name()
@@ -69,8 +74,7 @@ func TestRunWithCPUAndMemProfile(t *testing.T) {
 		assert.Nil(t, err)
 		cancel()
 	}()
-	os.Setenv(arke.EnvPort, "50061")
-	defer os.Unsetenv(arke.EnvPort)
+	t.Setenv(arke.EnvPort, "50061")
 
 	run(ctx)
 

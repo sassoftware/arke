@@ -17,8 +17,8 @@ type TestLogger struct {
 // Note that this will close the writer and reader, so it should only be called once per
 // TestLogger instance
 func (l *TestLogger) GetOutput() []byte {
-	l.writer.Close()
-	defer l.reader.Close()
+	_ = l.writer.Close()
+	defer func() { _ = l.reader.Close() }()
 	buf := make([]byte, 2048)
 	n, _ := l.reader.Read(buf)
 	return buf[:n]
@@ -31,8 +31,8 @@ func GetTestLoggerWithCleanup() (*TestLogger, func()) {
 	r, w, _ := os.Pipe()
 	logger := NewArkeFileLogger(w)
 	cleanup := func() {
-		w.Close()
-		r.Close()
+		_ = w.Close()
+		_ = r.Close()
 		// Reset the logger so that other tests can expect an initialized logger
 		NewArkeFileLogger(LogOutputFile)
 	}

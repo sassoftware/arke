@@ -36,7 +36,9 @@ func run(ctx context.Context) {
 		if err != nil {
 			util.Logger.Fatal(i18n.CPUProfileError, err)
 		}
-		defer f.Close()
+		defer func() {
+			_ = f.Close()
+		}()
 		if err := pprof.StartCPUProfile(f); err != nil {
 			util.Logger.Fatal(i18n.CPUProfileError, err)
 		}
@@ -49,7 +51,9 @@ func run(ctx context.Context) {
 			if err != nil {
 				util.Logger.Fatal(i18n.MemProfileError, err)
 			}
-			defer f.Close()
+			defer func() {
+				_ = f.Close()
+			}()
 			runtime.GC() // get up-to-date statistics
 			if err := pprof.WriteHeapProfile(f); err != nil {
 				util.Logger.Fatal(i18n.MemProfileError, err)

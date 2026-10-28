@@ -34,7 +34,7 @@ func Test_Amqp091Message_Nack_AcquiredCount(t *testing.T) {
 			name:           "requeue true with int32 acquired count below limit remains true",
 			initialRequeue: true,
 			headers: amqp091Table{
-				"x-acquired-count": int32(5),
+				testXAcquiredCount: int32(5),
 			},
 			expectedRequeue: true,
 		},
@@ -42,7 +42,7 @@ func Test_Amqp091Message_Nack_AcquiredCount(t *testing.T) {
 			name:           "requeue true with int32 acquired count equal to limit remains true",
 			initialRequeue: true,
 			headers: amqp091Table{
-				"x-acquired-count": int32(20),
+				testXAcquiredCount: int32(20),
 			},
 			expectedRequeue: true,
 		},
@@ -50,7 +50,7 @@ func Test_Amqp091Message_Nack_AcquiredCount(t *testing.T) {
 			name:           "requeue true with int32 acquired count above limit becomes false",
 			initialRequeue: true,
 			headers: amqp091Table{
-				"x-acquired-count": int32(21),
+				testXAcquiredCount: int32(21),
 			},
 			expectedRequeue: false,
 		},
@@ -58,7 +58,7 @@ func Test_Amqp091Message_Nack_AcquiredCount(t *testing.T) {
 			name:           "requeue true with int64 acquired count above limit becomes false",
 			initialRequeue: true,
 			headers: amqp091Table{
-				"x-acquired-count": int64(25),
+				testXAcquiredCount: int64(25),
 			},
 			expectedRequeue: false,
 		},
@@ -66,7 +66,7 @@ func Test_Amqp091Message_Nack_AcquiredCount(t *testing.T) {
 			name:           "requeue true with int64 acquired count below limit remains true",
 			initialRequeue: true,
 			headers: amqp091Table{
-				"x-acquired-count": int64(10),
+				testXAcquiredCount: int64(10),
 			},
 			expectedRequeue: true,
 		},
@@ -74,7 +74,7 @@ func Test_Amqp091Message_Nack_AcquiredCount(t *testing.T) {
 			name:           "x-acquired-count is a string(invalid) should be true",
 			initialRequeue: true,
 			headers: amqp091Table{
-				"x-acquired-count": "25",
+				testXAcquiredCount: "25",
 			},
 			expectedRequeue: true,
 		},

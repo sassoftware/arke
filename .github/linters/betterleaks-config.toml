@@ -3,6 +3,12 @@ title = "betterleaks config extensions"
 [extend]
 useDefault = true
 
+[allowlist]
+description = "Ignore test certificates and keys"
+paths = [
+  '''^tests/integration/certs/'''
+]
+
 [[rules]]
 id = "generic-api-key"
 

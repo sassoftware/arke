@@ -17,14 +17,20 @@ type getLocaleFileTestCase struct {
 	expectedFiles []string
 }
 
-const testValue2 = "value2"
+const (
+	localeEnUS       = "en-US"
+	testValue2       = "value2"
+	localeDeDE       = "de-DE"
+	multipleParamsID = "multiple_params"
+)
 
 func TestGetLocaleFiles(t *testing.T) {
 	filePrefix := messageFilePrefix
+
 	cases := []getLocaleFileTestCase{
 		{
 			filePrefix: filePrefix,
-			locale:     "en-US",
+			locale:     localeEnUS,
 			expectedFiles: []string{
 				fmt.Sprintf("resources/%s_en_US.properties", filePrefix),
 				fmt.Sprintf("resources/%s_en.properties", filePrefix),
@@ -73,7 +79,7 @@ func TestGetLocaleFiles(t *testing.T) {
 		},
 		{
 			filePrefix: filePrefix,
-			locale:     "de-DE",
+			locale:     localeDeDE,
 			expectedFiles: []string{
 				fmt.Sprintf("resources/%s_de_DE.properties", filePrefix),
 				fmt.Sprintf("resources/%s_de.properties", filePrefix),
@@ -238,10 +244,10 @@ func TestT(t *testing.T) {
 	}()
 	bundle = &propertiesBundle{
 		messages: map[string]string{
-			"no_params":       "This is a test message.",
-			"one_param":       "Hello, {0}!",
-			"repeated_param":  "Value: {0}, Again: {0}",
-			"multiple_params": "First: {0}, Second: {1}, Third: {2}, First again: {0}",
+			"no_params":      "This is a test message.",
+			"one_param":      "Hello, {0}!",
+			"repeated_param": "Value: {0}, Again: {0}",
+			multipleParamsID: "First: {0}, Second: {1}, Third: {2}, First again: {0}",
 		},
 	}
 	tests := []struct {
@@ -270,7 +276,7 @@ func TestT(t *testing.T) {
 		},
 		{
 			name:      "multiple parameters",
-			messageID: "multiple_params",
+			messageID: multipleParamsID,
 			args:      []interface{}{"A", "B", "C"},
 			want:      "First: A, Second: B, Third: C, First again: A",
 		},
@@ -282,7 +288,7 @@ func TestT(t *testing.T) {
 		},
 		{
 			name:      "extra arguments",
-			messageID: "multiple_params",
+			messageID: multipleParamsID,
 			args:      []interface{}{"A", "B", "C", "D"},
 			want:      "First: A, Second: B, Third: C, First again: A",
 		},
