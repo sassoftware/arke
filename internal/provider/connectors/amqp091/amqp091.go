@@ -2038,6 +2038,18 @@ func (bd *BrokerDetails) loadExchanges() {
 	}
 }
 
+func (bd *BrokerDetails) GetActiveMessagesCount() int {
+	return bd.activeMessages.Length()
+}
+
+func (bd *BrokerDetails) GetMessagesProduced() int {
+	return int(atomic.LoadInt64(&bd.produced))
+}
+
+func (bd *BrokerDetails) GetMessagesConsumed() int {
+	return int(atomic.LoadInt64(&bd.consumed))
+}
+
 func (prov *amqp091provider) Stats() *provider.Stats {
 	return provider.CollectClientStats(prov.connections.GetList(), func(connID string) *provider.ClientStats {
 		connRaw, exists := prov.connections.Get(connID)
@@ -2045,12 +2057,8 @@ func (prov *amqp091provider) Stats() *provider.Stats {
 			return nil
 		}
 		conn := connRaw.(*BrokerDetails)
-		return &provider.ClientStats{
-			ID:             conn.ClientIdentifier,
-			ActiveMessages: conn.activeMessages.Length(),
-			Streams:        int(conn.ActiveStreams),
-			Produced:       int(conn.produced),
-			Consumed:       int(conn.consumed),
-		}
+		clientStats := provider.ClientStatsFromProvider(conn.ClientIdentifier, conn)
+		clientStats.Streams = int(atomic.LoadInt64(&conn.ActiveStreams))
+		return clientStats
 	})
 }
