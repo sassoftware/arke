@@ -97,14 +97,40 @@ func Test_BrokerDetails_getStreamOrQueueStats(t *testing.T) {
 			bd.connectionConfig.Tenant = tt.tenant
 			managementClient := &managementClientStub{stats: &pb.SourceStats{MessageCount: 7}}
 			bd.mgmtClient = managementClient
+			streamConnection := &streamConnectionStub{offset: 27}
+			if tt.source.GetType() == pb.Source_STREAM {
+				bd.StreamConnection = streamConnection
+			}
 
 			got := bd.getStreamOrQueueStats(tt.source)
 
 			assert.Same(t, managementClient.stats, got)
 			assert.Equal(t, tt.expectedVhost, managementClient.vhost)
 			assert.Equal(t, tt.expectedQueueName, managementClient.queueName)
+			if tt.source.GetType() == pb.Source_STREAM {
+				assert.Equal(t, int64(27), got.GetLastOffset())
+			}
 		})
 	}
+
+	t.Run("stream offset error is returned in source stats", func(t *testing.T) {
+		bd := newTestBrokerDetails()
+		bd.mgmtClient = &managementClientStub{stats: &pb.SourceStats{MessageCount: 7}}
+		bd.StreamConnection = &streamConnectionStub{offsetErr: errors.New("Offset not found")}
+
+		stats := bd.getStreamOrQueueStats(&pb.Source{Name: "events", Type: pb.Source_STREAM})
+
+		require.Equal(t, "Offset not found", stats.GetError().GetMessage())
+	})
+
+	t.Run("stream stats report a missing stream connection", func(t *testing.T) {
+		bd := newTestBrokerDetails()
+		bd.mgmtClient = &managementClientStub{stats: &pb.SourceStats{MessageCount: 7}}
+
+		stats := bd.getStreamOrQueueStats(&pb.Source{Name: "events", Type: pb.Source_STREAM})
+
+		require.Equal(t, "stream connection is not configured", stats.GetError().GetMessage())
+	})
 }
 
 func Test_BrokerDetails_disconnect(t *testing.T) {

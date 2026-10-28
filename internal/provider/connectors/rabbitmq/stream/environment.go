@@ -21,7 +21,14 @@ const (
 type environmentShim interface {
 	Close() error
 	IsClosed() bool
+	NewConsumer(string, rabbitstream.MessagesHandler, *rabbitstream.ConsumerOptions) (Consumer, error)
+	QueryOffset(string, string) (int64, error)
+	StoreOffset(string, string, int64) error
 	client() *rabbitstream.Environment
+}
+
+type Consumer interface {
+	Close() error
 }
 
 type clientEnvironment struct {
@@ -30,6 +37,18 @@ type clientEnvironment struct {
 
 func (e clientEnvironment) client() *rabbitstream.Environment {
 	return e.Environment
+}
+
+func (e clientEnvironment) NewConsumer(streamName string, handler rabbitstream.MessagesHandler, options *rabbitstream.ConsumerOptions) (Consumer, error) {
+	return e.Environment.NewConsumer(streamName, handler, options)
+}
+
+func (e clientEnvironment) QueryOffset(consumerName string, streamName string) (int64, error) {
+	return e.Environment.QueryOffset(consumerName, streamName)
+}
+
+func (e clientEnvironment) StoreOffset(consumerName string, streamName string, offset int64) error {
+	return e.Environment.StoreOffset(consumerName, streamName, offset)
 }
 
 type environmentConfig struct {
@@ -135,4 +154,41 @@ func (e *Environment) Client() *rabbitstream.Environment {
 		return nil
 	}
 	return e.env.client()
+}
+
+func (e *Environment) getConnectedEnvironment() (environmentShim, error) {
+	if e == nil {
+		return nil, errors.New("stream environment is required")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.env == nil || e.closed || e.env.IsClosed() {
+		return nil, errors.New("stream environment is not connected")
+	}
+	return e.env, nil
+}
+
+func (e *Environment) NewConsumer(streamName string, handler rabbitstream.MessagesHandler, options *rabbitstream.ConsumerOptions) (Consumer, error) {
+	env, err := e.getConnectedEnvironment()
+	if err != nil {
+		return nil, err
+	}
+	return env.NewConsumer(streamName, handler, options)
+}
+
+func (e *Environment) QueryOffset(consumerName string, streamName string) (int64, error) {
+	env, err := e.getConnectedEnvironment()
+	if err != nil {
+		return 0, err
+	}
+	return env.QueryOffset(consumerName, streamName)
+}
+
+func (e *Environment) StoreOffset(consumerName string, streamName string, offset int64) error {
+	env, err := e.getConnectedEnvironment()
+	if err != nil {
+		return err
+	}
+	return env.StoreOffset(consumerName, streamName, offset)
 }

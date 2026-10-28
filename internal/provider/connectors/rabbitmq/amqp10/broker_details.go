@@ -268,6 +268,18 @@ func (bd *BrokerDetails) getStreamOrQueueStats(source *pb.Source) *pb.SourceStat
 	queue := amqp.SourceName(source)
 	vhost := amqp.GetVhost(bd.connectionConfig)
 	stats := bd.mgmtClient.SourceStats(vhost, queue)
-	// TODO: Issue 220/221 - Handle stream-specific stats
+	if source.GetType() == pb.Source_STREAM && stats.GetError() == nil {
+		if bd.StreamConnection == nil {
+			stats.Error = &pb.Error{Message: "stream connection is not configured"}
+			return stats
+		}
+
+		streamOffset, err := bd.StreamConnection.GetStreamOffset(source.GetName())
+		if err != nil {
+			stats.Error = &pb.Error{Message: err.Error()}
+			return stats
+		}
+		stats.LastOffset = streamOffset
+	}
 	return stats
 }
