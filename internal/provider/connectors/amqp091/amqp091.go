@@ -2038,22 +2038,27 @@ func (bd *BrokerDetails) loadExchanges() {
 	}
 }
 
+func (bd *BrokerDetails) GetActiveMessagesCount() int {
+	return bd.activeMessages.Length()
+}
+
+func (bd *BrokerDetails) GetMessagesProduced() int {
+	return int(atomic.LoadInt64(&bd.produced))
+}
+
+func (bd *BrokerDetails) GetMessagesConsumed() int {
+	return int(atomic.LoadInt64(&bd.consumed))
+}
+
 func (prov *amqp091provider) Stats() *provider.Stats {
-	stats := &provider.Stats{}
-	stats.Clients = make([]*provider.ClientStats, 0)
-	for _, connID := range prov.connections.GetList() {
-		clientStat := &provider.ClientStats{}
+	return provider.CollectClientStats(prov.connections.GetList(), func(connID string) *provider.ClientStats {
 		connRaw, exists := prov.connections.Get(connID)
 		if !exists {
-			continue
+			return nil
 		}
 		conn := connRaw.(*BrokerDetails)
-		clientStat.ID = conn.ClientIdentifier
-		clientStat.ActiveMessages = conn.activeMessages.Length()
-		clientStat.Streams = int(conn.ActiveStreams)
-		clientStat.Produced = int(conn.produced)
-		clientStat.Consumed = int(conn.consumed)
-		stats.Clients = append(stats.Clients, clientStat)
-	}
-	return stats
+		clientStats := provider.ClientStatsFromProvider(conn.ClientIdentifier, conn)
+		clientStats.Streams = int(atomic.LoadInt64(&conn.ActiveStreams))
+		return clientStats
+	})
 }

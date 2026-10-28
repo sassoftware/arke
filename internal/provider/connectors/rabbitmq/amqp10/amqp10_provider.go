@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	rabbitmqamqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
@@ -261,8 +262,28 @@ func (prov *rabbitMQAMQP10Provider) WaitForConnect(ctx context.Context) bool {
 }
 
 func (prov *rabbitMQAMQP10Provider) Stats() *provider.Stats {
-	// TODO: Issue 193
-	return &provider.Stats{}
+	return provider.CollectClientStats(prov.connections.GetList(), func(clientIdentifier string) *provider.ClientStats {
+		bd := prov.getBrokerDetailsByIdentifier(clientIdentifier)
+		if bd == nil {
+			return nil
+		}
+
+		clientStats := provider.ClientStatsFromProvider(bd.ClientIdentifier, bd)
+		clientStats.Streams = int(atomic.LoadInt64(&bd.ActiveStreams))
+		return clientStats
+	})
+}
+
+func (bd *BrokerDetails) GetActiveMessagesCount() int {
+	return bd.activeMessages.Length()
+}
+
+func (bd *BrokerDetails) GetMessagesProduced() int {
+	return int(atomic.LoadInt64(&bd.produced))
+}
+
+func (bd *BrokerDetails) GetMessagesConsumed() int {
+	return int(atomic.LoadInt64(&bd.consumed))
 }
 
 func (prov *rabbitMQAMQP10Provider) SourceStats(ctx context.Context, source *pb.Source) *pb.SourceStats {
