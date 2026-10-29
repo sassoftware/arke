@@ -107,6 +107,7 @@ func (cm *ConnectionManager) CreateConnection(ctx context.Context, connType Conn
 		Port:     int32(cm.config.BrokerPort),
 		Provider: cm.config.BrokerProvider,
 		Tls:      cm.config.BrokerTLS,
+		Tenant:   cm.config.BrokerTenant,
 		Credentials: &api.Credentials{
 			Username: cm.config.BrokerUsername,
 			Password: cm.config.BrokerPassword,

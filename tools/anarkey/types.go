@@ -26,6 +26,7 @@ type Config struct {
 	BrokerPassword string `json:"broker_password"`
 	BrokerTLS      bool   `json:"broker_tls"`
 	BrokerProvider string `json:"broker_provider"`
+	BrokerTenant   string `json:"broker_tenant,omitempty"`
 
 	// Connection settings
 	NumPublisherConnections int `json:"num_publisher_connections"`

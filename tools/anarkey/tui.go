@@ -392,7 +392,7 @@ func (m *Model) getMaxCursor() int {
 	case ScreenArkeConfig:
 		return 3 // arke_host, arke_port, arke_tls, + Continue button
 	case ScreenBrokerConfig:
-		return 5 // broker_host, broker_port, broker_username, broker_password, broker_tls, + Continue button
+		return 6 // broker_host, broker_port, broker_username, broker_password, broker_tls, broker_tenant, + Continue button
 	case ScreenConnectionConfig:
 		return 2 // num_publisher_connections, num_consumer_connections, + Continue button
 	case ScreenStreamConfig:
@@ -426,7 +426,7 @@ func (m *Model) getCurrentField() string {
 			return fields[m.cursor]
 		}
 	case ScreenBrokerConfig:
-		fields := []string{"broker_host", "broker_port", "broker_username", "broker_password", "broker_tls"}
+		fields := []string{"broker_host", "broker_port", "broker_username", "broker_password", "broker_tls", "broker_tenant"}
 		if m.cursor < len(fields) {
 			return fields[m.cursor]
 		}
@@ -464,6 +464,7 @@ func (m *Model) validateBrokerConfig() bool {
 	m.config.BrokerUsername = m.getInput("broker_username", "guest")
 	m.config.BrokerPassword = m.getInput("broker_password", "guest")
 	m.config.BrokerTLS = m.getInput("broker_tls", "false") == "true"
+	m.config.BrokerTenant = m.getInput("broker_tenant", "")
 	return true
 }
 
@@ -846,6 +847,7 @@ func (m *Model) renderBrokerConfig() string {
 		{"Username", "broker_username", "Username", "guest"},
 		{"Password", "broker_password", "Password", "guest"},
 		{"Broker TLS", "broker_tls", "TLS (true/false)", "false"},
+		{"Tenant", "broker_tenant", "Tenant (optional)", ""},
 	}
 
 	for i, f := range fields {
