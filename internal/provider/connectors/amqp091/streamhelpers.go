@@ -42,7 +42,7 @@ type CtxKey struct {
 }
 
 func getStreamConnectionString(bd *BrokerDetails) string {
-	cf := bd.connectionConfig
+	cf := bd.ConnectionConfig
 
 	var tenant = cf.GetTenant()
 	if tenant == "" {

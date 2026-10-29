@@ -14,6 +14,7 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	iamqp "github.com/sassoftware/arke/internal/provider/connectors/amqp"
 )
 
 // ---------- Fix 1: toAmqpTable / fromAmqpTable ----------
@@ -87,10 +88,12 @@ func BenchmarkBrokerDetailsValue(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		bd := BrokerDetails{ //nolint:exhaustruct
-			ClientIdentifier: "bench-client",
-			ErrorChannel:     make(chan amqp091Error, 1),
-			shutdownChan:     make(chan bool, 1),
-			lastPubSubEvent:  time.Now(),
+			CommonBrokerDetails: iamqp.CommonBrokerDetails{
+				ClientIdentifier: "bench-client",
+				LastPubSubEvent:  time.Now(),
+			},
+			ErrorChannel: make(chan amqp091Error, 1),
+			shutdownChan: make(chan bool, 1),
 		}
 		sinkBD = &bd // triggers the escape
 	}
@@ -100,10 +103,12 @@ func BenchmarkBrokerDetailsPointer(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		sinkBD = &BrokerDetails{ //nolint:exhaustruct
-			ClientIdentifier: "bench-client",
-			ErrorChannel:     make(chan amqp091Error, 1),
-			shutdownChan:     make(chan bool, 1),
-			lastPubSubEvent:  time.Now(),
+			CommonBrokerDetails: iamqp.CommonBrokerDetails{
+				ClientIdentifier: "bench-client",
+				LastPubSubEvent:  time.Now(),
+			},
+			ErrorChannel: make(chan amqp091Error, 1),
+			shutdownChan: make(chan bool, 1),
 		}
 	}
 }

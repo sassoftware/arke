@@ -129,18 +129,20 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 	}
 
 	bd = &BrokerDetails{
-		ctx:              ctx,
-		provider:         prov,
-		mgmtClient:       mgmtClient,
-		Env:              env,
-		ClientIdentifier: clientIdentifier,
-		tlsConfig:        tlsConfig,
-		activeMessages:   util.NewConcurrentMap(),
-		connectionConfig: cf,
-		tlsSkipVerify:    tlsSkipVerify,
-		ActiveStreams:    0,
-		lastPubSubEvent:  time.Now(),
-		shutdownChan:     make(chan struct{}),
+		ctx:        ctx,
+		provider:   prov,
+		mgmtClient: mgmtClient,
+		Env:        env,
+		CommonBrokerDetails: amqp.CommonBrokerDetails{
+			ClientIdentifier: clientIdentifier,
+			ActiveMessages:   util.NewConcurrentMap(),
+			ConnectionConfig: cf,
+			ActiveStreams:    0,
+			LastPubSubEvent:  time.Now(),
+		},
+		tlsConfig:     tlsConfig,
+		tlsSkipVerify: tlsSkipVerify,
+		shutdownChan:  make(chan struct{}),
 	}
 	ok, err := bd.connect()
 	if !ok {
@@ -163,7 +165,7 @@ func (prov *rabbitMQAMQP10Provider) ClientExists(clientIdentifier string) bool {
 		return false
 	}
 
-	switch bd.state.Load() {
+	switch bd.State.Load() {
 	case provider.CONNECTED, provider.CONNECTING:
 		return true
 	default:
@@ -231,8 +233,8 @@ func (prov *rabbitMQAMQP10Provider) WaitForConnect(ctx context.Context) bool {
 
 	// to prevent unwanted disconnects for a client with a single stream
 	// we need to increment the stream count if we are waiting for provider connect
-	bd.incrementStreamCount()
-	defer bd.decrementStreamCount()
+	bd.IncrementStreamCount()
+	defer bd.DecrementStreamCount()
 
 	for start := time.Now(); time.Since(start) < provider.CONNECTTIMEOUT*time.Second; {
 		select {
@@ -241,7 +243,7 @@ func (prov *rabbitMQAMQP10Provider) WaitForConnect(ctx context.Context) bool {
 		default:
 		}
 
-		if bd.state.Load() == provider.CONNECTED {
+		if bd.State.Load() == provider.CONNECTED {
 			util.Logger.Info(i18n.ClientConnected, bd.ClientIdentifier)
 			return true
 		}
@@ -250,7 +252,7 @@ func (prov *rabbitMQAMQP10Provider) WaitForConnect(ctx context.Context) bool {
 			util.Logger.Info(i18n.ClientDetailsGone, clientIdentifier)
 			return false
 		}
-		if bd.state.Load() == provider.CLOSED || bd.state.Load() == provider.DISCONNECTED {
+		if bd.State.Load() == provider.CLOSED || bd.State.Load() == provider.DISCONNECTED {
 			util.Logger.Info(i18n.ClientDisconnect, clientIdentifier)
 			return false
 		}
@@ -313,7 +315,7 @@ func (prov *rabbitMQAMQP10Provider) declareExchange(address *pb.Address, bd *Bro
 	_, err = bd.Connection.DeclareExchange(bd.ctx, specification)
 	if err != nil {
 		if errors.Is(err, rabbitmqamqp.ErrPreconditionFailed) {
-			bd.entityTracker().AddExchange(name)
+			bd.EntityTracker().AddExchange(name)
 			return nil
 		}
 		if bd.exchangeExists(name) {
@@ -322,7 +324,7 @@ func (prov *rabbitMQAMQP10Provider) declareExchange(address *pb.Address, bd *Bro
 		return err
 	}
 
-	bd.entityTracker().AddExchange(name)
+	bd.EntityTracker().AddExchange(name)
 	return nil
 }
 
@@ -401,7 +403,7 @@ func (prov *rabbitMQAMQP10Provider) declareQueue(source *pb.Source, bd *BrokerDe
 		util.Logger.Warn(i18n.ClientQueueDeclareError, declarationErr.Error(), bd.ClientIdentifier)
 		return declarationErr
 	}
-	bd.entityTracker().AddQueue(name)
+	bd.EntityTracker().AddQueue(name)
 	return nil
 }
 
@@ -438,7 +440,7 @@ func (prov *rabbitMQAMQP10Provider) bindAddressSubjects(source *pb.Source, addre
 }
 
 func (prov *rabbitMQAMQP10Provider) cleanupQueueBindings(source *pb.Source, address *pb.Address, subjects []string, bd *BrokerDetails) {
-	vhost := amqp.GetVhost(bd.connectionConfig)
+	vhost := amqp.GetVhost(bd.ConnectionConfig)
 	queueName := amqp.SourceName(source)
 	if bd.mgmtClient == nil {
 		util.Logger.Debugf("Error listing bindings for %s: management client is unavailable", queueName)

@@ -20,6 +20,7 @@ import (
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/message"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
 	pb "github.com/sassoftware/arke/api"
+	iamqp "github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/sassoftware/arke/internal/provider/connectors/amqp/track"
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/stretchr/testify/assert"
@@ -142,7 +143,7 @@ type streamConsumerMock struct {
 func Test_declareStreamSkipsKnownAndDoesNotCacheFailure(t *testing.T) {
 	streamConnection := &streamConnectionMock{}
 	streamConnection.On("DeclareStream").Return(nil).Once()
-	bd := &BrokerDetails{StreamConnection: streamConnection, knownEntities: track.New()}
+	bd := &BrokerDetails{StreamConnection: streamConnection, CommonBrokerDetails: iamqp.CommonBrokerDetails{KnownEntities: track.New()}}
 
 	assert.NoError(t, bd.declareStream("stream", 0))
 	assert.NoError(t, bd.declareStream("stream", 0))
@@ -150,7 +151,7 @@ func Test_declareStreamSkipsKnownAndDoesNotCacheFailure(t *testing.T) {
 
 	failingConnection := &streamConnectionMock{}
 	failingConnection.On("DeclareStream").Return(errors.New("stream failed")).Twice()
-	failingBD := &BrokerDetails{StreamConnection: failingConnection, knownEntities: track.New()}
+	failingBD := &BrokerDetails{StreamConnection: failingConnection, CommonBrokerDetails: iamqp.CommonBrokerDetails{KnownEntities: track.New()}}
 
 	assert.EqualError(t, failingBD.declareStream("failed", 0), "stream failed")
 	assert.EqualError(t, failingBD.declareStream("failed", 0), "stream failed")
@@ -733,7 +734,7 @@ func Test_streamSubscribe(t *testing.T) {
 		}
 
 		bd := &BrokerDetails{}
-		bd.activeMessages = util.NewConcurrentMap()
+		bd.ActiveMessages = util.NewConcurrentMap()
 		ctx, cancel := context.WithCancel(context.Background())
 
 		mc := make(chan *pb.Message)

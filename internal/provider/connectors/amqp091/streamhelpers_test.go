@@ -9,6 +9,7 @@ import (
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
 	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
 	pb "github.com/sassoftware/arke/api"
+	iamqp "github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -97,12 +98,14 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "without tenant and TLS",
 			bd: &BrokerDetails{
-				connectionConfig: &pb.ConnectionConfiguration{
-					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+				CommonBrokerDetails: iamqp.CommonBrokerDetails{
+					ConnectionConfig: &pb.ConnectionConfiguration{
+						Credentials: &pb.Credentials{
+							Username: "user",
+							Password: "pass",
+						},
+						Host: "localhost",
 					},
-					Host: "localhost",
 				},
 				tlsEnabled: false,
 			},
@@ -111,13 +114,15 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "with tenant and without TLS",
 			bd: &BrokerDetails{
-				connectionConfig: &pb.ConnectionConfiguration{
-					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+				CommonBrokerDetails: iamqp.CommonBrokerDetails{
+					ConnectionConfig: &pb.ConnectionConfiguration{
+						Credentials: &pb.Credentials{
+							Username: "user",
+							Password: "pass",
+						},
+						Host:   "localhost",
+						Tenant: "tenant1",
 					},
-					Host:   "localhost",
-					Tenant: "tenant1",
 				},
 				tlsEnabled: false,
 			},
@@ -126,12 +131,14 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "without tenant and with TLS",
 			bd: &BrokerDetails{
-				connectionConfig: &pb.ConnectionConfiguration{
-					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+				CommonBrokerDetails: iamqp.CommonBrokerDetails{
+					ConnectionConfig: &pb.ConnectionConfiguration{
+						Credentials: &pb.Credentials{
+							Username: "user",
+							Password: "pass",
+						},
+						Host: "localhost",
 					},
-					Host: "localhost",
 				},
 				tlsEnabled: true,
 			},
@@ -140,13 +147,15 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "with tenant and TLS",
 			bd: &BrokerDetails{
-				connectionConfig: &pb.ConnectionConfiguration{
-					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+				CommonBrokerDetails: iamqp.CommonBrokerDetails{
+					ConnectionConfig: &pb.ConnectionConfiguration{
+						Credentials: &pb.Credentials{
+							Username: "user",
+							Password: "pass",
+						},
+						Host:   "localhost",
+						Tenant: "tenant1",
 					},
-					Host:   "localhost",
-					Tenant: "tenant1",
 				},
 				tlsEnabled: true,
 			},
@@ -155,13 +164,15 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "escapechar tenant and TLS",
 			bd: &BrokerDetails{
-				connectionConfig: &pb.ConnectionConfiguration{
-					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+				CommonBrokerDetails: iamqp.CommonBrokerDetails{
+					ConnectionConfig: &pb.ConnectionConfiguration{
+						Credentials: &pb.Credentials{
+							Username: "user",
+							Password: "pass",
+						},
+						Host:   "localhost",
+						Tenant: "/",
 					},
-					Host:   "localhost",
-					Tenant: "/",
 				},
 				tlsEnabled: false,
 			},
@@ -170,13 +181,15 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "escapechar tenant and TLS",
 			bd: &BrokerDetails{
-				connectionConfig: &pb.ConnectionConfiguration{
-					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+				CommonBrokerDetails: iamqp.CommonBrokerDetails{
+					ConnectionConfig: &pb.ConnectionConfiguration{
+						Credentials: &pb.Credentials{
+							Username: "user",
+							Password: "pass",
+						},
+						Host:   "localhost",
+						Tenant: "/",
 					},
-					Host:   "localhost",
-					Tenant: "/",
 				},
 				tlsEnabled: true,
 			},

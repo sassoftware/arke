@@ -33,7 +33,7 @@ func connectionCleaner(ctx context.Context) {
 				if conn, ok := prov.connections.Get(connID); ok {
 					bd := conn.(*BrokerDetails)
 					util.Logger.Tracef("Client %v has %d open streams", connID, bd.ActiveStreams)
-					lastKnown := time.Since(bd.lastPubSubEvent)
+					lastKnown := time.Since(bd.LastPubSubEventTime())
 					if bd.ActiveStreams < 1 && lastKnown > cleanInterval {
 						util.Logger.Debugf("Client %v has had no streams open for %v. Assuming dead. Disconnecting.", connID, lastKnown)
 						prov.disconnectClientByIdentifier(connID)
