@@ -2042,6 +2042,10 @@ func (bd *BrokerDetails) GetActiveMessagesCount() int {
 	return bd.activeMessages.Length()
 }
 
+func (bd *BrokerDetails) GetActiveStreams() int {
+	return int(atomic.LoadInt64(&bd.ActiveStreams))
+}
+
 func (bd *BrokerDetails) GetMessagesProduced() int {
 	return int(atomic.LoadInt64(&bd.produced))
 }
@@ -2057,8 +2061,6 @@ func (prov *amqp091provider) Stats() *provider.Stats {
 			return nil
 		}
 		conn := connRaw.(*BrokerDetails)
-		clientStats := provider.ClientStatsFromProvider(conn.ClientIdentifier, conn)
-		clientStats.Streams = int(atomic.LoadInt64(&conn.ActiveStreams))
-		return clientStats
+		return provider.ClientStatsFromProvider(conn.ClientIdentifier, conn)
 	})
 }

@@ -11,6 +11,7 @@ func ClientStatsFromProvider(clientIdentifier string, metrics ClientStatsProvide
 	return &ClientStats{
 		ID:             clientIdentifier,
 		ActiveMessages: metrics.GetActiveMessagesCount(),
+		Streams:        metrics.GetActiveStreams(),
 		Produced:       metrics.GetMessagesProduced(),
 		Consumed:       metrics.GetMessagesConsumed(),
 	}

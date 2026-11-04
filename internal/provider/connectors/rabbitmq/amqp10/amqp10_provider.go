@@ -268,14 +268,16 @@ func (prov *rabbitMQAMQP10Provider) Stats() *provider.Stats {
 			return nil
 		}
 
-		clientStats := provider.ClientStatsFromProvider(bd.ClientIdentifier, bd)
-		clientStats.Streams = int(atomic.LoadInt64(&bd.ActiveStreams))
-		return clientStats
+		return provider.ClientStatsFromProvider(bd.ClientIdentifier, bd)
 	})
 }
 
 func (bd *BrokerDetails) GetActiveMessagesCount() int {
 	return bd.activeMessages.Length()
+}
+
+func (bd *BrokerDetails) GetActiveStreams() int {
+	return int(atomic.LoadInt64(&bd.ActiveStreams))
 }
 
 func (bd *BrokerDetails) GetMessagesProduced() int {

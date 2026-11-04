@@ -46,3 +46,16 @@ func TestCollectClientStats(t *testing.T) {
 		assert.NotContains(t, stats.Clients, (*ClientStats)(nil))
 	})
 }
+
+type fakeClientMetrics struct{ messages, streams, produced, consumed int }
+
+func (f fakeClientMetrics) GetActiveMessagesCount() int { return f.messages }
+func (f fakeClientMetrics) GetActiveStreams() int       { return f.streams }
+func (f fakeClientMetrics) GetMessagesProduced() int    { return f.produced }
+func (f fakeClientMetrics) GetMessagesConsumed() int    { return f.consumed }
+
+func TestClientStatsFromProvider(t *testing.T) {
+	stats := ClientStatsFromProvider("client", fakeClientMetrics{messages: 1, streams: 2, produced: 3, consumed: 4})
+
+	assert.Equal(t, &ClientStats{ID: "client", ActiveMessages: 1, Streams: 2, Produced: 3, Consumed: 4}, stats)
+}
