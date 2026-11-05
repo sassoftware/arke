@@ -64,9 +64,9 @@ type BrokerDetails struct {
 	connectionConfig *pb.ConnectionConfiguration
 	tlsConfig        *tls.Config
 	tlsSkipVerify    bool
-	ActiveStreams    int64
-	consumed         int64
-	produced         int64
+	ActiveStreams    atomic.Int64
+	consumed         atomic.Int64
+	produced         atomic.Int64
 	clientDisconnect atomic.Bool
 
 	lastPubSubEvent      time.Time
@@ -119,12 +119,12 @@ func (bd *BrokerDetails) updateLastPubSubEvent() {
 }
 
 func (bd *BrokerDetails) incrementStreamCount() {
-	atomic.AddInt64(&bd.ActiveStreams, 1)
+	bd.ActiveStreams.Add(1)
 	bd.updateLastPubSubEvent()
 }
 
 func (bd *BrokerDetails) decrementStreamCount() {
-	atomic.AddInt64(&bd.ActiveStreams, -1)
+	bd.ActiveStreams.Add(-1)
 	bd.updateLastPubSubEvent()
 }
 

@@ -16,7 +16,6 @@ import (
 	"math/big"
 	"net/http"
 	"os"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -88,6 +87,20 @@ func newTestRabbitMQAMQP10Provider() *rabbitMQAMQP10Provider {
 	return &rabbitMQAMQP10Provider{
 		connections: util.NewConcurrentMap(),
 	}
+}
+
+func newStatsTestBrokerDetails(clientIdentifier string, activeMessages, streams, produced, consumed int64) *BrokerDetails {
+	bd := &BrokerDetails{
+		ClientIdentifier: clientIdentifier,
+		activeMessages:   util.NewConcurrentMap(),
+	}
+	for i := int64(0); i < activeMessages; i++ {
+		bd.activeMessages.Add(fmt.Sprintf("message-%d", i), struct{}{})
+	}
+	bd.ActiveStreams.Store(streams)
+	bd.produced.Store(produced)
+	bd.consumed.Store(consumed)
+	return bd
 }
 
 func Test_NewAMQP10Provider(t *testing.T) {
@@ -440,7 +453,7 @@ func Test_amqp10provider_WaitForConnect(t *testing.T) {
 		prov.connections.Add(clientIdentifier, bd)
 
 		assert.True(t, prov.WaitForConnect(ctx))
-		assert.Equal(t, int64(0), bd.ActiveStreams)
+		assert.Equal(t, int64(0), bd.ActiveStreams.Load())
 	})
 
 	t.Run("returns false when broker details disappear while waiting", func(t *testing.T) {
@@ -456,7 +469,7 @@ func Test_amqp10provider_WaitForConnect(t *testing.T) {
 		}()
 
 		require.Eventually(t, func() bool {
-			return atomic.LoadInt64(&bd.ActiveStreams) == 1
+			return bd.ActiveStreams.Load() == 1
 		}, time.Second, 10*time.Millisecond)
 		prov.connections.DeleteIfEqual(clientIdentifier, bd)
 
@@ -466,7 +479,7 @@ func Test_amqp10provider_WaitForConnect(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("WaitForConnect did not return after broker details were removed")
 		}
-		assert.Equal(t, int64(0), atomic.LoadInt64(&bd.ActiveStreams))
+		assert.Equal(t, int64(0), bd.ActiveStreams.Load())
 	})
 }
 
@@ -493,11 +506,99 @@ func Test_amqp10provider_StubbedMethods(t *testing.T) {
 	// TODO: Issue 196 - delete
 	assert.Nil(t, prov.DeadLetter(context.Background(), nil, ""))
 
-	// TODO: Issue 194 - delete
-	assert.Empty(t, prov.Stats().Clients)
-
 	// TODO: Issue 193 - delete
 	assert.NotNil(t, prov.SourceStats(context.Background(), nil))
+}
+
+func Test_amqp10provider_Stats(t *testing.T) {
+	t.Run("empty provider returns non-nil stats with no clients", func(t *testing.T) {
+		prov := newTestRabbitMQAMQP10Provider()
+
+		stats := prov.Stats()
+
+		require.NotNil(t, stats)
+		require.NotNil(t, stats.Clients)
+		assert.Empty(t, stats.Clients)
+	})
+
+	t.Run("returns stats for a single client", func(t *testing.T) {
+		prov := newTestRabbitMQAMQP10Provider()
+		bd := newStatsTestBrokerDetails("client-one", 3, 4, 5, 6)
+		prov.connections.Add(bd.ClientIdentifier, bd)
+
+		stats := prov.Stats()
+
+		require.Len(t, stats.Clients, 1)
+		assert.Equal(t, &provider.ClientStats{
+			ID:             "client-one",
+			ActiveMessages: 3,
+			Streams:        4,
+			Produced:       5,
+			Consumed:       6,
+		}, stats.Clients[0])
+	})
+
+	t.Run("returns all clients without relying on map order", func(t *testing.T) {
+		prov := newTestRabbitMQAMQP10Provider()
+		first := newStatsTestBrokerDetails("client-one", 1, 2, 3, 4)
+		second := newStatsTestBrokerDetails("client-two", 5, 6, 7, 8)
+		prov.connections.Add(first.ClientIdentifier, first)
+		prov.connections.Add(second.ClientIdentifier, second)
+
+		stats := prov.Stats()
+
+		require.Len(t, stats.Clients, 2)
+		clientsByID := make(map[string]*provider.ClientStats, len(stats.Clients))
+		for _, client := range stats.Clients {
+			clientsByID[client.ID] = client
+		}
+		assert.Equal(t, &provider.ClientStats{
+			ID:             "client-one",
+			ActiveMessages: 1,
+			Streams:        2,
+			Produced:       3,
+			Consumed:       4,
+		}, clientsByID["client-one"])
+		assert.Equal(t, &provider.ClientStats{
+			ID:             "client-two",
+			ActiveMessages: 5,
+			Streams:        6,
+			Produced:       7,
+			Consumed:       8,
+		}, clientsByID["client-two"])
+	})
+
+	t.Run("skips entries without broker details", func(t *testing.T) {
+		prov := newTestRabbitMQAMQP10Provider()
+		bd := newStatsTestBrokerDetails("client-one", 1, 2, 3, 4)
+		prov.connections.Add(bd.ClientIdentifier, bd)
+		prov.connections.Add("missing-details", struct{}{})
+
+		stats := prov.Stats()
+
+		require.Len(t, stats.Clients, 1)
+		assert.Equal(t, "client-one", stats.Clients[0].ID)
+		assert.NotContains(t, stats.Clients, (*provider.ClientStats)(nil))
+	})
+
+	t.Run("reads counters prepared with atomic additions", func(t *testing.T) {
+		prov := newTestRabbitMQAMQP10Provider()
+		bd := &BrokerDetails{
+			ClientIdentifier: "atomic-client",
+			activeMessages:   util.NewConcurrentMap(),
+		}
+		bd.ActiveStreams.Add(9)
+		bd.produced.Add(10)
+		bd.consumed.Add(11)
+		prov.connections.Add(bd.ClientIdentifier, bd)
+
+		stats := prov.Stats()
+
+		require.Len(t, stats.Clients, 1)
+		assert.Equal(t, 9, stats.Clients[0].Streams)
+		assert.Equal(t, 10, stats.Clients[0].Produced)
+		assert.Equal(t, 11, stats.Clients[0].Consumed)
+	})
 }
 
 func Test_SupportedSourceOptions(t *testing.T) {

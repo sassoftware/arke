@@ -103,9 +103,9 @@ type BrokerDetails struct {
 	state            atomic.Uint32
 	connectionConfig *pb.ConnectionConfiguration
 	tlsSkipVerify    bool
-	ActiveStreams    int64
-	consumed         int64
-	produced         int64
+	ActiveStreams    atomic.Int64
+	consumed         atomic.Int64
+	produced         atomic.Int64
 	clientDisconnect atomic.Bool
 	lastPubSubEvent  time.Time
 	tlsConfig        *tls.Config
@@ -484,9 +484,6 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 		activeMessages:   activeMessages,
 		tlsSkipVerify:    tlsSkipVerify,
 		tlsConfig:        prov.tlsConfig,
-		produced:         0,
-		consumed:         0,
-		ActiveStreams:    0,
 		lastPubSubEvent:  time.Now(),
 		shutdownChan:     make(chan bool, 1),
 		pubChannelCtx:    pubChCtx,
@@ -652,12 +649,12 @@ func (bd *BrokerDetails) updateLastPubSubEvent() {
 }
 
 func (bd *BrokerDetails) incrementStreamCount() {
-	atomic.AddInt64(&bd.ActiveStreams, 1)
+	bd.ActiveStreams.Add(1)
 	bd.updateLastPubSubEvent()
 }
 
 func (bd *BrokerDetails) decrementStreamCount() {
-	atomic.AddInt64(&bd.ActiveStreams, -1)
+	bd.ActiveStreams.Add(-1)
 	bd.updateLastPubSubEvent()
 }
 
@@ -1237,7 +1234,7 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 
 			bd.activeMessages.Add(messageUUID, msg)
 			messageChannel <- message
-			atomic.AddInt64(&bd.consumed, 1)
+			bd.consumed.Add(1)
 			span.End()
 		}
 	}
@@ -1376,7 +1373,7 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 		// potentially acking before we add it to active messages (can happen in low latency envs
 		bd.activeMessages.Add(messageUUID, stm)
 		messageChannel <- m
-		atomic.AddInt64(&bd.consumed, 1)
+		bd.consumed.Add(1)
 	}
 
 	consumer, _ := bd.StreamConnection.NewConsumer(source.GetName(), consumerName, offset, handleMessages, source.GetSingleActiveConsumer())
@@ -1677,7 +1674,7 @@ func (prov *amqp091provider) prepareAndSend(ctx context.Context, msg *pb.Message
 	}
 
 	util.Logger.Trace(i18n.ClientPublished, bd.ClientIdentifier)
-	atomic.AddInt64(&bd.produced, 1)
+	bd.produced.Add(1)
 	span.End()
 
 	return nil
@@ -1725,7 +1722,7 @@ PCLoop:
 		}
 	}
 	util.Logger.Trace(i18n.ClientPublished, bd.ClientIdentifier)
-	atomic.AddInt64(&bd.produced, 1)
+	bd.produced.Add(1)
 	return nil
 }
 
@@ -2038,22 +2035,29 @@ func (bd *BrokerDetails) loadExchanges() {
 	}
 }
 
+func (bd *BrokerDetails) GetActiveMessagesCount() int {
+	return bd.activeMessages.Length()
+}
+
+func (bd *BrokerDetails) GetActiveStreams() int {
+	return int(bd.ActiveStreams.Load())
+}
+
+func (bd *BrokerDetails) GetMessagesProduced() int {
+	return int(bd.produced.Load())
+}
+
+func (bd *BrokerDetails) GetMessagesConsumed() int {
+	return int(bd.consumed.Load())
+}
+
 func (prov *amqp091provider) Stats() *provider.Stats {
-	stats := &provider.Stats{}
-	stats.Clients = make([]*provider.ClientStats, 0)
-	for _, connID := range prov.connections.GetList() {
-		clientStat := &provider.ClientStats{}
+	return provider.CollectClientStats(prov.connections.GetList(), func(connID string) *provider.ClientStats {
 		connRaw, exists := prov.connections.Get(connID)
 		if !exists {
-			continue
+			return nil
 		}
 		conn := connRaw.(*BrokerDetails)
-		clientStat.ID = conn.ClientIdentifier
-		clientStat.ActiveMessages = conn.activeMessages.Length()
-		clientStat.Streams = int(conn.ActiveStreams)
-		clientStat.Produced = int(conn.produced)
-		clientStat.Consumed = int(conn.consumed)
-		stats.Clients = append(stats.Clients, clientStat)
-	}
-	return stats
+		return provider.ClientStatsFromProvider(conn.ClientIdentifier, conn)
+	})
 }
