@@ -469,12 +469,10 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 	// a value caused the compiler to detect 5 separate escape flows and emit 5
 	// escape-to-heap events, making the intent opaque.
 	bd := &BrokerDetails{
-		CommonBrokerDetails: iamqp.CommonBrokerDetails{
-			ConnectionConfig: cf,
-			ClientIdentifier: clientIdentifier,
-			ActiveMessages:   activeMessages,
-			LastPubSubEvent:  time.Now(),
-		},
+		ConnectionConfig: cf,
+		ClientIdentifier: clientIdentifier,
+		ActiveMessages:   activeMessages,
+		LastPubSubEvent:  time.Now(),
 		ErrorChannel:     make(chan amqp091Error, 1),
 		tlsSkipVerify:    tlsSkipVerify,
 		tlsConfig:        prov.tlsConfig,
