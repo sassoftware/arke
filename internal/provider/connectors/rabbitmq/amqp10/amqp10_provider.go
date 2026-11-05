@@ -137,7 +137,6 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 			ClientIdentifier: clientIdentifier,
 			ActiveMessages:   util.NewConcurrentMap(),
 			ConnectionConfig: cf,
-			ActiveStreams:    0,
 			LastPubSubEvent:  time.Now(),
 		},
 		tlsConfig:     tlsConfig,
@@ -263,8 +262,30 @@ func (prov *rabbitMQAMQP10Provider) WaitForConnect(ctx context.Context) bool {
 }
 
 func (prov *rabbitMQAMQP10Provider) Stats() *provider.Stats {
-	// TODO: Issue 193
-	return &provider.Stats{}
+	return provider.CollectClientStats(prov.connections.GetList(), func(clientIdentifier string) *provider.ClientStats {
+		bd := prov.getBrokerDetailsByIdentifier(clientIdentifier)
+		if bd == nil {
+			return nil
+		}
+
+		return provider.ClientStatsFromProvider(bd.ClientIdentifier, bd)
+	})
+}
+
+func (bd *BrokerDetails) GetActiveMessagesCount() int {
+	return bd.ActiveMessages.Length()
+}
+
+func (bd *BrokerDetails) GetActiveStreams() int {
+	return int(bd.ActiveStreams.Load())
+}
+
+func (bd *BrokerDetails) GetMessagesProduced() int {
+	return int(bd.produced.Load())
+}
+
+func (bd *BrokerDetails) GetMessagesConsumed() int {
+	return int(bd.consumed.Load())
 }
 
 func (prov *rabbitMQAMQP10Provider) SourceStats(ctx context.Context, source *pb.Source) *pb.SourceStats {

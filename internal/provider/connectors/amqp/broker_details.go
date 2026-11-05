@@ -26,7 +26,7 @@ type CommonBrokerDetails struct {
 	ActiveMessages   *util.ConcurrentMap
 	State            atomic.Uint32
 	ConnectionConfig *pb.ConnectionConfiguration
-	ActiveStreams    int64
+	ActiveStreams    atomic.Int64
 	ClientDisconnect atomic.Bool
 	LastPubSubEvent  time.Time
 
@@ -60,13 +60,13 @@ func (bd *CommonBrokerDetails) LastPubSubEventTime() time.Time {
 
 // IncrementStreamCount records an active stream and refreshes the activity time.
 func (bd *CommonBrokerDetails) IncrementStreamCount() {
-	atomic.AddInt64(&bd.ActiveStreams, 1)
+	bd.ActiveStreams.Add(1)
 	bd.UpdateLastPubSubEvent()
 }
 
 // DecrementStreamCount records a closed stream and refreshes the activity time.
 func (bd *CommonBrokerDetails) DecrementStreamCount() {
-	atomic.AddInt64(&bd.ActiveStreams, -1)
+	bd.ActiveStreams.Add(-1)
 	bd.UpdateLastPubSubEvent()
 }
 

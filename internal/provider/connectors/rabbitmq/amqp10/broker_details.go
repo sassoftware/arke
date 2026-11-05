@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"sync"
+	"sync/atomic"
 
 	rabbitmqamqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
 	pb "github.com/sassoftware/arke/api"
@@ -56,8 +57,8 @@ type BrokerDetails struct {
 
 	tlsSkipVerify bool
 	tlsConfig     *tls.Config
-	consumed      int64
-	produced      int64
+	consumed      atomic.Int64
+	produced      atomic.Int64
 	tlsEnabled    bool
 
 	// TODO: Issue 204 - used by connection watcher and connection cleaner

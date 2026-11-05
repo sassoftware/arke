@@ -29,12 +29,12 @@ func TestCommonBrokerDetailsStreamCountUpdatesActivity(t *testing.T) {
 	details.LastPubSubEvent = initialActivity
 
 	details.IncrementStreamCount()
-	assert.Equal(t, int64(1), details.ActiveStreams)
+	assert.Equal(t, int64(1), details.ActiveStreams.Load())
 	incrementedAt := details.LastPubSubEventTime()
 	assert.True(t, incrementedAt.After(initialActivity))
 
 	details.DecrementStreamCount()
-	assert.Equal(t, int64(0), details.ActiveStreams)
+	assert.Equal(t, int64(0), details.ActiveStreams.Load())
 	assert.False(t, details.LastPubSubEventTime().Before(incrementedAt))
 }
 
