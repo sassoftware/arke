@@ -16,7 +16,6 @@ import (
 	"math/big"
 	"net/http"
 	"os"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -98,9 +97,9 @@ func newStatsTestBrokerDetails(clientIdentifier string, activeMessages, streams,
 	for i := int64(0); i < activeMessages; i++ {
 		bd.activeMessages.Add(fmt.Sprintf("message-%d", i), struct{}{})
 	}
-	atomic.StoreInt64(&bd.ActiveStreams, streams)
-	atomic.StoreInt64(&bd.produced, produced)
-	atomic.StoreInt64(&bd.consumed, consumed)
+	bd.ActiveStreams.Store(streams)
+	bd.produced.Store(produced)
+	bd.consumed.Store(consumed)
 	return bd
 }
 
@@ -454,7 +453,7 @@ func Test_amqp10provider_WaitForConnect(t *testing.T) {
 		prov.connections.Add(clientIdentifier, bd)
 
 		assert.True(t, prov.WaitForConnect(ctx))
-		assert.Equal(t, int64(0), bd.ActiveStreams)
+		assert.Equal(t, int64(0), bd.ActiveStreams.Load())
 	})
 
 	t.Run("returns false when broker details disappear while waiting", func(t *testing.T) {
@@ -470,7 +469,7 @@ func Test_amqp10provider_WaitForConnect(t *testing.T) {
 		}()
 
 		require.Eventually(t, func() bool {
-			return atomic.LoadInt64(&bd.ActiveStreams) == 1
+			return bd.ActiveStreams.Load() == 1
 		}, time.Second, 10*time.Millisecond)
 		prov.connections.DeleteIfEqual(clientIdentifier, bd)
 
@@ -480,7 +479,7 @@ func Test_amqp10provider_WaitForConnect(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("WaitForConnect did not return after broker details were removed")
 		}
-		assert.Equal(t, int64(0), atomic.LoadInt64(&bd.ActiveStreams))
+		assert.Equal(t, int64(0), bd.ActiveStreams.Load())
 	})
 }
 
@@ -588,9 +587,9 @@ func Test_amqp10provider_Stats(t *testing.T) {
 			ClientIdentifier: "atomic-client",
 			activeMessages:   util.NewConcurrentMap(),
 		}
-		atomic.AddInt64(&bd.ActiveStreams, 9)
-		atomic.AddInt64(&bd.produced, 10)
-		atomic.AddInt64(&bd.consumed, 11)
+		bd.ActiveStreams.Add(9)
+		bd.produced.Add(10)
+		bd.consumed.Add(11)
 		prov.connections.Add(bd.ClientIdentifier, bd)
 
 		stats := prov.Stats()

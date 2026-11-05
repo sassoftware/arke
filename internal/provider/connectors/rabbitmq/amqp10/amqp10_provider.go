@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	rabbitmqamqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
@@ -139,7 +138,6 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 		activeMessages:   util.NewConcurrentMap(),
 		connectionConfig: cf,
 		tlsSkipVerify:    tlsSkipVerify,
-		ActiveStreams:    0,
 		lastPubSubEvent:  time.Now(),
 		shutdownChan:     make(chan struct{}),
 	}
@@ -277,15 +275,15 @@ func (bd *BrokerDetails) GetActiveMessagesCount() int {
 }
 
 func (bd *BrokerDetails) GetActiveStreams() int {
-	return int(atomic.LoadInt64(&bd.ActiveStreams))
+	return int(bd.ActiveStreams.Load())
 }
 
 func (bd *BrokerDetails) GetMessagesProduced() int {
-	return int(atomic.LoadInt64(&bd.produced))
+	return int(bd.produced.Load())
 }
 
 func (bd *BrokerDetails) GetMessagesConsumed() int {
-	return int(atomic.LoadInt64(&bd.consumed))
+	return int(bd.consumed.Load())
 }
 
 func (prov *rabbitMQAMQP10Provider) SourceStats(ctx context.Context, source *pb.Source) *pb.SourceStats {

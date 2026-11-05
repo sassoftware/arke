@@ -392,19 +392,19 @@ func Test_amqp091provider_Stats(t *testing.T) {
 		first := &BrokerDetails{
 			ClientIdentifier: "client-one",
 			activeMessages:   util.NewConcurrentMap(),
-			ActiveStreams:    2,
-			produced:         3,
-			consumed:         4,
 		}
+		first.ActiveStreams.Store(2)
+		first.produced.Store(3)
+		first.consumed.Store(4)
 		first.activeMessages.Add("message-one", struct{}{})
 		first.activeMessages.Add("message-two", struct{}{})
 		second := &BrokerDetails{
 			ClientIdentifier: "client-two",
 			activeMessages:   util.NewConcurrentMap(),
-			ActiveStreams:    6,
-			produced:         7,
-			consumed:         8,
 		}
+		second.ActiveStreams.Store(6)
+		second.produced.Store(7)
+		second.consumed.Store(8)
 		second.activeMessages.Add("message-three", struct{}{})
 		prov.connections.Add(first.ClientIdentifier, first)
 		prov.connections.Add(second.ClientIdentifier, second)
