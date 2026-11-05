@@ -14,6 +14,7 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	pb "github.com/sassoftware/arke/api"
 	iamqp "github.com/sassoftware/arke/internal/provider/connectors/amqp"
 )
 
@@ -61,6 +62,7 @@ func oldGetManagementClient(tlsEnabled bool) *http.Client {
 
 // new — one-time init via the patched BrokerDetails method
 var sinkHTTP *http.Client
+var sinkManagementClient iamqp.ManagementClientShim
 
 func BenchmarkGetManagementClient_Old(b *testing.B) {
 	b.ReportAllocs()
@@ -70,11 +72,23 @@ func BenchmarkGetManagementClient_Old(b *testing.B) {
 }
 
 func BenchmarkGetManagementClient_New(b *testing.B) {
-	bd := &BrokerDetails{}
+	bd := &BrokerDetails{
+		CommonBrokerDetails: iamqp.CommonBrokerDetails{
+			ConnectionConfig: &pb.ConnectionConfiguration{
+				Host:      "localhost",
+				Port:      5672,
+				AdminPort: 15672,
+				Credentials: &pb.Credentials{
+					Username: "guest",
+					Password: "guest",
+				},
+			},
+		},
+	}
 	b.ReportAllocs()
 
 	for b.Loop() {
-		sinkHTTP = bd.getManagementClient()
+		sinkManagementClient, _ = bd.getManagementClient()
 	}
 }
 

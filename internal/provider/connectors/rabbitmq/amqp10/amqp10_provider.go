@@ -469,14 +469,7 @@ func (prov *rabbitMQAMQP10Provider) cleanupQueueBindings(source *pb.Source, addr
 	}
 
 	for _, binding := range bindings {
-		bindingExpected := false
-		for _, subject := range subjects {
-			if binding.RoutingKey == subject {
-				bindingExpected = true
-				break
-			}
-		}
-		if bindingExpected {
+		if amqp.IsBindingExpected(binding.RoutingKey, subjects) {
 			continue
 		}
 

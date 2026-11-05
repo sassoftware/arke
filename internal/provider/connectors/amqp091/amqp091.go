@@ -10,8 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -108,10 +106,11 @@ type BrokerDetails struct {
 	// it outlive the connection.
 	watcherWG sync.WaitGroup
 
-	// mgmtClientOnce guards one-time initialization of the cached HTTP client
-	// used for RabbitMQ management API requests.
+	// mgmtClientOnce guards one-time initialization of the shared management
+	// REST client used for RabbitMQ management API requests.
 	mgmtClientOnce sync.Once
-	mgmtClient     *http.Client
+	mgmtClient     iamqp.ManagementClientShim
+	mgmtClientErr  error
 }
 
 func init() {
@@ -775,19 +774,30 @@ func (prov *amqp091provider) declareQueue(source *pb.Source, bd *BrokerDetails, 
 	return nil
 }
 
-func (bd *BrokerDetails) getManagementClient() *http.Client {
-	// Initialize the HTTP client once and reuse it for all management API
-	// requests.  Allocating a fresh *http.Client (and *http.Transport for TLS)
-	// on every call was the second-highest heap escape in the AMQP provider.
+func (bd *BrokerDetails) getManagementClient() (iamqp.ManagementClientShim, error) {
+	// Initialize the shared REST client on the first management request, after
+	// connection setup has selected TLS settings for this broker.
 	bd.mgmtClientOnce.Do(func() {
-		if bd.tlsEnabled {
-			tr := &http.Transport{TLSClientConfig: bd.tlsConfig}
-			bd.mgmtClient = &http.Client{Transport: tr, Timeout: 5 * time.Second}
-		} else {
-			bd.mgmtClient = &http.Client{Timeout: 5 * time.Second}
+		var tlsConfig *tls.Config
+		proto := "http"
+		if bd.ConnectionConfig.GetTls() {
+			proto = "https"
+			tlsConfig = bd.tlsConfig
 		}
+
+		// Keep the AMQP 0-9-1 port fallback. It differs from the shared helper's
+		// environment/default-port policy and is part of this provider's behavior.
+		adminPort := bd.ConnectionConfig.GetAdminPort()
+		if adminPort == 0 {
+			adminPort = bd.ConnectionConfig.Port + 10000
+		}
+		endpoint := fmt.Sprintf("%s://%s:%d", proto, bd.ConnectionConfig.Host, adminPort)
+		username, password := iamqp.GetUsernamePassword(bd.ConnectionConfig)
+		bd.mgmtClient, bd.mgmtClientErr = iamqp.NewManagementClientWithBasicAuth(
+			context.Background(), endpoint, username, password, tlsConfig,
+		)
 	})
-	return bd.mgmtClient
+	return bd.mgmtClient, bd.mgmtClientErr
 }
 
 func (bd *BrokerDetails) doManagementRequest(method, urn string) ([]map[string]interface{}, error) {
@@ -809,9 +819,12 @@ func (bd *BrokerDetails) doManagementRequest(method, urn string) ([]map[string]i
 }
 
 func (bd *BrokerDetails) doManagementRequestWithoutMarshal(method, urn string) ([]byte, error) {
-	client := bd.getManagementClient()
+	client, err := bd.getManagementClient()
+	if err != nil {
+		return nil, fmt.Errorf("Error retrieving bindings: %s", err.Error())
+	}
 	proto := "http"
-	if bd.tlsEnabled {
+	if bd.ConnectionConfig.GetTls() {
 		proto = "https"
 	}
 
@@ -822,38 +835,17 @@ func (bd *BrokerDetails) doManagementRequestWithoutMarshal(method, urn string) (
 	host := bd.ConnectionConfig.Host
 
 	rurl := fmt.Sprintf("%s://%s:%d%s", proto, host, adminPort, urn)
-	req, _ := http.NewRequestWithContext(context.Background(), method, rurl, nil)
-	req.SetBasicAuth(bd.ConnectionConfig.GetCredentials().GetUsername(), bd.ConnectionConfig.GetCredentials().GetPassword())
-	req.Header.Add("Accept", "application/json")
-	resp, respErr := client.Do(req)
-
-	var body []byte
-	var bodyErr error
-	if resp != nil {
-		defer resp.Body.Close()
-		body, bodyErr = io.ReadAll(resp.Body)
+	body, statusCode, requestErr := client.Request(context.Background(), method, urn)
+	if requestErr != nil && statusCode == 0 {
+		return nil, fmt.Errorf("Error retrieving bindings: %s", requestErr.Error())
 	}
-
-	if respErr != nil { //nolint:gocritic
-		err := fmt.Errorf("Error retrieving bindings: %s", respErr.Error())
-		return nil, err
-	} else if resp == nil {
-		err := fmt.Errorf("Error %s on management request %s: no response", method, rurl)
-		return nil, err
-	} else if resp.StatusCode >= 300 || resp.StatusCode < 200 {
-		err := fmt.Errorf("Error %s on management request %s: request returned a %d", method, rurl, resp.StatusCode)
-		return body, err
+	if statusCode == 0 {
+		return nil, fmt.Errorf("Error %s on management request %s: no response", method, rurl)
 	}
-
-	if bodyErr != nil {
-		return body, bodyErr
+	if statusCode >= 300 || statusCode < 200 {
+		return body, fmt.Errorf("Error %s on management request %s: request returned a %d", method, rurl, statusCode)
 	}
-
-	if resp.StatusCode == 204 {
-		return body, nil
-	}
-
-	return body, nil
+	return body, requestErr
 }
 
 func (bd *BrokerDetails) getBindingKeysForSource(source *pb.Source) []map[string]interface{} {
@@ -901,15 +893,8 @@ func (bd *BrokerDetails) cleanupBindings(source *pb.Source, subjects []string) [
 	bindings := bd.getBindingKeysForSource(source)
 	removed := make([]string, 0)
 	for _, binding := range bindings {
-		bindingExpected := false
 		routingKey := binding["routing_key"].(string)
-		for _, subject := range subjects {
-			if routingKey == subject {
-				bindingExpected = true
-				break
-			}
-		}
-		if !bindingExpected {
+		if !iamqp.IsBindingExpected(routingKey, subjects) {
 			util.Logger.Debugf("Deleting binding %s for routing key %s from %s\n", binding["properties_key"], binding["routing_key"], source.GetName())
 			err := bd.deleteBindingByKeyFromSource(source, binding["properties_key"].(string))
 			if err != nil {
@@ -2003,7 +1988,7 @@ func (prov *amqp091provider) Stats() *provider.Stats {
 		conn := connRaw.(*BrokerDetails)
 		clientStat.ID = conn.ClientIdentifier
 		clientStat.ActiveMessages = conn.ActiveMessages.Length()
-		clientStat.Streams = int(conn.ActiveStreams)
+		clientStat.Streams = int(atomic.LoadInt64(&conn.ActiveStreams))
 		clientStat.Produced = int(conn.produced)
 		clientStat.Consumed = int(conn.consumed)
 		stats.Clients = append(stats.Clients, clientStat)
