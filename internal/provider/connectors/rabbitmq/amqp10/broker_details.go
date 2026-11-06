@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	rabbitmqamqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
 	pb "github.com/sassoftware/arke/api"
@@ -53,7 +54,13 @@ type BrokerDetails struct {
 	// TODO: Issue 216 - Create streamConnectionShim
 	// StreamConnection streamConnectionShim
 
-	stateChannel chan *rabbitmqamqp.StateChanged
+	ClientIdentifier string
+	knownEntities    *track.EntityTracker
+	activeMessages   *util.ConcurrentMap
+
+	state         atomic.Uint32
+	stateChannel  chan *rabbitmqamqp.StateChanged
+	subscriptions *util.ConcurrentMap
 
 	tlsSkipVerify bool
 	tlsConfig     *tls.Config
@@ -81,22 +88,75 @@ func (bd *BrokerDetails) watchConnection() {
 			if !ok || change == nil || change.To == nil {
 				return
 			}
+			util.Logger.Info("connection %s state changed from %v to %v", bd.ClientIdentifier, change.From, change.To)
 
 			switch change.To.(type) {
 			case *rabbitmqamqp.StateOpen:
-				bd.State.Store(provider.CONNECTED)
+				bd.state.Store(provider.CONNECTED)
+				bd.transitionSubscriptionState(subscribeStateStarting)
 			case *rabbitmqamqp.StateReconnecting:
 				bd.State.Store(provider.CONNECTING)
 			case *rabbitmqamqp.StateClosed:
-				bd.State.Store(provider.CLOSED)
+				bd.state.Store(provider.CLOSED)
+				bd.transitionSubscriptionState(subscribeStateStopping)
 				return
 			case *rabbitmqamqp.StateClosing:
-				// TODO: Issue 204 - provider does not have a distinct CLOSING state, so we treat it as CLOSED (do we need a CLOSING state?)
-				bd.State.Store(provider.CLOSED)
+				bd.state.Store(provider.CLOSED)
+				bd.transitionSubscriptionState(subscribeStateStopping)
 				return
 			}
 		}
 	}
+}
+
+func (bd *BrokerDetails) subscribe(ctx context.Context, source *pb.Source, mc chan<- *pb.Message) error {
+	s := &Subscription{
+		ctx:       ctx,
+		bd:        bd,
+		source:    source,
+		state:     newSubscribeStateMachine(),
+		messageCh: mc,
+	}
+	s.configureStateTransitions()
+	err := s.state.transitionState(subscribeStateStarting)
+	if err != nil {
+		util.Logger.Debugf("failed to initialize subscription state to starting: %v", err)
+		return err
+	}
+	return nil
+}
+
+// Called when connection state changes
+func (bd *BrokerDetails) transitionSubscriptionState(newState subscribeState) {
+	bd.Lock()
+	defer bd.Unlock()
+	for _, subName := range bd.subscriptions.GetList() {
+		s, ok := bd.subscriptions.Get(subName)
+		if !ok {
+			continue
+		}
+		ss, ok := s.(*Subscription)
+		if !ok {
+			continue
+		}
+		go ss.state.transitionState(newState)
+	}
+}
+
+func (bd *BrokerDetails) updateLastPubSubEvent() {
+	bd.lastPubSubEventMutex.Lock()
+	defer bd.lastPubSubEventMutex.Unlock()
+	bd.lastPubSubEvent = time.Now()
+}
+
+func (bd *BrokerDetails) incrementStreamCount() {
+	atomic.AddInt64(&bd.ActiveStreams, 1)
+	bd.updateLastPubSubEvent()
+}
+
+func (bd *BrokerDetails) decrementStreamCount() {
+	atomic.AddInt64(&bd.ActiveStreams, -1)
+	bd.updateLastPubSubEvent()
 }
 
 func (bd *BrokerDetails) exchangeExists(name string) bool {
@@ -105,62 +165,6 @@ func (bd *BrokerDetails) exchangeExists(name string) bool {
 
 func (bd *BrokerDetails) queueExists(name string) bool {
 	return bd.EntityTracker().QueueExists(name)
-}
-
-func (bd *BrokerDetails) connect() (bool, error) {
-	if bd.ClientDisconnect.Load() {
-		return false, nil
-	}
-
-	if bd.State.Load() == provider.CONNECTING {
-		switch bd.WaitWhileConnecting() {
-		case provider.CONNECTED:
-			return true, nil
-		case provider.CLOSED:
-			return false, nil
-		}
-	}
-
-	bd.Lock()
-	defer bd.Unlock()
-	if bd.State.Load() == provider.CONNECTED {
-		return true, nil
-	}
-
-	bd.State.Store(provider.CONNECTING)
-	bd.shutdownChan = make(chan struct{})
-
-	// Reinitialize these maps early, we especially want to
-	// ensure activeMessages gets cleared out before an Ack/Nacks
-	// are sent from the client.
-	bd.KnownEntities = track.New()
-	bd.ActiveMessages = util.NewConcurrentMap()
-
-	util.Logger.Info(i18n.ClientConnect, bd.ClientIdentifier, bd.ConnectionConfig.GetHost())
-	conn, err := bd.Env.NewConnection(bd.ctx)
-	if err != nil {
-		util.Logger.Warn(i18n.ClientBrokerConnectError, err.Error(), bd.ClientIdentifier)
-		bd.State.Store(provider.CLOSED)
-		return false, err
-	}
-	bd.State.Store(provider.CONNECTED)
-
-	// buf of 5 to account for possible quick state changes and avoid blocking
-	bd.Connection = conn
-	bd.stateChannel = make(chan *rabbitmqamqp.StateChanged, 5)
-	err = bd.Connection.WatchConnection(bd.stateChannel)
-	if err != nil {
-		bd.disconnect()
-		return false, err
-	}
-	go bd.watchConnection()
-
-	util.Logger.Info(i18n.ClientConnected, bd.ClientIdentifier)
-
-	// TODO: Issue 203
-	// go bd.loadExchanges()
-
-	return true, nil
 }
 
 func (bd *BrokerDetails) disconnect() {
