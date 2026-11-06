@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/sassoftware/arke/internal/provider"
-	iamqp "github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -48,10 +47,8 @@ func TestConnectionCleaner_CleansInactiveConnections(t *testing.T) {
 	provy, _ := provider.GetProvider("amqp091")
 	prov := provy.(*amqp091provider)
 	prov.connections.Add("test-conn", &BrokerDetails{
-		CommonBrokerDetails: iamqp.CommonBrokerDetails{
-			ClientIdentifier: "test-conn",
-			LastPubSubEvent:  time.Now().Add(-3 * time.Second), // Simulate inactivity
-		},
+		ClientIdentifier: "test-conn",
+		LastPubSubEvent:  time.Now().Add(-3 * time.Second), // Simulate inactivity
 		shutdownChan:     shutdownChan,
 		pubChannelCancel: cancel,
 	})

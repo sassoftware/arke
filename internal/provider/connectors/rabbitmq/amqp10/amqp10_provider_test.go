@@ -91,10 +91,8 @@ func newTestRabbitMQAMQP10Provider() *rabbitMQAMQP10Provider {
 
 func newStatsTestBrokerDetails(clientIdentifier string, activeMessages, streams, produced, consumed int64) *BrokerDetails {
 	bd := &BrokerDetails{
-		CommonBrokerDetails: amqp.CommonBrokerDetails{
-			ClientIdentifier: clientIdentifier,
-			ActiveMessages:   util.NewConcurrentMap(),
-		},
+		ClientIdentifier: clientIdentifier,
+		ActiveMessages:   util.NewConcurrentMap(),
 	}
 	for i := int64(0); i < activeMessages; i++ {
 		bd.ActiveMessages.Add(fmt.Sprintf("message-%d", i), struct{}{})
@@ -132,7 +130,7 @@ func Test_amqp10provider_getBrokerDetails(t *testing.T) {
 	t.Run("returns broker details for client identifier", func(t *testing.T) {
 		ctx, clientIdentifier := newTestProviderContext(t, "get-broker-details")
 		prov := newTestRabbitMQAMQP10Provider()
-		bd := &BrokerDetails{CommonBrokerDetails: amqp.CommonBrokerDetails{ClientIdentifier: clientIdentifier}}
+		bd := &BrokerDetails{ClientIdentifier: clientIdentifier}
 		prov.connections.Add(clientIdentifier, bd)
 
 		got, err := prov.getBrokerDetails(ctx)
@@ -163,7 +161,7 @@ func Test_amqp10provider_getBrokerDetails(t *testing.T) {
 
 func Test_amqp10provider_getBrokerDetailsByIdentifier(t *testing.T) {
 	prov := newTestRabbitMQAMQP10Provider()
-	brokerDetails := &BrokerDetails{CommonBrokerDetails: amqp.CommonBrokerDetails{ClientIdentifier: "client"}}
+	brokerDetails := &BrokerDetails{ClientIdentifier: "client"}
 	prov.connections.Add("client", brokerDetails)
 
 	t.Run("returns broker details for an existing identifier", func(t *testing.T) {
@@ -309,7 +307,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		prov := newTestRabbitMQAMQP10Provider()
 		conn := &rabbitMQAMQP10ConnectionMock{}
 		conn.On("IsClosed").Return(false).Once()
-		prov.connections.Add(clientIdentifier, &BrokerDetails{CommonBrokerDetails: amqp.CommonBrokerDetails{ClientIdentifier: clientIdentifier}, Connection: conn})
+		prov.connections.Add(clientIdentifier, &BrokerDetails{ClientIdentifier: clientIdentifier, Connection: conn})
 
 		err := prov.Connect(ctx, newTestConnectionConfig(), false)
 
@@ -422,7 +420,7 @@ func Test_amqp10provider_Disconnect(t *testing.T) {
 		prov := newTestRabbitMQAMQP10Provider()
 		conn := &rabbitMQAMQP10ConnectionMock{}
 		conn.On("Close", ctx).Return(nil).Once()
-		bd := &BrokerDetails{ctx: ctx, CommonBrokerDetails: amqp.CommonBrokerDetails{ClientIdentifier: clientIdentifier}, Connection: conn}
+		bd := &BrokerDetails{ctx: ctx, ClientIdentifier: clientIdentifier, Connection: conn}
 		bd.State.Store(provider.CONNECTED)
 		prov.connections.Add(clientIdentifier, bd)
 
@@ -450,7 +448,7 @@ func Test_amqp10provider_WaitForConnect(t *testing.T) {
 	t.Run("returns true when broker details are connected", func(t *testing.T) {
 		ctx, clientIdentifier := newTestProviderContext(t, "wait-for-connect")
 		prov := newTestRabbitMQAMQP10Provider()
-		bd := &BrokerDetails{CommonBrokerDetails: amqp.CommonBrokerDetails{ClientIdentifier: clientIdentifier}}
+		bd := &BrokerDetails{ClientIdentifier: clientIdentifier}
 		bd.State.Store(provider.CONNECTED)
 		prov.connections.Add(clientIdentifier, bd)
 
@@ -461,7 +459,7 @@ func Test_amqp10provider_WaitForConnect(t *testing.T) {
 	t.Run("returns false when broker details disappear while waiting", func(t *testing.T) {
 		ctx, clientIdentifier := newTestProviderContext(t, "wait-disconnect")
 		prov := newTestRabbitMQAMQP10Provider()
-		bd := &BrokerDetails{CommonBrokerDetails: amqp.CommonBrokerDetails{ClientIdentifier: clientIdentifier}}
+		bd := &BrokerDetails{ClientIdentifier: clientIdentifier}
 		bd.State.Store(provider.CONNECTING)
 		prov.connections.Add(clientIdentifier, bd)
 
@@ -586,10 +584,8 @@ func Test_amqp10provider_Stats(t *testing.T) {
 	t.Run("reads counters prepared with atomic additions", func(t *testing.T) {
 		prov := newTestRabbitMQAMQP10Provider()
 		bd := &BrokerDetails{
-			CommonBrokerDetails: amqp.CommonBrokerDetails{
-				ClientIdentifier: "atomic-client",
-				ActiveMessages:   util.NewConcurrentMap(),
-			},
+			ClientIdentifier: "atomic-client",
+			ActiveMessages:   util.NewConcurrentMap(),
 		}
 		bd.ActiveStreams.Add(9)
 		bd.produced.Add(10)
@@ -1142,11 +1138,9 @@ func Test_amqp10provider_cleanupQueueBindings(t *testing.T) {
 			return nil, http.StatusNoContent, nil
 		}}
 		bd := &BrokerDetails{
-			ctx:        context.Background(),
-			mgmtClient: management,
-			CommonBrokerDetails: amqp.CommonBrokerDetails{
-				ConnectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant},
-			},
+			ctx:              context.Background(),
+			mgmtClient:       management,
+			ConnectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant},
 		}
 
 		newTestRabbitMQAMQP10Provider().cleanupQueueBindings(source, source.GetAddress(), []string{"keep.one", "keep.two"}, bd)
@@ -1168,7 +1162,7 @@ func Test_amqp10provider_cleanupQueueBindings(t *testing.T) {
 			return nil, http.StatusNoContent, nil
 		}}
 		connection := &rabbitMQAMQP10ConnectionMock{}
-		bd := &BrokerDetails{ctx: context.Background(), Connection: connection, mgmtClient: management, CommonBrokerDetails: amqp.CommonBrokerDetails{ConnectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant}}}
+		bd := &BrokerDetails{ctx: context.Background(), Connection: connection, mgmtClient: management, ConnectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant}}
 		connection.On("DeclareBind", bd.ctx, mock.Anything).Return("binding-path", nil).Once()
 
 		err := newTestRabbitMQAMQP10Provider().bindAddressSubjects(source, source.GetAddress(), bd)
@@ -1191,7 +1185,7 @@ func Test_amqp10provider_cleanupQueueBindings(t *testing.T) {
 			}
 			return nil, http.StatusNoContent, nil
 		}}
-		bd := &BrokerDetails{ctx: context.Background(), mgmtClient: management, CommonBrokerDetails: amqp.CommonBrokerDetails{ConnectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant}}}
+		bd := &BrokerDetails{ctx: context.Background(), mgmtClient: management, ConnectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant}}
 		connection := &rabbitMQAMQP10ConnectionMock{}
 		bd.Connection = connection
 
@@ -1220,7 +1214,7 @@ func Test_amqp10provider_cleanupQueueBindings(t *testing.T) {
 			return nil, http.StatusNoContent, nil
 		}}
 		connection := &rabbitMQAMQP10ConnectionMock{}
-		bd := &BrokerDetails{ctx: context.Background(), Connection: connection, mgmtClient: management, CommonBrokerDetails: amqp.CommonBrokerDetails{ConnectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant}}}
+		bd := &BrokerDetails{ctx: context.Background(), Connection: connection, mgmtClient: management, ConnectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant}}
 		connection.On("DeclareBind", bd.ctx, mock.Anything).Run(func(args mock.Arguments) {
 			binding := args.Get(1).(*rabbitmqamqp.ExchangeToQueueBindingSpecification)
 			assert.Empty(t, binding.BindingKey)
@@ -1271,12 +1265,10 @@ func Test_amqp10provider_subscribeSuppressesCleanupFailures(t *testing.T) {
 			connection := &rabbitMQAMQP10ConnectionMock{}
 			management := &managementClientStub{request: tt.request}
 			bd := &BrokerDetails{
-				ctx:        ctx,
-				Connection: connection,
-				mgmtClient: management,
-				CommonBrokerDetails: amqp.CommonBrokerDetails{
-					ConnectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant},
-				},
+				ctx:              ctx,
+				Connection:       connection,
+				mgmtClient:       management,
+				ConnectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant},
 			}
 			prov := newTestRabbitMQAMQP10Provider()
 			prov.connections.Add(clientIdentifier, bd)
@@ -1300,12 +1292,10 @@ func Test_amqp10provider_declareBindingsParentAddress(t *testing.T) {
 	connection := &rabbitMQAMQP10ConnectionMock{}
 	management := &managementClientStub{}
 	bd := &BrokerDetails{
-		ctx:        context.Background(),
-		Connection: connection,
-		mgmtClient: management,
-		CommonBrokerDetails: amqp.CommonBrokerDetails{
-			ConnectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant},
-		},
+		ctx:              context.Background(),
+		Connection:       connection,
+		mgmtClient:       management,
+		ConnectionConfig: &pb.ConnectionConfiguration{Tenant: testCleanupTenant},
 	}
 	source := &pb.Source{Name: testBindingTemporaryQueue, Type: pb.Source_TEMPORARY, Address: &pb.Address{
 		Name: "child", Type: pb.Address_TOPIC, Subjects: []string{testParentAddressSubject},
