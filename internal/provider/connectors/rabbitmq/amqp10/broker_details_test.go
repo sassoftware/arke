@@ -49,7 +49,7 @@ func newTestBrokerDetails() *BrokerDetails {
 	return &BrokerDetails{
 		ctx:              context.Background(),
 		ClientIdentifier: "test-client",
-		connectionConfig: &pb.ConnectionConfiguration{
+		ConnectionConfig: &pb.ConnectionConfiguration{
 			Host:       "localhost",
 			Port:       5672,
 			ClientName: "test-client",
@@ -93,7 +93,7 @@ func Test_BrokerDetails_getStreamOrQueueStats(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			bd := newTestBrokerDetails()
-			bd.connectionConfig.Tenant = tt.tenant
+			bd.ConnectionConfig.Tenant = tt.tenant
 			managementClient := &managementClientStub{stats: &pb.SourceStats{MessageCount: 7}}
 			bd.mgmtClient = managementClient
 
@@ -112,25 +112,25 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 		bd := newTestBrokerDetails()
 		conn.On("Close", bd.ctx).Return(nil).Once()
 		bd.Connection = conn
-		bd.state.Store(provider.CONNECTED)
+		bd.State.Store(provider.CONNECTED)
 
 		bd.disconnect()
 
 		conn.AssertExpectations(t)
 		assert.Nil(t, bd.Connection)
-		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
-		assert.True(t, bd.clientDisconnect.Load())
+		assert.Equal(t, uint32(provider.DISCONNECTED), bd.State.Load())
+		assert.True(t, bd.ClientDisconnect.Load())
 	})
 
 	t.Run("nil connection still disconnects lifecycle", func(t *testing.T) {
 		bd := newTestBrokerDetails()
-		bd.state.Store(provider.CONNECTED)
+		bd.State.Store(provider.CONNECTED)
 
 		require.NotPanics(t, bd.disconnect)
 
 		assert.Nil(t, bd.Connection)
-		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
-		assert.True(t, bd.clientDisconnect.Load())
+		assert.Equal(t, uint32(provider.DISCONNECTED), bd.State.Load())
+		assert.True(t, bd.ClientDisconnect.Load())
 	})
 
 	t.Run("disconnect is idempotent", func(t *testing.T) {
@@ -138,14 +138,14 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 		bd := newTestBrokerDetails()
 		conn.On("Close", bd.ctx).Return(nil).Once()
 		bd.Connection = conn
-		bd.state.Store(provider.CONNECTED)
+		bd.State.Store(provider.CONNECTED)
 
 		bd.disconnect()
 		bd.disconnect()
 
 		conn.AssertExpectations(t)
 		assert.Nil(t, bd.Connection)
-		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
+		assert.Equal(t, uint32(provider.DISCONNECTED), bd.State.Load())
 	})
 
 	t.Run("close error still disconnects lifecycle", func(t *testing.T) {
@@ -153,14 +153,14 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 		bd := newTestBrokerDetails()
 		conn.On("Close", bd.ctx).Return(errors.New("close failed")).Once()
 		bd.Connection = conn
-		bd.state.Store(provider.CONNECTED)
+		bd.State.Store(provider.CONNECTED)
 
 		bd.disconnect()
 
 		conn.AssertExpectations(t)
 		assert.Nil(t, bd.Connection)
-		assert.Equal(t, uint32(provider.DISCONNECTED), bd.state.Load())
-		assert.True(t, bd.clientDisconnect.Load())
+		assert.Equal(t, uint32(provider.DISCONNECTED), bd.State.Load())
+		assert.True(t, bd.ClientDisconnect.Load())
 	})
 
 	t.Run("already disconnected or closed broker details are noops", func(t *testing.T) {
@@ -169,14 +169,14 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 			conn := &rabbitMQAMQP10ConnectionMock{}
 			bd := newTestBrokerDetails()
 			bd.Connection = conn
-			bd.state.Store(state)
+			bd.State.Store(state)
 
 			bd.disconnect()
 
 			conn.AssertNotCalled(t, "Close", mock.Anything)
 			assert.Same(t, conn, bd.Connection)
-			assert.Equal(t, state, bd.state.Load())
-			assert.False(t, bd.clientDisconnect.Load())
+			assert.Equal(t, state, bd.State.Load())
+			assert.False(t, bd.ClientDisconnect.Load())
 		}
 	})
 }
@@ -186,27 +186,27 @@ func Test_BrokerDetails_waitWhileConnecting(t *testing.T) {
 		states := []uint32{provider.CONNECTED, provider.CLOSED, provider.DISCONNECTED}
 		for _, state := range states {
 			bd := newTestBrokerDetails()
-			bd.state.Store(state)
+			bd.State.Store(state)
 
-			assert.Equal(t, int(state), bd.waitWhileConnecting())
+			assert.Equal(t, state, bd.WaitWhileConnecting())
 		}
 	})
 
 	t.Run("waits for a connecting broker to become connected", func(t *testing.T) {
 		bd := newTestBrokerDetails()
-		bd.state.Store(provider.CONNECTING)
-		result := make(chan int, 1)
+		bd.State.Store(provider.CONNECTING)
+		result := make(chan uint32, 1)
 
 		go func() {
-			result <- bd.waitWhileConnecting()
+			result <- bd.WaitWhileConnecting()
 		}()
 
 		time.Sleep(150 * time.Millisecond)
-		bd.state.Store(provider.CONNECTED)
+		bd.State.Store(provider.CONNECTED)
 
 		select {
 		case got := <-result:
-			assert.Equal(t, provider.CONNECTED, got)
+			assert.Equal(t, uint32(provider.CONNECTED), got)
 		case <-time.After(time.Second):
 			t.Fatal("waitWhileConnecting did not return after connection state changed")
 		}
@@ -214,19 +214,19 @@ func Test_BrokerDetails_waitWhileConnecting(t *testing.T) {
 
 	t.Run("waits for a connecting broker to close", func(t *testing.T) {
 		bd := newTestBrokerDetails()
-		bd.state.Store(provider.CONNECTING)
-		result := make(chan int, 1)
+		bd.State.Store(provider.CONNECTING)
+		result := make(chan uint32, 1)
 
 		go func() {
-			result <- bd.waitWhileConnecting()
+			result <- bd.WaitWhileConnecting()
 		}()
 
 		time.Sleep(150 * time.Millisecond)
-		bd.state.Store(provider.CLOSED)
+		bd.State.Store(provider.CLOSED)
 
 		select {
 		case got := <-result:
-			assert.Equal(t, provider.CLOSED, got)
+			assert.Equal(t, uint32(provider.CLOSED), got)
 		case <-time.After(time.Second):
 			t.Fatal("waitWhileConnecting did not return after connection closed")
 		}
@@ -241,7 +241,7 @@ func Test_BrokerDetails_watchConnection(t *testing.T) {
 		bd.stateChannel <- &rabbitmqamqp.StateChanged{From: &rabbitmqamqp.StateClosed{}, To: &rabbitmqamqp.StateOpen{}}
 		close(bd.stateChannel)
 
-		assert.Eventually(t, func() bool { return bd.state.Load() == provider.CONNECTED }, time.Second, 10*time.Millisecond)
+		assert.Eventually(t, func() bool { return bd.State.Load() == provider.CONNECTED }, time.Second, 10*time.Millisecond)
 	})
 
 	t.Run("sets state to connecting when the broker reports reconnecting", func(t *testing.T) {
@@ -251,7 +251,7 @@ func Test_BrokerDetails_watchConnection(t *testing.T) {
 		bd.stateChannel <- &rabbitmqamqp.StateChanged{From: &rabbitmqamqp.StateClosed{}, To: &rabbitmqamqp.StateReconnecting{}}
 		close(bd.stateChannel)
 
-		assert.Eventually(t, func() bool { return bd.state.Load() == provider.CONNECTING }, time.Second, 10*time.Millisecond)
+		assert.Eventually(t, func() bool { return bd.State.Load() == provider.CONNECTING }, time.Second, 10*time.Millisecond)
 	})
 
 	t.Run("sets state to closed and exits when the broker reports closed", func(t *testing.T) {
@@ -261,7 +261,7 @@ func Test_BrokerDetails_watchConnection(t *testing.T) {
 		bd.stateChannel <- &rabbitmqamqp.StateChanged{From: &rabbitmqamqp.StateOpen{}, To: &rabbitmqamqp.StateClosed{}}
 		close(bd.stateChannel)
 
-		assert.Eventually(t, func() bool { return bd.state.Load() == provider.CLOSED }, time.Second, 10*time.Millisecond)
+		assert.Eventually(t, func() bool { return bd.State.Load() == provider.CLOSED }, time.Second, 10*time.Millisecond)
 	})
 
 	t.Run("sets state to closed and exits when the broker reports closing", func(t *testing.T) {
@@ -271,7 +271,7 @@ func Test_BrokerDetails_watchConnection(t *testing.T) {
 		bd.stateChannel <- &rabbitmqamqp.StateChanged{From: &rabbitmqamqp.StateOpen{}, To: &rabbitmqamqp.StateClosing{}}
 		close(bd.stateChannel)
 
-		assert.Eventually(t, func() bool { return bd.state.Load() == provider.CLOSED }, time.Second, 10*time.Millisecond)
+		assert.Eventually(t, func() bool { return bd.State.Load() == provider.CLOSED }, time.Second, 10*time.Millisecond)
 	})
 }
 
@@ -287,7 +287,7 @@ func Test_BrokerDetails_connectInitializesEntityTracker(t *testing.T) {
 
 	require.True(t, ok)
 	require.NoError(t, err)
-	assert.NotNil(t, bd.knownEntities)
+	assert.NotNil(t, bd.KnownEntities)
 	assert.False(t, bd.exchangeExists("exchange"))
 	env.AssertExpectations(t)
 	connection.AssertExpectations(t)
