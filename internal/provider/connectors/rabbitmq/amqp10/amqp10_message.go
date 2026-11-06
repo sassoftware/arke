@@ -3,6 +3,8 @@
 
 package amqp10
 
+import "github.com/Azure/go-amqp"
+
 // rabbitMQAMQP10Table Simple map
 type rabbitMQAMQP10Table map[string]any
 
@@ -15,6 +17,14 @@ type rabbitMQAMQP10Message struct {
 	ContentEncoding string
 	Headers         rabbitMQAMQP10Table
 	DeliveryTag     uint64
+}
+
+func fromAmqpMessage(orig *amqp.Message) *rabbitMQAMQP10Message {
+	msg := &rabbitMQAMQP10Message{
+		delivery: orig,
+	}
+	// TODO: populate other fields from orig
+	return msg
 }
 
 // SetDelivery convenience method for unit tests

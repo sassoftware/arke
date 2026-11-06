@@ -25,6 +25,7 @@ type rabbitMQAMQP10ConnectionShim interface {
 	DeclareExchange(context.Context, ramqp.IExchangeSpecification) (*ramqp.AmqpExchangeInfo, error)
 	DeclareQueue(context.Context, ramqp.IQueueSpecification) (*ramqp.AmqpQueueInfo, error)
 	DeclareBind(context.Context, ramqp.IBindingSpecification) (string, error)
+	NewConsumer(ctx context.Context, queueName string, options ramqp.IConsumerOptions) (*ramqp.Consumer, error)
 }
 
 // rabbitMQAMQP10Connection A connection to the broker
@@ -93,4 +94,8 @@ func (a *rabbitMQAMQP10Connection) DeclareBind(ctx context.Context, specificatio
 func (a *rabbitMQAMQP10Connection) Close(_ context.Context) error {
 	defer a.connectionCancel()
 	return a.connection.Close(a.connectionCtx)
+}
+
+func (a *rabbitMQAMQP10Connection) NewConsumer(ctx context.Context, queueName string, options ramqp.IConsumerOptions) (*ramqp.Consumer, error) {
+	return a.connection.NewConsumer(ctx, queueName, options)
 }

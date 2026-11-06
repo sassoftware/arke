@@ -121,6 +121,13 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
+	conn, err := env.NewConnection(ctx)
+	if err != nil {
+		return &pb.Error{Message: err.Error()}
+	}
+	// TODO: setup connection listening
+	connCh := make(chan *rabbitmqamqp.StateChanged, 5)
+	conn.WatchConnection(connCh)
 	endpoint := amqp.GetMgmtEndpoint(cf)
 	username, password := amqp.GetUsernamePassword(cf)
 	mgmtClient, err := amqp.NewManagementClient(ctx, endpoint, username, password, tlsConfig)
@@ -133,6 +140,7 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 		provider:         prov,
 		mgmtClient:       mgmtClient,
 		Env:              env,
+		Connection:       conn,
 		ClientIdentifier: clientIdentifier,
 		tlsConfig:        tlsConfig,
 		activeMessages:   util.NewConcurrentMap(),
@@ -141,13 +149,10 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 		ActiveStreams:    0,
 		lastPubSubEvent:  time.Now(),
 		shutdownChan:     make(chan struct{}),
+		stateChannel:     connCh,
+		subscriptions:    util.NewConcurrentMap(),
 	}
-	ok, err := bd.connect()
-	if !ok {
-		return &pb.Error{Message: err.Error()}
-	}
-
-	// TODO: Issue 204 - setup lifecycle management to listen for state change
+	go bd.watchConnection()
 	prov.connections.Add(clientIdentifier, bd)
 	return nil
 }
@@ -179,7 +184,7 @@ func (prov *rabbitMQAMQP10Provider) PublishOne(context.Context, *pb.Message) *pb
 	return nil
 }
 
-func (prov *rabbitMQAMQP10Provider) Subscribe(ctx context.Context, source *pb.Source, _ chan<- *pb.Message) *pb.Error {
+func (prov *rabbitMQAMQP10Provider) Subscribe(ctx context.Context, source *pb.Source, mc chan<- *pb.Message) *pb.Error {
 	bd, err := prov.getBrokerDetails(ctx)
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
@@ -191,6 +196,14 @@ func (prov *rabbitMQAMQP10Provider) Subscribe(ctx context.Context, source *pb.So
 		return &pb.Error{Message: err.Error()}
 	}
 	if err := prov.declareBindings(source, bd); err != nil {
+		return &pb.Error{Message: err.Error()}
+	}
+	if source.GetDeclareOnly() {
+		return nil
+	}
+
+	err = bd.subscribe(ctx, source, mc)
+	if err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
 	return nil

@@ -637,7 +637,7 @@ func Test_amqp10provider_declareExchangeRetriesAfterFailure(t *testing.T) {
 
 func Test_amqp10provider_declareExchangeAcceptsConcurrentSuccess(t *testing.T) {
 	connection := &rabbitMQAMQP10ConnectionMock{}
-	bd := &BrokerDetails{ctx: context.Background(), Connection: connection}
+	bd := &BrokerDetails{ctx: context.Background(), Connection: connection, subscriptions: util.NewConcurrentMap()}
 	prov := newTestRabbitMQAMQP10Provider()
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Run(func(mock.Arguments) {
 		bd.entityTracker().AddExchange("race")
@@ -650,12 +650,13 @@ func Test_amqp10provider_declareExchangeAcceptsConcurrentSuccess(t *testing.T) {
 func Test_amqp10provider_subscribeDeclaresExchange(t *testing.T) {
 	ctx, clientIdentifier := newTestProviderContext(t, "subscribe-declare")
 	connection := &rabbitMQAMQP10ConnectionMock{}
-	bd := &BrokerDetails{ctx: ctx, Connection: connection}
+	bd := &BrokerDetails{ctx: ctx, Connection: connection, subscriptions: util.NewConcurrentMap()}
 	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add(clientIdentifier, bd)
 	source := &pb.Source{Name: "subscribe", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "subscribe", Type: pb.Address_TOPIC}}
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
 	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Once()
+	connection.On("NewConsumer", mock.Anything, mock.Anything, mock.Anything).Return(nil, nil).Once()
 
 	err := prov.Subscribe(ctx, source, nil)
 
@@ -669,7 +670,7 @@ func Test_amqp10provider_subscribeDeclaresExchange(t *testing.T) {
 func Test_amqp10provider_subscribeReturnsDeclarationError(t *testing.T) {
 	ctx, clientIdentifier := newTestProviderContext(t, "subscribe-declare-error")
 	connection := &rabbitMQAMQP10ConnectionMock{}
-	bd := &BrokerDetails{ctx: ctx, Connection: connection}
+	bd := &BrokerDetails{ctx: ctx, Connection: connection, subscriptions: util.NewConcurrentMap()}
 	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add(clientIdentifier, bd)
 	source := &pb.Source{Address: &pb.Address{Name: "subscribe-error", Type: pb.Address_TOPIC}}
@@ -684,7 +685,7 @@ func Test_amqp10provider_subscribeReturnsDeclarationError(t *testing.T) {
 
 func Test_amqp10provider_subscribeSkipsKnownExchange(t *testing.T) {
 	ctx, clientIdentifier := newTestProviderContext(t, "subscribe-known-exchange")
-	bd := &BrokerDetails{}
+	bd := &BrokerDetails{subscriptions: util.NewConcurrentMap()}
 	bd.entityTracker().AddExchange("known")
 	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add(clientIdentifier, bd)
@@ -714,11 +715,11 @@ func Test_amqp10provider_declareExchangeAcceptsPreconditionFailure(t *testing.T)
 
 func Test_amqp10provider_declareExchangeConnectionIsolation(t *testing.T) {
 	connectionOne := &rabbitMQAMQP10ConnectionMock{}
-	bdOne := &BrokerDetails{ctx: context.Background(), Connection: connectionOne}
+	bdOne := &BrokerDetails{ctx: context.Background(), Connection: connectionOne, subscriptions: util.NewConcurrentMap()}
 	connectionOne.On("DeclareExchange", bdOne.ctx, mock.Anything).Return(nil, nil).Once()
 
 	connectionTwo := &rabbitMQAMQP10ConnectionMock{}
-	bdTwo := &BrokerDetails{ctx: context.Background(), Connection: connectionTwo}
+	bdTwo := &BrokerDetails{ctx: context.Background(), Connection: connectionTwo, subscriptions: util.NewConcurrentMap()}
 	connectionTwo.On("DeclareExchange", bdTwo.ctx, mock.Anything).Return(nil, nil).Once()
 
 	prov := newTestRabbitMQAMQP10Provider()
