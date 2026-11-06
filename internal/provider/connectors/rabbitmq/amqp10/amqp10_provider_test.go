@@ -761,6 +761,7 @@ func Test_amqp10provider_subscribeDeclaresExchange(t *testing.T) {
 	source := &pb.Source{Name: "subscribe", Type: pb.Source_QUEUE, DeclareOnly: true, Address: &pb.Address{Name: "subscribe", Type: pb.Address_TOPIC}}
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
 	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Once()
+	connection.On("NewConsumer", mock.Anything, mock.Anything, mock.Anything).Return(nil, nil).Once()
 
 	err := prov.Subscribe(ctx, source, nil)
 

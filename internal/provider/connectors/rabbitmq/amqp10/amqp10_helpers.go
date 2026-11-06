@@ -58,14 +58,8 @@ func delCtxToMessage(delCtx ramqp.IDeliveryContext, source *pb.Source) *pb.Messa
 		headers[headerContentEncoding] = *ce
 	}
 
-	body := make([]byte, 0)
-	if message.Data != nil {
-		for _, b := range message.Data {
-			body = append(body, b...)
-		}
-	}
 	msg := &pb.Message{
-		Body:    body,
+		Body:    message.GetData(),
 		Uuid:    util.GenUUID(),
 		Headers: headers,
 		Address: source.GetAddress(),
@@ -77,5 +71,12 @@ func delCtxToMessage(delCtx ramqp.IDeliveryContext, source *pb.Source) *pb.Messa
 		PublisherName: "",
 	}
 
+	if message.Header != nil {
+		msg.Persistent = message.Header.Durable
+
+		// if msg.DeliveryMode != 1 { // no delivery tag when mode=1
+		// 	msg.DeliveryTag = message.DeliveryTag
+		// }
+	}
 	return msg
 }
