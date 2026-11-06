@@ -15,6 +15,15 @@ type rabbitMQAMQP10ConnectionMock struct {
 	mock.Mock
 }
 
+func (m *rabbitMQAMQP10ConnectionMock) NewConsumer(ctx context.Context, queueName string, opts rabbitmqamqp.IConsumerOptions) (*rabbitmqamqp.Consumer, error) {
+	args := m.Called(ctx, queueName, opts)
+	var info *rabbitmqamqp.Consumer
+	if args.Get(0) != nil {
+		info = args.Get(0).(*rabbitmqamqp.Consumer)
+	}
+	return info, args.Error(1)
+}
+
 func (m *rabbitMQAMQP10ConnectionMock) DeclareExchange(ctx context.Context, specification rabbitmqamqp.IExchangeSpecification) (*rabbitmqamqp.AmqpExchangeInfo, error) {
 	args := m.Called(ctx, specification)
 	var info *rabbitmqamqp.AmqpExchangeInfo
