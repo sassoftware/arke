@@ -80,6 +80,7 @@ func (prov *rabbitMQAMQP10Provider) getBrokerDetailsByIdentifier(clientIdentifie
 }
 
 func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.ConnectionConfiguration, tlsSkipVerify bool) *pb.Error {
+	util.Logger.Info("Connecting to broker")
 	if cf == nil {
 		return &pb.Error{Message: "connection configuration is required"}
 	}
@@ -117,14 +118,17 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 			}
 		}
 	}
-	env, err := newRabbitMQAMQP10EnvironmentFunc(ctx, cf, tlsConfig)
+	env, err := newRabbitMQAMQP10EnvironmentFunc(ctx, cf, tlsConfig, prov)
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
+
 	conn, err := env.NewConnection(ctx)
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
+
+	util.Logger.Debugf("New connection established for client %s: %+v", clientIdentifier, conn)
 	// TODO: setup connection listening
 	connCh := make(chan *rabbitmqamqp.StateChanged, 5)
 	conn.WatchConnection(connCh)
@@ -151,19 +155,23 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 		stateChannel:     connCh,
 		subscriptions:    util.NewConcurrentMap(),
 	}
+	bd.state.Store(provider.CONNECTED) // new env connection guarantees
 	go bd.watchConnection()
+	util.Logger.Debugf("adding client %s", clientIdentifier)
 	prov.connections.Add(clientIdentifier, bd)
 	return nil
 }
 
 func (prov *rabbitMQAMQP10Provider) ClientExists(clientIdentifier string) bool {
 	value, ok := prov.connections.Get(clientIdentifier)
+	util.Logger.Debugf("checking if client %s exists: ok=%v, value=%+v", clientIdentifier, ok, value)
 	if !ok {
 		return false
 	}
 
 	bd, ok := value.(*BrokerDetails)
 	if !ok {
+		util.Logger.Debugf("client %s exists but value is not of type *BrokerDetails", clientIdentifier)
 		return false
 	}
 
@@ -171,6 +179,7 @@ func (prov *rabbitMQAMQP10Provider) ClientExists(clientIdentifier string) bool {
 	case provider.CONNECTED, provider.CONNECTING:
 		return true
 	default:
+		util.Logger.Debugf("client %s exists but is in state %v", clientIdentifier, bd.state.Load())
 		return false
 	}
 }
@@ -229,6 +238,7 @@ func (prov *rabbitMQAMQP10Provider) Disconnect(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	util.Logger.Info(i18n.ClientDisconnect, bd.ClientIdentifier)
 	bd.disconnect()
 
 	prov.connections.DeleteIfEqual(bd.ClientIdentifier, bd)
