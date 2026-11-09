@@ -101,7 +101,7 @@ func makeRequestWithAuth(ctx context.Context, method, url, username, password st
 // Do performs an HTTP request to the AMQP management endpoint and returns the
 // response body, status code, and any error encountered.
 func (c *AMQPManagementClient) Do(req *http.Request) ([]byte, int, error) {
-	resp, err := c.client.Do(req.WithContext(c.Ctx))
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -116,7 +116,8 @@ func (c *AMQPManagementClient) Do(req *http.Request) ([]byte, int, error) {
 // Request sends an authenticated request to a path on the management API.
 func (c *AMQPManagementClient) Request(ctx context.Context, method, path string) ([]byte, int, error) {
 	requestURL := strings.TrimRight(c.endpoint, "/") + "/" + strings.TrimLeft(path, "/")
-	req, err := makeRequestWithAuth(ctx, method, requestURL, c.username, c.password, c.forceBasicAuth)
+	util.Logger.Debugf("mgmt request %s %s", method, requestURL)
+	req, err := makeRequest(ctx, method, requestURL, c.username, c.password)
 	if err != nil {
 		return nil, 0, err
 	}

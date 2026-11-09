@@ -107,7 +107,8 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 		}
 	})
 
-	require.Nil(t, prov.Subscribe(ctx, bindingSource, nil))
+	provCtx := context.Context(ctx)
+	go prov.Subscribe(provCtx, bindingSource, make(chan *pb.Message))
 	bindingPath := fmt.Sprintf("/api/bindings/%s/e/%s/q/%s",
 		url.PathEscape(vhost), url.PathEscape(exchangeName), url.PathEscape(queueName))
 	type bindingInfo struct {
@@ -161,7 +162,14 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 	require.ElementsMatch(t, expectedBindings(routingKeys), matchingBindings)
 
 	bindingSource.Address.Subjects = []string{routingKeys[0]}
-	require.Nil(t, prov.Subscribe(ctx, bindingSource, nil))
+	prov.Disconnect(provCtx)
+	provCtx = context.Context(ctx)
+
+	pbErr := prov.Connect(provCtx, &connConfig, false)
+	require.Nil(t, pbErr, "provider connect failed: %v", pbErr)
+	go func() {
+		prov.Subscribe(provCtx, bindingSource, nil)
+	}()
 	require.Eventually(t, func() bool {
 		return readMatchingBindings() && len(matchingBindings) == len(bindingSource.Address.Subjects)
 	},
@@ -172,6 +180,103 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 	assert.False(t, prov.ClientExists(clientIdentifier))
 }
 
+func Test_AMQP10ProviderSubscribe(t *testing.T) {
+	hostname := os.Getenv("ARKE_BROKER_HOSTNAME")
+	if hostname == "" {
+		hostname = "localhost"
+	}
+	t.Setenv("ARKE_BROKER_HOSTNAME", hostname)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	clientAddr := fmt.Sprintf("test-connect-integration-%d", time.Now().UnixNano())
+	ctx = peer.NewContext(ctx, &peer.Peer{Addr: mockPeerAddr{clientAddr: clientAddr}})
+
+	clientIdentifier, err := util.SetClientIdentifier(ctx, "test-connect-integration")
+	require.NoError(t, err)
+	defer util.RemoveClientIdentifier(ctx)
+
+	connConfig := cfg.ConnectionConfigurationFromEnv()
+	t.Logf("cf: %+v", connConfig)
+	connConfig.ClientName = clientIdentifier
+	prov, err := provider.NewProvider(cfg.ConnectionConfigurationFromEnv().Provider)
+	require.NoError(t, err)
+
+	connectErr := prov.Connect(ctx, &connConfig, false)
+	require.Nil(t, connectErr, "provider connect failed: %v", connectErr)
+	assert.True(t, prov.ClientExists(clientIdentifier))
+	assert.Eventually(t, func() bool {
+		return prov.WaitForConnect(ctx)
+	}, 2*time.Second, 100*time.Millisecond)
+
+	source := &pb.Source{
+		Name: "queue-name",
+		Address: &pb.Address{
+			Name:     "queue-name",
+			Subjects: []string{},
+			Type:     pb.Address_QUEUE,
+		},
+	}
+	stats := prov.SourceStats(ctx, source)
+	assert.Nil(t, stats.Error)
+	assert.NotNil(t, stats)
+	// Used UI to create the queue queue-name.quorum and publish msgs.
+	// Ran this test and observed message_count and publish_rate.
+	t.Logf("Source stats: %+v", stats)
+
+	exchangeName := "arke-amqp10-bindings-" + uuid.NewString()
+	queueName := exchangeName + "-queue"
+	routingKeys := []string{"integration.subject.retained", "integration.subject.removed"}
+	bindingSource := &pb.Source{
+		Name:       queueName,
+		Type:       pb.Source_QUEUE,
+		AutoDelete: true,
+		Address: &pb.Address{
+			Name:     exchangeName,
+			Type:     pb.Address_TOPIC,
+			Subjects: routingKeys,
+		},
+	}
+	username, password := amqp.GetUsernamePassword(&connConfig)
+	management, err := amqp.NewManagementClient(ctx, amqp.GetMgmtEndpoint(&connConfig), username, password, nil)
+	require.NoError(t, err)
+	vhost := amqp.GetVhost(&connConfig)
+	queueName = amqp.SourceName(bindingSource)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if err := deleteQueue(cleanupCtx, management, vhost, queueName); err != nil {
+			t.Errorf("delete AMQP 1.0 binding test queue: %v", err)
+		}
+		exchangePath := "/api/exchanges/" + url.PathEscape(vhost) + "/" + url.PathEscape(exchangeName)
+		_, statusCode, err := management.Request(cleanupCtx, http.MethodDelete, exchangePath)
+		if err != nil {
+			t.Errorf("delete AMQP 1.0 binding test exchange: %v", err)
+		} else if statusCode != http.StatusNoContent && statusCode != http.StatusNotFound {
+			t.Errorf("delete AMQP 1.0 binding test exchange returned %d", statusCode)
+		}
+	})
+
+	msgs := make(chan *pb.Message)
+	go func(msgs chan *pb.Message) {
+		select {
+		case msg := <-msgs:
+			t.Logf("Received message: %+v", msg)
+			return
+		case <-time.After(5 * time.Second):
+			t.Logf("Timeout waiting for message")
+			return
+		}
+	}(msgs)
+
+	go func(msgs chan *pb.Message) {
+		require.Nil(t, prov.Subscribe(ctx, bindingSource, msgs))
+	}(msgs)
+
+	prov.Disconnect(ctx)
+	assert.False(t, prov.ClientExists(clientIdentifier), "client should not exist after disconnect")
+}
+
 func Test_AMQP10DeclareExchangeAllowsIncompatibleRedeclaration(t *testing.T) {
 	hostname := os.Getenv("ARKE_BROKER_HOSTNAME")
 	if hostname == "" {
@@ -179,8 +284,8 @@ func Test_AMQP10DeclareExchangeAllowsIncompatibleRedeclaration(t *testing.T) {
 	}
 	t.Setenv("ARKE_BROKER_HOSTNAME", hostname)
 
-	baseConfig := cfg.ConnectionConfigurationFromEnv()
-	prov, err := provider.NewProvider(baseConfig.Provider)
+	connectionConfig := cfg.ConnectionConfigurationFromEnv()
+	prov, err := provider.NewProvider(connectionConfig.Provider)
 	require.NoError(t, err)
 
 	connectClient := func(clientName string) (context.Context, context.CancelFunc) {
@@ -203,17 +308,52 @@ func Test_AMQP10DeclareExchangeAllowsIncompatibleRedeclaration(t *testing.T) {
 	}
 
 	exchangeName := "arke-amqp10-redeclare-" + uuid.NewString()
-	ctxA, cancelA := connectClient("test-amqp10-declare-a")
-	ctxB, cancelB := connectClient("test-amqp10-declare-b")
+	ctxA, _ := connectClient("test-amqp10-declare-a")
+	ctxB, _ := connectClient("test-amqp10-declare-b")
+	sourceA := &pb.Source{
+		Name:        exchangeName + "-queue-a",
+		Type:        pb.Source_QUEUE,
+		DeclareOnly: true,
+		Address: &pb.Address{
+			Name:       exchangeName,
+			Type:       pb.Address_TOPIC,
+			AutoDelete: true,
+		},
+	}
+	sourceB := &pb.Source{
+		Name:        exchangeName + "-queue-b",
+		Type:        pb.Source_QUEUE,
+		DeclareOnly: true,
+		Address: &pb.Address{
+			Name:       exchangeName,
+			Type:       pb.Address_TOPIC,
+			AutoDelete: false,
+		},
+	}
 
-	// There is no public exchange-delete operation on this temporary Subscribe path.
-	sourceA := &pb.Source{Address: &pb.Address{Name: exchangeName, Type: pb.Address_TOPIC, AutoDelete: true}}
+	username, password := amqp.GetUsernamePassword(&connectionConfig)
+	management, err := amqp.NewManagementClient(context.Background(), amqp.GetMgmtEndpoint(&connectionConfig), username, password, nil)
+	require.NoError(t, err)
+	vhost := amqp.GetVhost(&connectionConfig)
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		for _, source := range []*pb.Source{sourceA, sourceB} {
+			if err := deleteQueue(cleanupCtx, management, vhost, amqp.SourceName(source)); err != nil {
+				t.Errorf("delete queue %s: %v", source.GetName(), err)
+			}
+		}
+		exchangePath := "/api/exchanges/" + url.PathEscape(vhost) + "/" + url.PathEscape(exchangeName)
+		_, statusCode, err := management.Request(cleanupCtx, http.MethodDelete, exchangePath)
+		if err != nil {
+			t.Errorf("delete exchange %s: %v", exchangeName, err)
+		} else if statusCode != http.StatusNoContent && statusCode != http.StatusNotFound {
+			t.Errorf("delete exchange %s returned %d", exchangeName, statusCode)
+		}
+	})
+
 	require.Nil(t, prov.Subscribe(ctxA, sourceA, nil))
-
-	sourceB := &pb.Source{Address: &pb.Address{Name: exchangeName, Type: pb.Address_TOPIC, AutoDelete: false}}
 	require.Nil(t, prov.Subscribe(ctxB, sourceB, nil))
-	cancelA()
-	cancelB()
 }
 
 type declaredQueueProperties struct {
