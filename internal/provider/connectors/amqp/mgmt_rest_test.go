@@ -101,19 +101,42 @@ func Test_AMQPManagementClient_Request(t *testing.T) {
 	assert.Equal(t, "Basic dXNlcjpwYXNz", request.authorization)
 }
 
-func Test_AMQPManagementClient_RequestRespectsConfiguredContext(t *testing.T) {
+func Test_AMQPManagementClient_RequestRespectsPerCallContext(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("request should not reach the server")
 	}))
 	defer server.Close()
 
+	client := &AMQPManagementClient{Ctx: context.Background(), client: server.Client()}
+	client.endpoint = server.URL
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	client := &AMQPManagementClient{Ctx: ctx, client: server.Client()}
-	client.endpoint = server.URL
-	_, _, err := client.Request(context.Background(), http.MethodGet, "/api/queues")
+	_, _, err := client.Request(ctx, http.MethodGet, "/api/queues")
 
 	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func Test_AMQPManagementClient_RequestUsesPerCallContextOverConfiguredContext(t *testing.T) {
+	requests := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests <- struct{}{}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	client := &AMQPManagementClient{Ctx: ctx, client: server.Client(), endpoint: server.URL}
+
+	_, status, err := client.Request(context.Background(), http.MethodGet, "/api/queues")
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusNoContent, status)
+	select {
+	case <-requests:
+	default:
+		t.Fatal("request with a live per-call context did not reach the server")
+	}
 }
 
 func Test_ManagementClientMock_Request(t *testing.T) {

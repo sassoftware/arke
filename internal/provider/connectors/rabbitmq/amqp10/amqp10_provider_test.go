@@ -177,7 +177,7 @@ func mockSpyAmqp10Environment(t *testing.T) *rabbitMQAMQP10EnvironmentCall {
 	env := &rabbitMQAMQP10EnvironmentMock{}
 	env.On("NewConnection", mock.Anything).Return(conn, nil).Once()
 	originalNewAmqp10Environment := newRabbitMQAMQP10EnvironmentFunc
-	newRabbitMQAMQP10EnvironmentFunc = func(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config) (rabbitMQAMQP10EnvironmentShim, error) {
+	newRabbitMQAMQP10EnvironmentFunc = func(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config, _ provider.Provider) (rabbitMQAMQP10EnvironmentShim, error) {
 		options, _ := getRabbitMQAMQP10ConnOptions(ctx, cf, tlsConfig)
 		gotCall.ctx = ctx
 		gotCall.cf = cf
@@ -257,7 +257,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		prov := newTestRabbitMQAMQP10Provider()
 		originalFactory := newRabbitMQAMQP10EnvironmentFunc
 		t.Cleanup(func() { newRabbitMQAMQP10EnvironmentFunc = originalFactory })
-		newRabbitMQAMQP10EnvironmentFunc = func(context.Context, *pb.ConnectionConfiguration, *tls.Config) (rabbitMQAMQP10EnvironmentShim, error) {
+		newRabbitMQAMQP10EnvironmentFunc = func(context.Context, *pb.ConnectionConfiguration, *tls.Config, provider.Provider) (rabbitMQAMQP10EnvironmentShim, error) {
 			return nil, fmt.Errorf("environment setup failed")
 		}
 
@@ -278,7 +278,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 			newRabbitMQAMQP10EnvironmentFunc = originalFactory
 			env.AssertExpectations(t)
 		})
-		newRabbitMQAMQP10EnvironmentFunc = func(context.Context, *pb.ConnectionConfiguration, *tls.Config) (rabbitMQAMQP10EnvironmentShim, error) {
+		newRabbitMQAMQP10EnvironmentFunc = func(context.Context, *pb.ConnectionConfiguration, *tls.Config, provider.Provider) (rabbitMQAMQP10EnvironmentShim, error) {
 			return env, nil
 		}
 
@@ -653,10 +653,9 @@ func Test_amqp10provider_subscribeDeclaresExchange(t *testing.T) {
 	bd := &BrokerDetails{ctx: ctx, Connection: connection, subscriptions: util.NewConcurrentMap()}
 	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add(clientIdentifier, bd)
-	source := &pb.Source{Name: "subscribe", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "subscribe", Type: pb.Address_TOPIC}}
+	source := &pb.Source{Name: "subscribe", Type: pb.Source_QUEUE, DeclareOnly: true, Address: &pb.Address{Name: "subscribe", Type: pb.Address_TOPIC}}
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
 	connection.On("DeclareQueue", bd.ctx, mock.Anything).Return(nil, nil).Once()
-	connection.On("NewConsumer", mock.Anything, mock.Anything, mock.Anything).Return(nil, nil).Once()
 
 	err := prov.Subscribe(ctx, source, nil)
 
@@ -689,7 +688,7 @@ func Test_amqp10provider_subscribeSkipsKnownExchange(t *testing.T) {
 	bd.entityTracker().AddExchange("known")
 	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add(clientIdentifier, bd)
-	source := &pb.Source{Name: "known", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "known", Type: pb.Address_TOPIC}}
+	source := &pb.Source{Name: "known", Type: pb.Source_QUEUE, DeclareOnly: true, Address: &pb.Address{Name: "known", Type: pb.Address_TOPIC}}
 	connection := &rabbitMQAMQP10ConnectionMock{}
 	bd.Connection = connection
 	bd.entityTracker().AddQueue("known.quorum")
@@ -1172,7 +1171,7 @@ func Test_amqp10provider_subscribeSuppressesCleanupFailures(t *testing.T) {
 			}
 			prov := newTestRabbitMQAMQP10Provider()
 			prov.connections.Add(clientIdentifier, bd)
-			source := &pb.Source{Name: testCleanupQueueName, Type: pb.Source_QUEUE, AutoDelete: true, Address: &pb.Address{
+			source := &pb.Source{Name: testCleanupQueueName, Type: pb.Source_QUEUE, AutoDelete: true, DeclareOnly: true, Address: &pb.Address{
 				Name: testCleanupExchangeName, Type: pb.Address_TOPIC, Subjects: []string{"wanted"},
 			}}
 			connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
@@ -1254,7 +1253,7 @@ func Test_amqp10provider_subscribeDeclaresQueueBeforeBindings(t *testing.T) {
 	bd := &BrokerDetails{ctx: ctx, Connection: connection, mgmtClient: management}
 	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add(clientIdentifier, bd)
-	source := &pb.Source{Name: testBindingQueueName, Type: pb.Source_QUEUE, Address: &pb.Address{
+	source := &pb.Source{Name: testBindingQueueName, Type: pb.Source_QUEUE, DeclareOnly: true, Address: &pb.Address{
 		Name: testBindingExchangeName, Type: pb.Address_TOPIC, Subjects: []string{testBindingSubjectCreated},
 	}}
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Run(func(mock.Arguments) {
@@ -1283,7 +1282,7 @@ func Test_amqp10provider_subscribeContinuesAfterBindingError(t *testing.T) {
 	bd := &BrokerDetails{ctx: ctx, Connection: connection, mgmtClient: management}
 	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add(clientIdentifier, bd)
-	source := &pb.Source{Name: testBindingQueueName, Type: pb.Source_QUEUE, Address: &pb.Address{
+	source := &pb.Source{Name: testBindingQueueName, Type: pb.Source_QUEUE, DeclareOnly: true, Address: &pb.Address{
 		Name: testBindingExchangeName, Type: pb.Address_TOPIC, Subjects: []string{testBindingSubjectCreated},
 	}}
 	connection.On("DeclareExchange", bd.ctx, mock.Anything).Return(nil, nil).Once()
@@ -1304,7 +1303,7 @@ func Test_amqp10provider_subscribeContinuesAfterPartialBindingFailure(t *testing
 	bd := &BrokerDetails{ctx: ctx, Connection: connection}
 	prov := newTestRabbitMQAMQP10Provider()
 	prov.connections.Add(clientIdentifier, bd)
-	source := &pb.Source{Name: testBindingQueueName, Type: pb.Source_QUEUE, Address: &pb.Address{
+	source := &pb.Source{Name: testBindingQueueName, Type: pb.Source_QUEUE, DeclareOnly: true, Address: &pb.Address{
 		Name: testBindingExchangeName, Type: pb.Address_TOPIC, Subjects: []string{testBindingSubjectOne, testBindingSubjectTwo},
 	}}
 	var got []rabbitmqamqp.ExchangeToQueueBindingSpecification

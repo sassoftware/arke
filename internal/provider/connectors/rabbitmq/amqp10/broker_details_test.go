@@ -13,6 +13,7 @@ import (
 	rabbitmqamqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/internal/provider"
+	"github.com/sassoftware/arke/internal/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -235,7 +236,7 @@ func Test_BrokerDetails_waitWhileConnecting(t *testing.T) {
 
 func Test_BrokerDetails_watchConnection(t *testing.T) {
 	t.Run("sets state to connected when the broker reports open", func(t *testing.T) {
-		bd := &BrokerDetails{stateChannel: make(chan *rabbitmqamqp.StateChanged, 1)}
+		bd := &BrokerDetails{stateChannel: make(chan *rabbitmqamqp.StateChanged, 1), subscriptions: util.NewConcurrentMap()}
 
 		go bd.watchConnection()
 		bd.stateChannel <- &rabbitmqamqp.StateChanged{From: &rabbitmqamqp.StateClosed{}, To: &rabbitmqamqp.StateOpen{}}
@@ -245,7 +246,7 @@ func Test_BrokerDetails_watchConnection(t *testing.T) {
 	})
 
 	t.Run("sets state to connecting when the broker reports reconnecting", func(t *testing.T) {
-		bd := &BrokerDetails{stateChannel: make(chan *rabbitmqamqp.StateChanged, 1)}
+		bd := &BrokerDetails{stateChannel: make(chan *rabbitmqamqp.StateChanged, 1), subscriptions: util.NewConcurrentMap()}
 
 		go bd.watchConnection()
 		bd.stateChannel <- &rabbitmqamqp.StateChanged{From: &rabbitmqamqp.StateClosed{}, To: &rabbitmqamqp.StateReconnecting{}}
@@ -255,7 +256,7 @@ func Test_BrokerDetails_watchConnection(t *testing.T) {
 	})
 
 	t.Run("sets state to closed and exits when the broker reports closed", func(t *testing.T) {
-		bd := &BrokerDetails{stateChannel: make(chan *rabbitmqamqp.StateChanged, 1)}
+		bd := &BrokerDetails{stateChannel: make(chan *rabbitmqamqp.StateChanged, 1), subscriptions: util.NewConcurrentMap()}
 
 		go bd.watchConnection()
 		bd.stateChannel <- &rabbitmqamqp.StateChanged{From: &rabbitmqamqp.StateOpen{}, To: &rabbitmqamqp.StateClosed{}}
@@ -265,7 +266,7 @@ func Test_BrokerDetails_watchConnection(t *testing.T) {
 	})
 
 	t.Run("sets state to closed and exits when the broker reports closing", func(t *testing.T) {
-		bd := &BrokerDetails{stateChannel: make(chan *rabbitmqamqp.StateChanged, 1)}
+		bd := &BrokerDetails{stateChannel: make(chan *rabbitmqamqp.StateChanged, 1), subscriptions: util.NewConcurrentMap()}
 
 		go bd.watchConnection()
 		bd.stateChannel <- &rabbitmqamqp.StateChanged{From: &rabbitmqamqp.StateOpen{}, To: &rabbitmqamqp.StateClosing{}}
@@ -273,4 +274,30 @@ func Test_BrokerDetails_watchConnection(t *testing.T) {
 
 		assert.Eventually(t, func() bool { return bd.state.Load() == provider.CLOSED }, time.Second, 10*time.Millisecond)
 	})
+}
+
+func Test_BrokerDetails_transitionSubscriptionState(t *testing.T) {
+	newSubscription := func() *Subscription {
+		state := newSubscribeStateMachine()
+		state.state = subscribeStateRunning
+		state.registerTransitionFunc(subscribeStateStopping, func() (subscribeState, *subscribeStateTransitionError) {
+			return subscribeStateStopped, nil
+		})
+		return &Subscription{state: state}
+	}
+
+	first := newSubscription()
+	second := newSubscription()
+	subscriptions := util.NewConcurrentMap()
+	subscriptions.Add("first", first)
+	subscriptions.Add("second", second)
+	subscriptions.Add("not-a-subscription", "ignored")
+	subscriptions.Add("nil", nil)
+	bd := &BrokerDetails{subscriptions: subscriptions}
+
+	bd.transitionSubscriptionState(subscribeStateStopping)
+
+	assert.Eventually(t, func() bool {
+		return first.state.getState() == subscribeStateStopped && second.state.getState() == subscribeStateStopped
+	}, time.Second, 10*time.Millisecond)
 }

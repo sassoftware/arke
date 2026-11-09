@@ -17,6 +17,11 @@ import (
 )
 
 // rabbitMQAMQP10ConnectionShim Shim so we can do unit testing
+type rabbitMQAMQP10ConsumerShim interface {
+	Receive(context.Context) (ramqp.IDeliveryContext, error)
+	Close(context.Context) error
+}
+
 type rabbitMQAMQP10ConnectionShim interface {
 	Close(context.Context) error
 	WatchConnection(ch chan *ramqp.StateChanged) error
@@ -25,7 +30,7 @@ type rabbitMQAMQP10ConnectionShim interface {
 	DeclareExchange(context.Context, ramqp.IExchangeSpecification) (*ramqp.AmqpExchangeInfo, error)
 	DeclareQueue(context.Context, ramqp.IQueueSpecification) (*ramqp.AmqpQueueInfo, error)
 	DeclareBind(context.Context, ramqp.IBindingSpecification) (string, error)
-	NewConsumer(ctx context.Context, queueName string, options ramqp.IConsumerOptions) (*ramqp.Consumer, error)
+	NewConsumer(ctx context.Context, queueName string, options ramqp.IConsumerOptions) (rabbitMQAMQP10ConsumerShim, error)
 }
 
 // rabbitMQAMQP10Connection A connection to the broker
@@ -68,14 +73,30 @@ func (a *rabbitMQAMQP10Connection) WatchConnection(ch chan *ramqp.StateChanged) 
 
 func (a *rabbitMQAMQP10Connection) IsClosed() bool {
 	// TODO: Issue 204 - implement IsClosed based on connection state changes
+	if a.connection == nil {
+		return true
+	}
 	return false
 }
 
 func (a *rabbitMQAMQP10Connection) State() int {
 	// TODO: Issue 204 - implement state retrieval based on connection state changes
 	// but states should be provider.*
-	// return a.connection.State()
-	return 0
+	if a.connection == nil {
+		return provider.DISCONNECTED
+	}
+	switch a.connection.State() {
+	case &ramqp.StateOpen{}:
+		return provider.CONNECTED
+	case &ramqp.StateReconnecting{}:
+		return provider.CONNECTING
+	case &ramqp.StateClosed{}:
+		return provider.CLOSED
+	case &ramqp.StateClosing{}:
+		return provider.CLOSED
+	default:
+		return provider.DISCONNECTED
+	}
 }
 
 func (a *rabbitMQAMQP10Connection) DeclareExchange(ctx context.Context, specification ramqp.IExchangeSpecification) (*ramqp.AmqpExchangeInfo, error) {
@@ -96,6 +117,6 @@ func (a *rabbitMQAMQP10Connection) Close(_ context.Context) error {
 	return a.connection.Close(a.connectionCtx)
 }
 
-func (a *rabbitMQAMQP10Connection) NewConsumer(ctx context.Context, queueName string, options ramqp.IConsumerOptions) (*ramqp.Consumer, error) {
+func (a *rabbitMQAMQP10Connection) NewConsumer(ctx context.Context, queueName string, options ramqp.IConsumerOptions) (rabbitMQAMQP10ConsumerShim, error) {
 	return a.connection.NewConsumer(ctx, queueName, options)
 }
