@@ -11,11 +11,19 @@ import (
 )
 
 type Subscription struct {
-	ctx       context.Context
-	source    *pb.Source
-	bd        *BrokerDetails
-	consumer  *ramqp.Consumer
-	publisher *ramqp.Publisher
-	state     *subscribeStateMachine
-	messageCh chan<- *pb.Message
+	ctx               context.Context
+	source            *pb.Source
+	bd                *BrokerDetails
+	consumer          rabbitMQAMQP10ConsumerShim
+	publisher         *ramqp.Publisher
+	state             *subscribeStateMachine
+	messageCh         chan<- *pb.Message
+	recoveryAttempts  int
+	lastRecoveryError *subscribeStateTransitionError
+}
+
+// activeDelivery lets consumer teardown remove only handles owned by one subscription.
+type activeDelivery struct {
+	subscription *Subscription
+	delivery     ramqp.IDeliveryContext
 }

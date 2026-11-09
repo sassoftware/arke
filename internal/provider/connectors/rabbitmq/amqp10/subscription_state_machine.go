@@ -17,6 +17,7 @@ var logger = util.Logger
 type subscribeState int
 
 const (
+	subscribeStateNone subscribeState = 0
 	subscribeStateIdle subscribeState = 1 << iota
 	subscribeStateStarting
 	subscribeStateRunning
@@ -50,14 +51,29 @@ var subscribeStateTranstions = map[subscribeState]subscribeState{
 	subscribeStateRunning:    subscribeStateRecovering | subscribeStateStopping | subscribeStateStopped,
 	subscribeStateRecovering: subscribeStateRunning | subscribeStateStopped | subscribeStateStopping,
 	subscribeStateStopping:   subscribeStateStopped,
+	subscribeStateStopped:    subscribeStateNone,
+}
+
+// isValidSubscribeState rejects the zero sentinel, combined state masks, and
+// unknown bits. States are single-bit values so they can be ORed into allowed
+// transition masks; state&(state-1) is zero only when exactly one bit is set.
+// Requiring a transition-map entry also keeps only declared states valid,
+// including Stopped, whose entry explicitly has no allowed transitions.
+func isValidSubscribeState(state subscribeState) bool {
+	if state == subscribeStateNone || state&(state-1) != 0 {
+		return false
+	}
+	_, ok := subscribeStateTranstions[state]
+	return ok
 }
 
 var ErrInvalidSubscribeStateTransition = errors.New("invalid subscribe state transition")
+var ErrInvalidSubscribeState = errors.New("invalid subscribe state")
 
 type subscribeStateTransitionError struct {
-	err    error
-	msg    string
-	queue  string
+	err              error
+	msg              string
+	queue            string
 	clientIdentifier string
 }
 
@@ -73,15 +89,13 @@ func (s *subscribeStateTransitionError) Error() string {
 type subscribeStateTransitionFunc func() (newState subscribeState, err *subscribeStateTransitionError)
 
 type subscribeStateMachine struct {
+	transitionMu         sync.Mutex
 	mu                   *sync.Mutex
 	cond                 *sync.Cond
 	state                subscribeState
 	overrideState        *subscribeState
-	error                *subscribeStateTransitionError
 	transitionRegistryMu sync.RWMutex
 	transitionRegistry   map[subscribeState]subscribeStateTransitionFunc
-	startupDone          chan struct{}
-	started              bool
 }
 
 func newSubscribeStateMachine() *subscribeStateMachine {
@@ -91,7 +105,6 @@ func newSubscribeStateMachine() *subscribeStateMachine {
 		cond:               sync.NewCond(lock),
 		state:              subscribeStateIdle,
 		transitionRegistry: make(map[subscribeState]subscribeStateTransitionFunc),
-		startupDone:        make(chan struct{}),
 	}
 }
 
@@ -102,17 +115,18 @@ func (sm *subscribeStateMachine) getState() subscribeState {
 }
 
 func (sm *subscribeStateMachine) interruptState(newState subscribeState) error {
-	currentState := sm.getState()
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	currentState := sm.state
+	if !isValidSubscribeState(currentState) || !isValidSubscribeState(newState) {
+		return ErrInvalidSubscribeStateTransition
+	}
 	if newState == currentState {
 		return nil
 	}
-	if allowed, ok := subscribeStateTranstions[currentState]; ok {
-		if allowed&newState == 0 {
-			return ErrInvalidSubscribeStateTransition
-		}
+	if subscribeStateTranstions[currentState]&newState != newState {
+		return ErrInvalidSubscribeStateTransition
 	}
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
 	sm.overrideState = &newState
 	return nil
 }
@@ -124,6 +138,9 @@ func (sm *subscribeStateMachine) registerTransitionFunc(state subscribeState, fn
 }
 
 func (sm *subscribeStateMachine) waitForState(targetState subscribeState) error {
+	if !isValidSubscribeState(targetState) {
+		return ErrInvalidSubscribeState
+	}
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	currentState := sm.state
@@ -140,39 +157,64 @@ func (sm *subscribeStateMachine) waitForState(targetState subscribeState) error 
 }
 
 func (sm *subscribeStateMachine) transitionState(newState subscribeState) error {
-	currentState := sm.getState()
-	if newState == currentState {
-		return nil
-	}
-	logger.Debugf("transitioning subscribe state from %v to %v", currentState, newState)
-	if allowed, ok := subscribeStateTranstions[currentState]; ok {
-		if allowed&newState == 0 {
-			return ErrInvalidSubscribeStateTransition
-		}
-	}
+	sm.transitionMu.Lock()
+	defer sm.transitionMu.Unlock()
+	return sm.transitionStateInner(newState, nil)
+}
+
+func (sm *subscribeStateMachine) transitionStateInner(newState subscribeState, transitionErr *subscribeStateTransitionError) error {
 	sm.mu.Lock()
+	currentState := sm.state
+	logger.Debugf("transitioning subscribe state from %s to %s", currentState.String(), newState.String())
+
+	if !isValidSubscribeState(currentState) || !isValidSubscribeState(newState) {
+		sm.mu.Unlock()
+		return ErrInvalidSubscribeStateTransition
+	}
+	if newState == currentState {
+		sm.mu.Unlock()
+		if transitionErr == nil {
+			return nil
+		}
+		return transitionErr
+	}
+	if subscribeStateTranstions[currentState]&newState != newState {
+		sm.mu.Unlock()
+		return ErrInvalidSubscribeStateTransition
+	}
 	sm.state = newState
-	sm.cond.Signal()
+	// Waiters can target different states; wake all so each can check its target.
+	sm.cond.Broadcast()
 	sm.mu.Unlock()
 	nextState, err := sm.callTransitionFunc(newState)
-	logger.Debugf("subscribe state transition from %v to %v returned next state %v with error %v", newState, nextState, nextState, err)
+	if err != nil {
+		logger.Debugf("subscribe state transition from %s to %s returned error: %v", newState.String(), nextState.String(), err)
+		// TODO: how to handle
+		transitionErr = err
+	}
+	if !isValidSubscribeState(nextState) {
+		return ErrInvalidSubscribeStateTransition
+	}
 
 	sm.mu.Lock()
 	if sm.overrideState != nil {
-		logger.Debugf("overriding subscribe state to %v instead of %v", *sm.overrideState, newState)
-		sm.state = *sm.overrideState
+		logger.Debugf("overriding next subscribe state from %s to %s", nextState.String(), (*sm.overrideState).String())
+		nextState = *sm.overrideState
 		sm.overrideState = nil
 	}
 	sm.mu.Unlock()
-	if subscribeStateTranstions[nextState] == 0 {
-		logger.Debugf("next state %v is terminal, exiting", nextState)
+	if subscribeStateTranstions[nextState] == subscribeStateNone {
+		logger.Debugf("next state %s is terminal, exiting", nextState.String())
 		sm.mu.Lock()
 		sm.state = nextState
 		sm.cond.Broadcast()
 		sm.mu.Unlock()
-		return nil
+		if transitionErr == nil {
+			return nil
+		}
+		return transitionErr
 	}
-	return sm.transitionState(nextState)
+	return sm.transitionStateInner(nextState, transitionErr)
 }
 
 func (sm *subscribeStateMachine) callTransitionFunc(state subscribeState) (subscribeState, *subscribeStateTransitionError) {
@@ -180,14 +222,13 @@ func (sm *subscribeStateMachine) callTransitionFunc(state subscribeState) (subsc
 	defer sm.transitionRegistryMu.RUnlock()
 	if fn, ok := sm.transitionRegistry[state]; ok {
 		nextState, err := fn()
-		sm.error = err
 		if err != nil && sm.getState() < subscribeStateRecovering {
 			logger.Warn("%s [%s]", err.msg, err.queue)
 		} else {
 			if err != nil {
-				logger.Debugf("subscribe state transition from %v to %v error: %s", state, nextState, err.msg)
+				logger.Debugf("subscribe state transition from %s to %s error: %s", state.String(), nextState.String(), err.msg)
 			} else {
-				logger.Debugf("subscribe state transition successful from %v to %v", state, nextState)
+				logger.Debugf("subscribe state transition successful from %s to %s", state.String(), nextState.String())
 			}
 		}
 		return nextState, err
@@ -197,13 +238,12 @@ func (sm *subscribeStateMachine) callTransitionFunc(state subscribeState) (subsc
 	return sm.getState(), nil
 }
 
-func (cm *subscribeStateMachine) waitUntilStopped() {
-	cm.mu.Lock()
-	started := cm.started
-	defer cm.mu.Unlock()
-	if !started {
-		return
-	}
+func (sm *subscribeStateMachine) waitUntilStopped() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 	logger.Debugf("waiting until subscribe state machine stops")
-	<-cm.startupDone
+	for sm.state != subscribeStateStopped {
+		// Recheck after each wakeup; only the terminal state completes shutdown.
+		sm.cond.Wait()
+	}
 }
