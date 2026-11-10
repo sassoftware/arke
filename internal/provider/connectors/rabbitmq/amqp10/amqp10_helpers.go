@@ -58,9 +58,11 @@ func delCtxToMessage(delCtx ramqp.IDeliveryContext, source *pb.Source) *pb.Messa
 		headers[headerContentEncoding] = *ce
 	}
 
-	body := []byte{}
-	for _, b := range message.GetData() {
-		body = append(body, b)
+	body := make([]byte, 0)
+	if message.Data != nil {
+		for _, b := range message.Data {
+			body = append(body, b...)
+		}
 	}
 	msg := &pb.Message{
 		Body:    body,
