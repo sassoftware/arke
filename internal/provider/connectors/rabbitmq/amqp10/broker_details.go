@@ -94,6 +94,7 @@ func (bd *BrokerDetails) watchConnection() {
 				bd.transitionSubscriptionState(subscribeStateStarting)
 			case *rabbitmqamqp.StateReconnecting:
 				bd.State.Store(provider.CONNECTING)
+				bd.transitionSubscriptionState(subscribeStateRecovering)
 			case *rabbitmqamqp.StateClosed:
 				bd.State.Store(provider.CLOSED)
 				bd.transitionSubscriptionState(subscribeStateStopping)
