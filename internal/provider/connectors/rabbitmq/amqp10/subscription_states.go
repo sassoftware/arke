@@ -56,8 +56,10 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 	queueName := amqp.SourceName(s.source)
 	linkName := fmt.Sprintf("%s-consumer-%s", s.bd.ClientIdentifier, queueName)
 	opts := &ramqp.ConsumerOptions{
-		ReceiverLinkName:                 linkName,
-		Id:                               linkName,
+		ReceiverLinkName: linkName,
+		Id:               linkName,
+
+		// Note that 0 means 256 credits, not unlimited as in amqp091
 		InitialCredits:                   s.source.GetPrefetchCount(),
 		SettleStrategy:                   ramqp.ExplicitSettle,
 		SingleActiveConsumerStateChanged: nil, // TODO
