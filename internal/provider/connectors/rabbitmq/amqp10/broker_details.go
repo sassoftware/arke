@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	rabbitmqamqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
 	pb "github.com/sassoftware/arke/api"
@@ -22,7 +21,7 @@ import (
 
 // BrokerDetails struct houses connection specific information for the broker
 type BrokerDetails struct {
-	sync.Mutex
+	amqp.CommonBrokerDetails
 	ctx        context.Context
 	provider   provider.Provider
 	mgmtClient amqp.ManagementClientShim
@@ -62,18 +61,11 @@ type BrokerDetails struct {
 	stateChannel  chan *rabbitmqamqp.StateChanged
 	subscriptions *util.ConcurrentMap
 
-	connectionConfig *pb.ConnectionConfiguration
-	tlsConfig        *tls.Config
-	tlsSkipVerify    bool
-	ActiveStreams    int64
-	consumed         int64
-	produced         int64
-	clientDisconnect atomic.Bool
-
-	lastPubSubEvent      time.Time
-	lastPubSubEventMutex sync.Mutex
-
-	tlsEnabled bool
+	tlsSkipVerify bool
+	tlsConfig     *tls.Config
+	consumed      atomic.Int64
+	produced      atomic.Int64
+	tlsEnabled    bool
 
 	// TODO: Issue 204 - used by connection watcher and connection cleaner
 	shutdownChan chan struct{}
@@ -102,7 +94,7 @@ func (bd *BrokerDetails) watchConnection() {
 				bd.state.Store(provider.CONNECTED)
 				bd.transitionSubscriptionState(subscribeStateStarting)
 			case *rabbitmqamqp.StateReconnecting:
-				bd.state.Store(provider.CONNECTING)
+				bd.State.Store(provider.CONNECTING)
 			case *rabbitmqamqp.StateClosed:
 				bd.state.Store(provider.CLOSED)
 				bd.transitionSubscriptionState(subscribeStateStopping)
@@ -150,64 +142,23 @@ func (bd *BrokerDetails) transitionSubscriptionState(newState subscribeState) {
 	}
 }
 
-func (bd *BrokerDetails) updateLastPubSubEvent() {
-	bd.lastPubSubEventMutex.Lock()
-	defer bd.lastPubSubEventMutex.Unlock()
-	bd.lastPubSubEvent = time.Now()
-}
-
-func (bd *BrokerDetails) incrementStreamCount() {
-	atomic.AddInt64(&bd.ActiveStreams, 1)
-	bd.updateLastPubSubEvent()
-}
-
-func (bd *BrokerDetails) decrementStreamCount() {
-	atomic.AddInt64(&bd.ActiveStreams, -1)
-	bd.updateLastPubSubEvent()
-}
-
 func (bd *BrokerDetails) exchangeExists(name string) bool {
-	return bd.entityTracker().ExchangeExists(name)
+	return bd.EntityTracker().ExchangeExists(name)
 }
 
 func (bd *BrokerDetails) queueExists(name string) bool {
-	return bd.entityTracker().QueueExists(name)
-}
-
-func (bd *BrokerDetails) entityTracker() *track.EntityTracker {
-	bd.Lock()
-	defer bd.Unlock()
-	if bd.knownEntities == nil {
-		bd.knownEntities = track.New()
-	}
-	return bd.knownEntities
-}
-
-func (bd *BrokerDetails) waitWhileConnecting() int {
-	for start := time.Now(); time.Since(start) < 30*time.Second; {
-		switch bd.state.Load() {
-		case provider.CONNECTED:
-			return provider.CONNECTED
-		case provider.CONNECTING:
-			time.Sleep(100 * time.Millisecond)
-		case provider.CLOSED:
-			return provider.CLOSED
-		case provider.DISCONNECTED:
-			return provider.DISCONNECTED
-		}
-	}
-	return provider.DISCONNECTED
+	return bd.EntityTracker().QueueExists(name)
 }
 
 func (bd *BrokerDetails) disconnect() {
 	bd.Lock()
 	defer bd.Unlock()
 
-	if bd.state.Load() == provider.DISCONNECTED || bd.state.Load() == provider.CLOSED {
+	if bd.State.Load() == provider.DISCONNECTED || bd.State.Load() == provider.CLOSED {
 		return
 	}
 
-	bd.clientDisconnect.Store(true)
+	bd.ClientDisconnect.Store(true)
 
 	if bd.shutdownChan != nil {
 		bd.shutdownOnce.Do(func() {
@@ -226,7 +177,7 @@ func (bd *BrokerDetails) disconnect() {
 		bd.Connection = nil
 	}
 
-	bd.state.Store(provider.DISCONNECTED)
+	bd.State.Store(provider.DISCONNECTED)
 	util.Logger.Info(i18n.ClientDisconnect, bd.ClientIdentifier)
 }
 
@@ -242,7 +193,7 @@ func (bd *BrokerDetails) getStreamOrQueueStats(source *pb.Source) *pb.SourceStat
 	// }
 
 	queue := amqp.SourceName(source)
-	vhost := amqp.GetVhost(bd.connectionConfig)
+	vhost := amqp.GetVhost(bd.ConnectionConfig)
 	stats := bd.mgmtClient.SourceStats(vhost, queue)
 	// TODO: Issue 220/221 - Handle stream-specific stats
 	return stats

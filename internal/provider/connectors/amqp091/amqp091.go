@@ -10,8 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -82,7 +80,7 @@ type rabbitMQManagementMetrics struct {
 
 // BrokerDetails struct houses connection specific information for the broker
 type BrokerDetails struct {
-	sync.Mutex
+	iamqp.CommonBrokerDetails
 	Connection   amqp091ConnectionShim
 	ErrorChannel chan amqp091Error
 	RetryChannel *amqp091ChannelShim
@@ -96,18 +94,10 @@ type BrokerDetails struct {
 	pubChannels      *util.BlockingPool
 	pubPCChannels    *util.BlockingPool
 	StreamConnection streamConnectionShim
-	ClientIdentifier string
-	knownEntities    *track.EntityTracker
 	knownBindings    *util.ConcurrentMap
-	activeMessages   *util.ConcurrentMap
-	state            atomic.Uint32
-	connectionConfig *pb.ConnectionConfiguration
 	tlsSkipVerify    bool
-	ActiveStreams    int64
-	consumed         int64
-	produced         int64
-	clientDisconnect atomic.Bool
-	lastPubSubEvent  time.Time
+	consumed         atomic.Int64
+	produced         atomic.Int64
 	tlsConfig        *tls.Config
 	tlsEnabled       bool
 	shutdownChan     chan bool
@@ -116,10 +106,11 @@ type BrokerDetails struct {
 	// it outlive the connection.
 	watcherWG sync.WaitGroup
 
-	// mgmtClientOnce guards one-time initialization of the cached HTTP client
-	// used for RabbitMQ management API requests.
+	// mgmtClientOnce guards one-time initialization of the shared management
+	// REST client used for RabbitMQ management API requests.
 	mgmtClientOnce sync.Once
-	mgmtClient     *http.Client
+	mgmtClient     iamqp.ManagementClientShim
+	mgmtClientErr  error
 }
 
 func init() {
@@ -210,7 +201,7 @@ func (prov *amqp091provider) Ack(ctx context.Context, msgid string) *pb.Error {
 		}
 	}()
 
-	if rmu, ok := bd.activeMessages.Get(msgid); ok {
+	if rmu, ok := bd.ActiveMessages.Get(msgid); ok {
 		switch rm := rmu.(type) {
 		case amqp091Message:
 			util.Logger.Tracef("Acking message %s with tag %d", msgid, rm.DeliveryTag)
@@ -231,7 +222,7 @@ func (prov *amqp091provider) Ack(ctx context.Context, msgid string) *pb.Error {
 	if err != nil {
 		util.Logger.Warn(i18n.ClientAckError, err.Error(), bd.ClientIdentifier)
 
-		bd.activeMessages.Delete(msgid)
+		bd.ActiveMessages.Delete(msgid)
 		errMsg := &pb.Error{
 			Message: err.Error(),
 		}
@@ -244,7 +235,7 @@ func (prov *amqp091provider) Ack(ctx context.Context, msgid string) *pb.Error {
 	if span != nil {
 		span.AddEvent("provider acked message successfully")
 	}
-	bd.activeMessages.Delete(msgid)
+	bd.ActiveMessages.Delete(msgid)
 	return nil
 }
 
@@ -262,7 +253,7 @@ func (prov *amqp091provider) Nack(ctx context.Context, msgid string) *pb.Error {
 		}
 	}()
 
-	if rmu, ok := bd.activeMessages.Get(msgid); ok {
+	if rmu, ok := bd.ActiveMessages.Get(msgid); ok {
 		switch rm := rmu.(type) {
 		case amqp091Message:
 			_, span = tracing.SpanFromHeaders(ctx, fromTableToMap(rm.Headers), "message nack", trace.SpanKindInternal)
@@ -282,7 +273,7 @@ func (prov *amqp091provider) Nack(ctx context.Context, msgid string) *pb.Error {
 	if err != nil {
 		util.Logger.Warn(i18n.ClientNackError, err.Error(), bd.ClientIdentifier)
 
-		bd.activeMessages.Delete(msgid)
+		bd.ActiveMessages.Delete(msgid)
 		errMsg := &pb.Error{
 			Message: err.Error(),
 		}
@@ -295,7 +286,7 @@ func (prov *amqp091provider) Nack(ctx context.Context, msgid string) *pb.Error {
 	if span != nil {
 		span.AddEvent("provider nacked message successfully")
 	}
-	bd.activeMessages.Delete(msgid)
+	bd.ActiveMessages.Delete(msgid)
 	return nil
 }
 
@@ -318,7 +309,7 @@ func (prov *amqp091provider) Retry(ctx context.Context, origSource *pb.Source, m
 	retrySpan.SetAttributes(attribute.String("source.name", origSource.GetName()),
 		attribute.String("messaging.client_id", bd.ClientIdentifier),
 		attribute.String("messaging.message.id", msgid))
-	if rmu, ok := bd.activeMessages.Get(msgid); ok {
+	if rmu, ok := bd.ActiveMessages.Get(msgid); ok {
 		switch rm := rmu.(type) {
 		case streamMessage:
 			// We may have work when we manually track offsets
@@ -406,7 +397,7 @@ func (prov *amqp091provider) Retry(ctx context.Context, origSource *pb.Source, m
 			retrySpan.AddEvent("retry ack/nack complete")
 		}
 		util.Logger.Debug(i18n.RetryMessage, bd.ClientIdentifier, msgid, delay)
-		bd.activeMessages.Delete(msgid)
+		bd.ActiveMessages.Delete(msgid)
 	} else {
 		util.Logger.Debug(i18n.RetryNoMessage, bd.ClientIdentifier, msgid)
 		return &pb.Error{Message: fmt.Sprintf("No message with uuid %s", msgid)}
@@ -450,11 +441,11 @@ func (prov *amqp091provider) DeadLetter(ctx context.Context, _ *pb.Source, msgid
 		return &pb.Error{Message: err.Error()}
 	}
 
-	if rmu, ok := bd.activeMessages.Get(msgid); ok {
+	if rmu, ok := bd.ActiveMessages.Get(msgid); ok {
 		rm := rmu.(amqp091Message)
 		util.Logger.Debugf("DeadLetter message with id [%s].", msgid)
 		_ = rm.Nack(false) // Requeue set to false will cause the message to DeadLetter
-		bd.activeMessages.Delete(msgid)
+		bd.ActiveMessages.Delete(msgid)
 	} else {
 		util.Logger.Debugf("DeadLetter message with id [%s] failed, message not found in active messages.", msgid)
 		return &pb.Error{Message: fmt.Sprintf("DeadLetter message with id [%s] failed, message not found in active messages.", msgid)}
@@ -478,16 +469,13 @@ func (prov *amqp091provider) Connect(ctx context.Context, cf *pb.ConnectionConfi
 	// a value caused the compiler to detect 5 separate escape flows and emit 5
 	// escape-to-heap events, making the intent opaque.
 	bd := &BrokerDetails{
-		connectionConfig: cf,
+		ConnectionConfig: cf,
 		ClientIdentifier: clientIdentifier,
+		ActiveMessages:   activeMessages,
+		LastPubSubEvent:  time.Now(),
 		ErrorChannel:     make(chan amqp091Error, 1),
-		activeMessages:   activeMessages,
 		tlsSkipVerify:    tlsSkipVerify,
 		tlsConfig:        prov.tlsConfig,
-		produced:         0,
-		consumed:         0,
-		ActiveStreams:    0,
-		lastPubSubEvent:  time.Now(),
 		shutdownChan:     make(chan bool, 1),
 		pubChannelCtx:    pubChCtx,
 		pubChannelCancel: pubChCancel,
@@ -622,43 +610,20 @@ func sourceTypeToAmqpType(source *pb.Source) (string, error) {
 }
 
 func (bd *BrokerDetails) exchangeKnown(name string) bool {
-	return bd.entityTracker().ExchangeExists(name)
+	return bd.EntityTracker().ExchangeExists(name)
 }
 
 func (bd *BrokerDetails) queueKnown(name string) bool {
-	return bd.entityTracker().QueueExists(name)
+	return bd.EntityTracker().QueueExists(name)
 }
 
 func (bd *BrokerDetails) streamKnown(name string) bool {
-	return bd.entityTracker().StreamExists(name)
-}
-
-func (bd *BrokerDetails) entityTracker() *track.EntityTracker {
-	bd.Lock()
-	defer bd.Unlock()
-	if bd.knownEntities == nil {
-		bd.knownEntities = track.New()
-	}
-	return bd.knownEntities
+	return bd.EntityTracker().StreamExists(name)
 }
 
 func (bd *BrokerDetails) bindingKnown(name string) bool {
 	_, ok := bd.knownBindings.Get(name)
 	return ok
-}
-
-func (bd *BrokerDetails) updateLastPubSubEvent() {
-	bd.lastPubSubEvent = time.Now()
-}
-
-func (bd *BrokerDetails) incrementStreamCount() {
-	atomic.AddInt64(&bd.ActiveStreams, 1)
-	bd.updateLastPubSubEvent()
-}
-
-func (bd *BrokerDetails) decrementStreamCount() {
-	atomic.AddInt64(&bd.ActiveStreams, -1)
-	bd.updateLastPubSubEvent()
 }
 
 func ignoreDeclareError(err error) bool {
@@ -698,7 +663,7 @@ func (prov *amqp091provider) declareExchange(address *pb.Address, bd *BrokerDeta
 			util.Logger.Debugf("Ignoring error declaring exchange %s: %s", address.GetName(), err.Error())
 		}
 
-		bd.entityTracker().AddExchange(address.GetName())
+		bd.EntityTracker().AddExchange(address.GetName())
 	}
 
 	if parent := address.GetParentAddress(); parent != nil {
@@ -800,23 +765,34 @@ func (prov *amqp091provider) declareQueue(source *pb.Source, bd *BrokerDetails, 
 	if qErr != nil {
 		util.Logger.Warn(i18n.ClientQueueDeclareError, qErr.Error(), bd.ClientIdentifier)
 	}
-	bd.entityTracker().AddQueue(source.GetName())
+	bd.EntityTracker().AddQueue(source.GetName())
 	return nil
 }
 
-func (bd *BrokerDetails) getManagementClient() *http.Client {
-	// Initialize the HTTP client once and reuse it for all management API
-	// requests.  Allocating a fresh *http.Client (and *http.Transport for TLS)
-	// on every call was the second-highest heap escape in the AMQP provider.
+func (bd *BrokerDetails) getManagementClient() (iamqp.ManagementClientShim, error) {
+	// Initialize the shared REST client on the first management request, after
+	// connection setup has selected TLS settings for this broker.
 	bd.mgmtClientOnce.Do(func() {
-		if bd.tlsEnabled {
-			tr := &http.Transport{TLSClientConfig: bd.tlsConfig}
-			bd.mgmtClient = &http.Client{Transport: tr, Timeout: 5 * time.Second}
-		} else {
-			bd.mgmtClient = &http.Client{Timeout: 5 * time.Second}
+		var tlsConfig *tls.Config
+		proto := "http"
+		if bd.ConnectionConfig.GetTls() {
+			proto = "https"
+			tlsConfig = bd.tlsConfig
 		}
+
+		// Keep the AMQP 0-9-1 port fallback. It differs from the shared helper's
+		// environment/default-port policy and is part of this provider's behavior.
+		adminPort := bd.ConnectionConfig.GetAdminPort()
+		if adminPort == 0 {
+			adminPort = bd.ConnectionConfig.Port + 10000
+		}
+		endpoint := fmt.Sprintf("%s://%s:%d", proto, bd.ConnectionConfig.Host, adminPort)
+		username, password := iamqp.GetUsernamePassword(bd.ConnectionConfig)
+		bd.mgmtClient, bd.mgmtClientErr = iamqp.NewManagementClientWithBasicAuth(
+			context.Background(), endpoint, username, password, tlsConfig,
+		)
 	})
-	return bd.mgmtClient
+	return bd.mgmtClient, bd.mgmtClientErr
 }
 
 func (bd *BrokerDetails) doManagementRequest(method, urn string) ([]map[string]interface{}, error) {
@@ -838,51 +814,33 @@ func (bd *BrokerDetails) doManagementRequest(method, urn string) ([]map[string]i
 }
 
 func (bd *BrokerDetails) doManagementRequestWithoutMarshal(method, urn string) ([]byte, error) {
-	client := bd.getManagementClient()
+	client, err := bd.getManagementClient()
+	if err != nil {
+		return nil, fmt.Errorf("Error retrieving bindings: %s", err.Error())
+	}
 	proto := "http"
-	if bd.tlsEnabled {
+	if bd.ConnectionConfig.GetTls() {
 		proto = "https"
 	}
 
-	adminPort := bd.connectionConfig.GetAdminPort()
+	adminPort := bd.ConnectionConfig.GetAdminPort()
 	if adminPort == 0 {
-		adminPort = bd.connectionConfig.Port + 10000
+		adminPort = bd.ConnectionConfig.Port + 10000
 	}
-	host := bd.connectionConfig.Host
+	host := bd.ConnectionConfig.Host
 
 	rurl := fmt.Sprintf("%s://%s:%d%s", proto, host, adminPort, urn)
-	req, _ := http.NewRequestWithContext(context.Background(), method, rurl, nil)
-	req.SetBasicAuth(bd.connectionConfig.GetCredentials().GetUsername(), bd.connectionConfig.GetCredentials().GetPassword())
-	req.Header.Add("Accept", "application/json")
-	resp, respErr := client.Do(req)
-
-	var body []byte
-	var bodyErr error
-	if resp != nil {
-		defer resp.Body.Close()
-		body, bodyErr = io.ReadAll(resp.Body)
+	body, statusCode, requestErr := client.Request(context.Background(), method, urn)
+	if requestErr != nil && statusCode == 0 {
+		return nil, fmt.Errorf("Error retrieving bindings: %s", requestErr.Error())
 	}
-
-	if respErr != nil { //nolint:gocritic
-		err := fmt.Errorf("Error retrieving bindings: %s", respErr.Error())
-		return nil, err
-	} else if resp == nil {
-		err := fmt.Errorf("Error %s on management request %s: no response", method, rurl)
-		return nil, err
-	} else if resp.StatusCode >= 300 || resp.StatusCode < 200 {
-		err := fmt.Errorf("Error %s on management request %s: request returned a %d", method, rurl, resp.StatusCode)
-		return body, err
+	if statusCode == 0 {
+		return nil, fmt.Errorf("Error %s on management request %s: no response", method, rurl)
 	}
-
-	if bodyErr != nil {
-		return body, bodyErr
+	if statusCode >= 300 || statusCode < 200 {
+		return body, fmt.Errorf("Error %s on management request %s: request returned a %d", method, rurl, statusCode)
 	}
-
-	if resp.StatusCode == 204 {
-		return body, nil
-	}
-
-	return body, nil
+	return body, requestErr
 }
 
 func (bd *BrokerDetails) getBindingKeysForSource(source *pb.Source) []map[string]interface{} {
@@ -890,7 +848,7 @@ func (bd *BrokerDetails) getBindingKeysForSource(source *pb.Source) []map[string
 
 	exchange := url.QueryEscape(source.GetAddress().GetName())
 	queue := url.QueryEscape(source.GetName())
-	vhost := bd.connectionConfig.GetTenant()
+	vhost := bd.ConnectionConfig.GetTenant()
 	if vhost == "" {
 		vhost = "/"
 	}
@@ -909,7 +867,7 @@ func (bd *BrokerDetails) getBindingKeysForSource(source *pb.Source) []map[string
 func (bd *BrokerDetails) deleteBindingByKeyFromSource(source *pb.Source, propKey string) error {
 	exchange := url.QueryEscape(source.GetAddress().GetName())
 	queue := url.QueryEscape(source.GetName())
-	vhost := bd.connectionConfig.GetTenant()
+	vhost := bd.ConnectionConfig.GetTenant()
 	if vhost == "" {
 		vhost = "/"
 	}
@@ -930,15 +888,8 @@ func (bd *BrokerDetails) cleanupBindings(source *pb.Source, subjects []string) [
 	bindings := bd.getBindingKeysForSource(source)
 	removed := make([]string, 0)
 	for _, binding := range bindings {
-		bindingExpected := false
 		routingKey := binding["routing_key"].(string)
-		for _, subject := range subjects {
-			if routingKey == subject {
-				bindingExpected = true
-				break
-			}
-		}
-		if !bindingExpected {
+		if !iamqp.IsBindingExpected(routingKey, subjects) {
 			util.Logger.Debugf("Deleting binding %s for routing key %s from %s\n", binding["properties_key"], binding["routing_key"], source.GetName())
 			err := bd.deleteBindingByKeyFromSource(source, binding["properties_key"].(string))
 			if err != nil {
@@ -1034,7 +985,7 @@ func (prov *amqp091provider) Subscribe(ctx context.Context, source *pb.Source, m
 		return &pb.Error{Message: err.Error()}
 	}
 
-	bd.updateLastPubSubEvent()
+	bd.UpdateLastPubSubEvent()
 	if source.GetType() == pb.Source_STREAM {
 		return prov.streamSubscribe(ctx, bd, source, messageChannel)
 	}
@@ -1134,8 +1085,8 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 		}
 	}()
 
-	bd.incrementStreamCount()
-	defer bd.decrementStreamCount()
+	bd.IncrementStreamCount()
+	defer bd.DecrementStreamCount()
 
 	defer func() *pb.Error {
 		if err := recover(); err != nil {
@@ -1161,7 +1112,7 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 			if cancelErr != (amqp091Error{}) {
 				util.Logger.Debugf("Received channel notify for client during subscribe %v : %v", bd.ClientIdentifier, cancelErr)
 				return &pb.Error{Message: cancelErr.Error()}
-			} else if s := bd.state.Load(); s != provider.CONNECTED {
+			} else if s := bd.State.Load(); s != provider.CONNECTED {
 				// The connection was closed without an error on the channel, so this was expected.
 				// TODO: Should we check for DISCONNECTED/CONNECTING as well?
 				util.Logger.Debugf("Received channel state not connected during subscribe %v : %v", bd.ClientIdentifier, s)
@@ -1176,7 +1127,7 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 			if chanErr != (amqp091Error{}) {
 				util.Logger.Debugf("Received connection notify for client during subscribe %v : %v", bd.ClientIdentifier, chanErr)
 				return &pb.Error{Message: chanErr.Error()}
-			} else if s := bd.state.Load(); s != provider.CONNECTED {
+			} else if s := bd.State.Load(); s != provider.CONNECTED {
 				// The connection was closed without an error on the channel, so this was expected.
 				// TODO: Should we check for DISCONNECTED/CONNECTING as well?
 				util.Logger.Debugf("Received connection state not connected during subscribe %v : %v", bd.ClientIdentifier, s)
@@ -1235,9 +1186,9 @@ func (prov *amqp091provider) queueSubscribe(ctx context.Context, bd *BrokerDetai
 
 			span.AddEvent("sending message from provider to server for consume")
 
-			bd.activeMessages.Add(messageUUID, msg)
+			bd.ActiveMessages.Add(messageUUID, msg)
 			messageChannel <- message
-			atomic.AddInt64(&bd.consumed, 1)
+			bd.consumed.Add(1)
 			span.End()
 		}
 	}
@@ -1374,14 +1325,14 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 
 		// add the stream message to active messages before we send it to the client to avoid the client
 		// potentially acking before we add it to active messages (can happen in low latency envs
-		bd.activeMessages.Add(messageUUID, stm)
+		bd.ActiveMessages.Add(messageUUID, stm)
 		messageChannel <- m
-		atomic.AddInt64(&bd.consumed, 1)
+		bd.consumed.Add(1)
 	}
 
 	consumer, _ := bd.StreamConnection.NewConsumer(source.GetName(), consumerName, offset, handleMessages, source.GetSingleActiveConsumer())
-	bd.incrementStreamCount()
-	defer bd.decrementStreamCount()
+	bd.IncrementStreamCount()
+	defer bd.DecrementStreamCount()
 	<-ctx.Done()
 	consumer.Close()
 	return nil
@@ -1394,7 +1345,7 @@ func (bd *BrokerDetails) declareStream(name string, ttl int64) error {
 	if err := bd.StreamConnection.DeclareStream(name, ttl); err != nil {
 		return err
 	}
-	bd.entityTracker().AddStream(name)
+	bd.EntityTracker().AddStream(name)
 	return nil
 }
 
@@ -1429,7 +1380,7 @@ func (prov *amqp091provider) disconnectClientByIdentifier(clientIdentifier strin
 	}()
 
 	bd.pubChannelCancel()
-	bd.clientDisconnect.Store(true)
+	bd.ClientDisconnect.Store(true)
 	util.Logger.Info(i18n.ClientDisconnect, bd.ClientIdentifier)
 	bd.shutdownChan <- true // shut down the connectionWatcher
 	// close the client if it is still connected
@@ -1452,9 +1403,9 @@ func (prov *amqp091provider) Publish(ctx context.Context, messageChannel <-chan 
 		return &pb.Error{Message: err.Error()}
 	}
 
-	bd.updateLastPubSubEvent()
-	bd.incrementStreamCount()
-	defer bd.decrementStreamCount()
+	bd.UpdateLastPubSubEvent()
+	bd.IncrementStreamCount()
+	defer bd.DecrementStreamCount()
 
 	if bd.Connection.IsClosed() {
 		return &pb.Error{Message: "connection to broker is closed"}
@@ -1496,7 +1447,7 @@ func (prov *amqp091provider) Publish(ctx context.Context, messageChannel <-chan 
 			if cancelErr != (amqp091Error{}) {
 				util.Logger.Debugf("Received channel notify for client during publish %v : %v", bd.ClientIdentifier, cancelErr)
 				return &pb.Error{Message: cancelErr.Error()}
-			} else if s := bd.state.Load(); s != provider.CONNECTED {
+			} else if s := bd.State.Load(); s != provider.CONNECTED {
 				// The connection was closed without an error on the channel, so this was expected.
 				// TODO: Should we check for DISCONNECTED/CONNECTING as well?
 				util.Logger.Debugf("Received channel state not connected during publish %v : %v", bd.ClientIdentifier, s)
@@ -1512,7 +1463,7 @@ func (prov *amqp091provider) Publish(ctx context.Context, messageChannel <-chan 
 				util.Logger.Debugf("Received connection notify for client during publish %v : %v", bd.ClientIdentifier, chanErr)
 				retError := &pb.Error{Message: chanErr.Error()}
 				return retError
-			} else if s := bd.state.Load(); s != provider.CONNECTED {
+			} else if s := bd.State.Load(); s != provider.CONNECTED {
 				// The connection was closed without an error on the channel, so this was expected.
 				// TODO: Should we check for DISCONNECTED/CONNECTING as well?
 				util.Logger.Debugf("Received connection state not connected during publish %v : %v", bd.ClientIdentifier, s)
@@ -1538,7 +1489,7 @@ func (prov *amqp091provider) PublishOne(ctx context.Context, msg *pb.Message) *p
 		return &pb.Error{Message: err.Error()}
 	}
 
-	bd.updateLastPubSubEvent()
+	bd.UpdateLastPubSubEvent()
 
 	var pubErr *pb.Error
 	switch msg.GetAddress().GetType() { //nolint:exhaustive
@@ -1677,7 +1628,7 @@ func (prov *amqp091provider) prepareAndSend(ctx context.Context, msg *pb.Message
 	}
 
 	util.Logger.Trace(i18n.ClientPublished, bd.ClientIdentifier)
-	atomic.AddInt64(&bd.produced, 1)
+	bd.produced.Add(1)
 	span.End()
 
 	return nil
@@ -1725,7 +1676,7 @@ PCLoop:
 		}
 	}
 	util.Logger.Trace(i18n.ClientPublished, bd.ClientIdentifier)
-	atomic.AddInt64(&bd.produced, 1)
+	bd.produced.Add(1)
 	return nil
 }
 
@@ -1743,11 +1694,11 @@ func (prov *amqp091provider) WaitForConnect(ctx context.Context) bool {
 
 	// to prevent unwanted disconnects for a client with a single stream
 	// we need to increment the stream count if we are waiting for provider connect
-	bd.incrementStreamCount()
-	defer bd.decrementStreamCount()
+	bd.IncrementStreamCount()
+	defer bd.DecrementStreamCount()
 
 	for start := time.Now(); time.Since(start) < provider.CONNECTTIMEOUT*time.Second; {
-		if bd.state.Load() == provider.CONNECTED {
+		if bd.State.Load() == provider.CONNECTED {
 			util.Logger.Info(i18n.ClientConnected, bd.ClientIdentifier)
 			return true
 		}
@@ -1810,7 +1761,7 @@ func (bd *BrokerDetails) getStreamOrQueueStats(source *pb.Source) *pb.SourceStat
 	var results map[string]interface{}
 
 	queue := url.QueryEscape(sourceName(source))
-	vhost := bd.connectionConfig.GetTenant()
+	vhost := bd.ConnectionConfig.GetTenant()
 	if vhost == "" {
 		vhost = "/"
 	}
@@ -1876,7 +1827,7 @@ func (prov *amqp091provider) SourceStats(ctx context.Context, source *pb.Source)
 // connectionWatcher Called at the end of BrokerDetails.connect(), we monitor the bd.ErrorChannel and try to reconnect
 // if we get an error on the channel. Receiving nil on the channel means we've closed because of the client
 func (bd *BrokerDetails) connectionWatcher() {
-	for !bd.clientDisconnect.Load() {
+	for !bd.ClientDisconnect.Load() {
 		select {
 		case <-bd.shutdownChan:
 			return
@@ -1888,19 +1839,19 @@ func (bd *BrokerDetails) connectionWatcher() {
 			// frame or a TCP-level close/RST).  Unconditionally reconnecting
 			// avoids a race where IsClosed() is still false at the time of
 			// the check even though the connection is genuinely gone.
-			bd.state.Store(provider.DISCONNECTED)
+			bd.State.Store(provider.DISCONNECTED)
 			// Retry until we reconnect or the client explicitly disconnects.
 			// Without this loop, a single failed connect() would leave the
 			// watcher waiting for the 30-second fallback timer before trying
 			// again (because ErrorChannel is drained and no relay goroutine
 			// will send another notification until a new connection is made).
-			for !bd.clientDisconnect.Load() {
+			for !bd.ClientDisconnect.Load() {
 				provider.SleepRandomReconnect()
 				if ok, _ := bd.connect(); ok {
 					break
 				}
 				// connect() failed; reset state so the next attempt can proceed.
-				bd.state.Store(provider.DISCONNECTED)
+				bd.State.Store(provider.DISCONNECTED)
 			}
 			continue
 		case <-time.After(30 * time.Second):
@@ -1908,7 +1859,7 @@ func (bd *BrokerDetails) connectionWatcher() {
 			// this is to help deal with race condition where we're not listening on the bd.ErrorChannel
 			// when there is an error on the connection
 			if bd.Connection.IsClosed() {
-				bd.state.Store(provider.DISCONNECTED)
+				bd.State.Store(provider.DISCONNECTED)
 				// Ignore this error because we will reconnect in 30 seconds
 				bd.connect() //nolint:errcheck
 			}
@@ -1917,31 +1868,13 @@ func (bd *BrokerDetails) connectionWatcher() {
 	}
 }
 
-// waitWhileConnecting waits up to 30 seconds for an in-progress connection attempt to resolve.
-// It returns the resulting state: CONNECTED, CLOSED, or DISCONNECTED (also used for timeouts).
-func (bd *BrokerDetails) waitWhileConnecting() uint32 {
-	for start := time.Now(); time.Since(start) < 30*time.Second; {
-		switch bd.state.Load() {
-		case provider.CONNECTED:
-			return provider.CONNECTED
-		case provider.CONNECTING:
-			time.Sleep(100 * time.Millisecond)
-		case provider.CLOSED:
-			return provider.CLOSED
-		case provider.DISCONNECTED:
-			return provider.DISCONNECTED
-		}
-	}
-	return provider.DISCONNECTED
-}
-
 func (bd *BrokerDetails) connect() (bool, error) {
-	if bd.clientDisconnect.Load() {
+	if bd.ClientDisconnect.Load() {
 		return false, nil
 	}
 
-	if bd.state.Load() == provider.CONNECTING {
-		switch bd.waitWhileConnecting() {
+	if bd.State.Load() == provider.CONNECTING {
+		switch bd.WaitWhileConnecting() {
 		case provider.CONNECTED:
 			return true, nil
 		case provider.CLOSED:
@@ -1951,22 +1884,22 @@ func (bd *BrokerDetails) connect() (bool, error) {
 
 	bd.Lock()
 	defer bd.Unlock()
-	if bd.state.Load() == provider.CONNECTED {
+	if bd.State.Load() == provider.CONNECTED {
 		return true, nil
 	}
 
-	bd.state.Store(provider.CONNECTING)
+	bd.State.Store(provider.CONNECTING)
 	var conn amqp091ConnectionShim
 	var err error
 
 	// Reinitialize these maps early, we especially want to
 	// ensure activeMessages gets cleared out before an Ack/Nacks
 	// are sent from the client.
-	bd.knownEntities = track.New()
+	bd.KnownEntities = track.New()
 	bd.knownBindings = util.NewConcurrentMap()
-	bd.activeMessages = util.NewConcurrentMap()
+	bd.ActiveMessages = util.NewConcurrentMap()
 
-	cf := bd.connectionConfig
+	cf := bd.ConnectionConfig
 
 	util.Logger.Info(i18n.ClientConnect, bd.ClientIdentifier, cf.GetHost())
 
@@ -1989,7 +1922,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 
 	if err != nil {
 		util.Logger.Warn(i18n.ClientBrokerConnectError, err.Error(), bd.ClientIdentifier)
-		bd.state.Store(provider.CLOSED)
+		bd.State.Store(provider.CLOSED)
 		return false, err
 	}
 
@@ -1997,7 +1930,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 	bd.RetryChannel = nil
 	bd.ErrorChannel = make(chan amqp091Error, 1)
 	bd.ErrorChannel = bd.Connection.NotifyClose(bd.ErrorChannel) // this looks unneeded but it aids in unit testing
-	bd.state.Store(provider.CONNECTED)
+	bd.State.Store(provider.CONNECTED)
 
 	util.Logger.Info(i18n.ClientConnected, bd.ClientIdentifier)
 
@@ -2012,7 +1945,7 @@ func (bd *BrokerDetails) connect() (bool, error) {
 func (bd *BrokerDetails) loadExchanges() {
 	var results []map[string]interface{}
 
-	vhost := bd.connectionConfig.GetTenant()
+	vhost := bd.ConnectionConfig.GetTenant()
 	if vhost == "" {
 		vhost = "/"
 	}
@@ -2033,27 +1966,34 @@ func (bd *BrokerDetails) loadExchanges() {
 	for _, exchange := range results {
 		if name, ok := exchange["name"].(string); ok {
 			util.Logger.Debugf("Adding Exchange to known list: %s", name)
-			bd.entityTracker().AddExchange(name)
+			bd.EntityTracker().AddExchange(name)
 		}
 	}
 }
 
+func (bd *BrokerDetails) GetActiveMessagesCount() int {
+	return bd.ActiveMessages.Length()
+}
+
+func (bd *BrokerDetails) GetActiveStreams() int {
+	return int(bd.ActiveStreams.Load())
+}
+
+func (bd *BrokerDetails) GetMessagesProduced() int {
+	return int(bd.produced.Load())
+}
+
+func (bd *BrokerDetails) GetMessagesConsumed() int {
+	return int(bd.consumed.Load())
+}
+
 func (prov *amqp091provider) Stats() *provider.Stats {
-	stats := &provider.Stats{}
-	stats.Clients = make([]*provider.ClientStats, 0)
-	for _, connID := range prov.connections.GetList() {
-		clientStat := &provider.ClientStats{}
+	return provider.CollectClientStats(prov.connections.GetList(), func(connID string) *provider.ClientStats {
 		connRaw, exists := prov.connections.Get(connID)
 		if !exists {
-			continue
+			return nil
 		}
 		conn := connRaw.(*BrokerDetails)
-		clientStat.ID = conn.ClientIdentifier
-		clientStat.ActiveMessages = conn.activeMessages.Length()
-		clientStat.Streams = int(conn.ActiveStreams)
-		clientStat.Produced = int(conn.produced)
-		clientStat.Consumed = int(conn.consumed)
-		stats.Clients = append(stats.Clients, clientStat)
-	}
-	return stats
+		return provider.ClientStatsFromProvider(conn.ClientIdentifier, conn)
+	})
 }

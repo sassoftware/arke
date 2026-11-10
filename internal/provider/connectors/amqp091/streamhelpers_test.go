@@ -97,7 +97,7 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "without tenant and TLS",
 			bd: &BrokerDetails{
-				connectionConfig: &pb.ConnectionConfiguration{
+				ConnectionConfig: &pb.ConnectionConfiguration{
 					Credentials: &pb.Credentials{
 						Username: "user",
 						Password: "pass",
@@ -111,7 +111,7 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "with tenant and without TLS",
 			bd: &BrokerDetails{
-				connectionConfig: &pb.ConnectionConfiguration{
+				ConnectionConfig: &pb.ConnectionConfiguration{
 					Credentials: &pb.Credentials{
 						Username: "user",
 						Password: "pass",
@@ -126,7 +126,7 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "without tenant and with TLS",
 			bd: &BrokerDetails{
-				connectionConfig: &pb.ConnectionConfiguration{
+				ConnectionConfig: &pb.ConnectionConfiguration{
 					Credentials: &pb.Credentials{
 						Username: "user",
 						Password: "pass",
@@ -140,7 +140,7 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "with tenant and TLS",
 			bd: &BrokerDetails{
-				connectionConfig: &pb.ConnectionConfiguration{
+				ConnectionConfig: &pb.ConnectionConfiguration{
 					Credentials: &pb.Credentials{
 						Username: "user",
 						Password: "pass",
@@ -155,7 +155,7 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "escapechar tenant and TLS",
 			bd: &BrokerDetails{
-				connectionConfig: &pb.ConnectionConfiguration{
+				ConnectionConfig: &pb.ConnectionConfiguration{
 					Credentials: &pb.Credentials{
 						Username: "user",
 						Password: "pass",
@@ -170,7 +170,7 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "escapechar tenant and TLS",
 			bd: &BrokerDetails{
-				connectionConfig: &pb.ConnectionConfiguration{
+				ConnectionConfig: &pb.ConnectionConfiguration{
 					Credentials: &pb.Credentials{
 						Username: "user",
 						Password: "pass",

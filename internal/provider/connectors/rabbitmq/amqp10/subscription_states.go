@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	ramqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
@@ -43,7 +42,7 @@ func (s *Subscription) configureStateTransitions() {
 }
 
 func (s *Subscription) starting() (subscribeState, *subscribeStateTransitionError) {
-	if s.bd.clientDisconnect.Load() {
+	if s.bd.ClientDisconnect.Load() {
 		return subscribeStateStopped, nil
 	}
 	// validate subscription configuration
@@ -68,7 +67,7 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 	}
 	consumer, err := s.bd.Connection.NewConsumer(s.ctx, queueName, opts)
 	if err != nil {
-		if s.ctx.Err() != nil || s.bd.clientDisconnect.Load() {
+		if s.ctx.Err() != nil || s.bd.ClientDisconnect.Load() {
 			return subscribeStateStopping, nil
 		}
 		s.lastRecoveryError = &subscribeStateTransitionError{
@@ -130,7 +129,7 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 	defer cleanup()
 
 	recoverFromReceiveError := func(err error) (subscribeState, *subscribeStateTransitionError) {
-		if s.ctx.Err() != nil || s.bd.clientDisconnect.Load() {
+		if s.ctx.Err() != nil || s.bd.ClientDisconnect.Load() {
 			return subscribeStateStopping, nil
 		}
 		util.Logger.Error("error received from consumer", "error", err)
@@ -163,7 +162,7 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 			select {
 			case s.messageCh <- m:
 				util.Logger.Debugf("message forwarded to channel: %s", m.Uuid)
-				atomic.AddInt64(&s.bd.consumed, 1)
+				s.bd.consumed.Add(1)
 				s.recoveryAttempts = 0
 				s.lastRecoveryError = nil
 			case err := <-receiveErrors:
@@ -191,7 +190,7 @@ func (s *Subscription) cleanupActiveDeliveries() {
 }
 
 func (s *Subscription) recovering() (subscribeState, *subscribeStateTransitionError) {
-	if s.ctx.Err() != nil || s.bd.clientDisconnect.Load() {
+	if s.ctx.Err() != nil || s.bd.ClientDisconnect.Load() {
 		return subscribeStateStopping, nil
 	}
 	s.recoveryAttempts++
@@ -213,11 +212,11 @@ func (s *Subscription) recovering() (subscribeState, *subscribeStateTransitionEr
 		return subscribeStateStopping, nil
 	case <-timer.C:
 	}
-	if s.bd.clientDisconnect.Load() {
+	if s.bd.ClientDisconnect.Load() {
 		return subscribeStateStopping, nil
 	}
 	if s.bd.provider == nil || !s.bd.provider.WaitForConnect(s.ctx) {
-		if s.ctx.Err() != nil || s.bd.clientDisconnect.Load() {
+		if s.ctx.Err() != nil || s.bd.ClientDisconnect.Load() {
 			return subscribeStateStopping, nil
 		}
 		if s.lastRecoveryError != nil {

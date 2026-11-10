@@ -40,26 +40,38 @@ type ManagementClientShim interface {
 }
 
 type AMQPManagementClient struct {
-	Ctx      context.Context
-	client   *http.Client
-	endpoint string
-	username string
-	password string
+	Ctx            context.Context
+	client         *http.Client
+	endpoint       string
+	username       string
+	password       string
+	forceBasicAuth bool
 }
 
 // NewManagementClient creates a new instance of AMQPManagementClient with the
 // given parameters. If not port is specified in the endpoint, it will be
 // looked up with amqp.GetAdminPort.
 func NewManagementClient(ctx context.Context, endpoint, username, password string, tlsConfig *tls.Config) (*AMQPManagementClient, error) {
+	return newManagementClient(ctx, endpoint, username, password, tlsConfig, false)
+}
+
+// NewManagementClientWithBasicAuth creates a management client that always
+// sends Basic Auth, including when either credential is empty.
+func NewManagementClientWithBasicAuth(ctx context.Context, endpoint, username, password string, tlsConfig *tls.Config) (*AMQPManagementClient, error) {
+	return newManagementClient(ctx, endpoint, username, password, tlsConfig, true)
+}
+
+func newManagementClient(ctx context.Context, endpoint, username, password string, tlsConfig *tls.Config, forceBasicAuth bool) (*AMQPManagementClient, error) {
 	if !strings.HasPrefix(endpoint, "http") {
 		return nil, fmt.Errorf("endpoint must start with http or https: %s", endpoint)
 	}
 	c := AMQPManagementClient{
-		Ctx:      ctx,
-		client:   &http.Client{Timeout: 5 * time.Second},
-		username: username,
-		password: password,
-		endpoint: endpoint,
+		Ctx:            ctx,
+		client:         &http.Client{Timeout: 5 * time.Second},
+		username:       username,
+		password:       password,
+		endpoint:       endpoint,
+		forceBasicAuth: forceBasicAuth,
 	}
 	if tlsConfig != nil {
 		c.client.Transport = &http.Transport{
@@ -70,11 +82,15 @@ func NewManagementClient(ctx context.Context, endpoint, username, password strin
 }
 
 func makeRequest(ctx context.Context, method, url, username, password string) (*http.Request, error) {
+	return makeRequestWithAuth(ctx, method, url, username, password, false)
+}
+
+func makeRequestWithAuth(ctx context.Context, method, url, username, password string, forceBasicAuth bool) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	if username != "" && password != "" {
+	if forceBasicAuth || (username != "" && password != "") {
 		req.SetBasicAuth(username, password)
 	}
 	req.Header.Add("Accept", "application/json")
@@ -106,6 +122,16 @@ func (c *AMQPManagementClient) Request(ctx context.Context, method, path string)
 		return nil, 0, err
 	}
 	return c.Do(req)
+}
+
+// IsBindingExpected reports whether routingKey is one of the requested subjects.
+func IsBindingExpected(routingKey string, subjects []string) bool {
+	for _, subject := range subjects {
+		if routingKey == subject {
+			return true
+		}
+	}
+	return false
 }
 
 // SourceStats retrieves statistics for a specific queue in the given virtual host.

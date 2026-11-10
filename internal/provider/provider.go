@@ -58,6 +58,14 @@ type ClientStats struct {
 	Consumed       int
 }
 
+// ClientStatsProvider exposes the client metrics shared by the AMQP providers.
+type ClientStatsProvider interface {
+	GetActiveMessagesCount() int
+	GetActiveStreams() int
+	GetMessagesProduced() int
+	GetMessagesConsumed() int
+}
+
 // Stats metrics for the provider
 type Stats struct {
 	Clients []*ClientStats
