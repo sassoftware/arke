@@ -57,7 +57,6 @@ type BrokerDetails struct {
 	knownEntities    *track.EntityTracker
 	activeMessages   *util.ConcurrentMap
 
-	state         atomic.Uint32
 	stateChannel  chan *rabbitmqamqp.StateChanged
 	subscriptions *util.ConcurrentMap
 
@@ -91,16 +90,16 @@ func (bd *BrokerDetails) watchConnection() {
 
 			switch change.To.(type) {
 			case *rabbitmqamqp.StateOpen:
-				bd.state.Store(provider.CONNECTED)
+				bd.State.Store(provider.CONNECTED)
 				bd.transitionSubscriptionState(subscribeStateStarting)
 			case *rabbitmqamqp.StateReconnecting:
 				bd.State.Store(provider.CONNECTING)
 			case *rabbitmqamqp.StateClosed:
-				bd.state.Store(provider.CLOSED)
+				bd.State.Store(provider.CLOSED)
 				bd.transitionSubscriptionState(subscribeStateStopping)
 				return
 			case *rabbitmqamqp.StateClosing:
-				bd.state.Store(provider.CLOSED)
+				bd.State.Store(provider.CLOSED)
 				bd.transitionSubscriptionState(subscribeStateStopping)
 				return
 			}
