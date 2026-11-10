@@ -318,7 +318,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 	t.Run("non TLS connect does not create TLS config when CA bundle is configured", func(t *testing.T) {
 		caBundlePath, _ := newTestCABundle(t)
 		t.Setenv(provider.TrustedCerts, caBundlePath)
-		ctx, _ := newTestProviderContext(t, "connect-non-tls")
+		ctx, clientIdentifier := newTestProviderContext(t, "connect-non-tls")
 		prov := newTestRabbitMQAMQP10Provider()
 		config := newTestConnectionConfig()
 		gotCall := mockSpyAmqp10Environment(t)
@@ -326,6 +326,10 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		err := prov.Connect(ctx, config, true)
 
 		require.Nil(t, err)
+		bd := prov.getBrokerDetailsByIdentifier(clientIdentifier)
+		require.NotNil(t, bd)
+		assert.Equal(t, uint32(provider.CONNECTED), bd.State.Load())
+		assert.True(t, prov.ClientExists(clientIdentifier))
 		assert.Nil(t, gotCall.tlsConfig)
 	})
 

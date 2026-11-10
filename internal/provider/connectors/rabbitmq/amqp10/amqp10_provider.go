@@ -155,7 +155,7 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 		stateChannel:     connCh,
 		subscriptions:    util.NewConcurrentMap(),
 	}
-	bd.state.Store(provider.CONNECTED) // new env connection guarantees
+	bd.State.Store(provider.CONNECTED) // new env connection guarantees
 	go bd.watchConnection()
 	util.Logger.Debugf("adding client %s", clientIdentifier)
 	prov.connections.Add(clientIdentifier, bd)
@@ -179,7 +179,7 @@ func (prov *rabbitMQAMQP10Provider) ClientExists(clientIdentifier string) bool {
 	case provider.CONNECTED, provider.CONNECTING:
 		return true
 	default:
-		util.Logger.Debugf("client %s exists but is in state %v", clientIdentifier, bd.state.Load())
+		util.Logger.Debugf("client %s exists but is in state %v", clientIdentifier, bd.State.Load())
 		return false
 	}
 }
