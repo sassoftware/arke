@@ -71,7 +71,8 @@ internal/server/server.go
 internal/provider/
   ├── provider.go         – Provider interface + Registry
   └── connectors/
-        └── amqp091/      – AMQP 0.9.1 implementation (RabbitMQ classic + Streams)
+        ├── amqp091/      – AMQP 0.9.1 provider (classic queues + Stream integration)
+        └── rabbitmq/stream/ – Provider-neutral RabbitMQ Stream client package
 ```
 <!-- markdownlint-enable MD013 -->
 
@@ -119,6 +120,12 @@ broker protocol. New broker backends (e.g. Kafka, MQTT) require only:
 
 See [Provider/Connector Interface Contract](./provider-connector-interface.md)
 for details.
+
+RabbitMQ Stream transport mechanics live in
+`internal/provider/connectors/rabbitmq/stream` so any provider can use them
+without importing `amqp091`. The `amqp091` provider builds the Stream URI and
+keeps source policy, protobuf conversion, tracing, prefetch, and Ack/Nack
+handling.
 
 ### Session Affinity via `connectionMap`
 

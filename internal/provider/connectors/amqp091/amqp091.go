@@ -19,13 +19,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
-	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/i18n"
 	"github.com/sassoftware/arke/internal/provider"
 	iamqp "github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/sassoftware/arke/internal/provider/connectors/amqp/track"
+	rabbitstream "github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/stream"
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/sassoftware/arke/internal/util/tracing"
 	"go.opentelemetry.io/otel/attribute"
@@ -37,7 +36,6 @@ const streamOffsetHeaderName = "x-current-offset"
 const retryCountHeaderName = "x-retry-count"
 const rabbitReceivedTimeHeaderName = "x-opt-rabbitmq-received-time"
 const timeStampInMSHeaderName = "timestamp_in_ms"
-const transferEncodingHeaderName = "Transfer-Encoding"
 
 const maxPubChannels = 10
 const maxPubPCChannels = 10
@@ -55,7 +53,7 @@ var supportedStreamSourceOptions = map[string]bool{"Offset": true, "MessageTTL":
 var NewAmqpConn091 = NewAmqp091Connection
 
 // NewStreamConn allow overriding the connection for mocking in tests
-var NewStreamConn = NewStreamConnection
+var NewStreamConn = rabbitstream.NewConnection
 
 // GetClientIdentifier Set function as a variable so we can replace the GetClientIdentifier method in unit tests
 var GetClientIdentifier = util.GetClientIdentifier
@@ -93,7 +91,7 @@ type BrokerDetails struct {
 
 	pubChannels      *util.BlockingPool
 	pubPCChannels    *util.BlockingPool
-	StreamConnection streamConnectionShim
+	StreamConnection rabbitstream.Connection
 	knownBindings    *util.ConcurrentMap
 	tlsSkipVerify    bool
 	consumed         atomic.Int64
@@ -211,7 +209,7 @@ func (prov *amqp091provider) Ack(ctx context.Context, msgid string) *pb.Error {
 			span.AddEvent("provider acking message")
 
 			err = rm.Ack()
-		case streamMessage:
+		case activeStreamMessage:
 			rm.Ack()
 		}
 	} else {
@@ -262,7 +260,7 @@ func (prov *amqp091provider) Nack(ctx context.Context, msgid string) *pb.Error {
 			span.AddEvent("provider nacking message")
 
 			err = rm.Nack(false)
-		case streamMessage:
+		case activeStreamMessage:
 			rm.Nack()
 		}
 	} else {
@@ -311,7 +309,7 @@ func (prov *amqp091provider) Retry(ctx context.Context, origSource *pb.Source, m
 		attribute.String("messaging.message.id", msgid))
 	if rmu, ok := bd.ActiveMessages.Get(msgid); ok {
 		switch rm := rmu.(type) {
-		case streamMessage:
+		case activeStreamMessage:
 			// We may have work when we manually track offsets
 		case amqp091Message:
 			retrySpan.AddEvent("setting up retry")
@@ -1272,25 +1270,18 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 		return cErr
 	}
 
-	handleMessages := func(ctx stream.ConsumerContext, message *amqp.Message) {
+	handleMessages := func(delivery rabbitstream.Delivery) {
 		messageUUID := util.GenUUID()
-		hdrs := fromStreamHeaders(message.ApplicationProperties)
-		hdrs[streamOffsetHeaderName] = strconv.FormatInt(ctx.Consumer.GetOffset(), 10)
+		hdrs := delivery.Message.Headers
+		if hdrs == nil {
+			hdrs = make(map[string]string)
+		}
+		hdrs[streamOffsetHeaderName] = strconv.FormatInt(delivery.Offset, 10)
 
 		addTimeStampHeader(hdrs)
 
 		// Attempt to decompress stream messages if they are marked/compressed.
-		data := message.GetData()
-
-		if hdrs[transferEncodingHeaderName] == "gzip" {
-			decompressedData, err := decompressBody(data)
-			if err != nil {
-				util.Logger.Debugf("Failed to decompress stream message: %v", err)
-			} else {
-				data = decompressedData
-				delete(hdrs, transferEncodingHeaderName)
-			}
-		}
+		data := delivery.Message.Body
 
 		m := &pb.Message{Uuid: messageUUID, Body: data,
 			Headers: hdrs, Address: source.GetAddress()}
@@ -1307,21 +1298,17 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 			return
 		}
 
-		stm := streamMessage{Body: message.GetData(), Headers: m.GetHeaders()}
+		stm := activeStreamMessage{}
 		stm.Ack = func() {
 			latch.Decrement()
-			if ctx.Consumer != nil {
-				consumerOffset := ctx.Consumer.GetOffset()
-				util.Logger.Tracef("Ack of message(%s) on stream %s%s with offset %d", messageUUID, ctx.Consumer.GetStreamName(), consumerGroup, consumerOffset)
-
-				offsetErr := bd.StreamConnection.StoreOffset(source.GetName(), consumerName, consumerOffset)
-				if offsetErr != nil {
-					util.Logger.Debugf("Ack of message(%s) on stream %s%s failed : %s", messageUUID, ctx.Consumer.GetStreamName(), consumerGroup, offsetErr.Error())
-				}
+			util.Logger.Tracef("Ack of message(%s) on stream %s%s with offset %d", messageUUID, delivery.StreamName, consumerGroup, delivery.Offset)
+			offsetErr := bd.StreamConnection.StoreOffset(source.GetName(), consumerName, delivery.Offset)
+			if offsetErr != nil {
+				util.Logger.Debugf("Ack of message(%s) on stream %s%s failed : %s", messageUUID, delivery.StreamName, consumerGroup, offsetErr.Error())
 			}
 		}
 		stm.Nack = func() {
-			util.Logger.Tracef("Nack of message(%s) on stream %s%s with offset %d", messageUUID, ctx.Consumer.GetStreamName(), consumerGroup, ctx.Consumer.GetOffset())
+			util.Logger.Tracef("Nack of message(%s) on stream %s%s with offset %d", messageUUID, delivery.StreamName, consumerGroup, delivery.Offset)
 			latch.Decrement()
 		}
 
@@ -1332,11 +1319,14 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 		bd.consumed.Add(1)
 	}
 
-	consumer, _ := bd.StreamConnection.NewConsumer(source.GetName(), consumerName, offset, handleMessages, source.GetSingleActiveConsumer())
+	consumer, consumerErr := bd.StreamConnection.NewConsumer(source.GetName(), consumerName, offset, handleMessages, source.GetSingleActiveConsumer())
+	if consumerErr != nil {
+		return &pb.Error{Message: consumerErr.Error()}
+	}
 	bd.IncrementStreamCount()
 	defer bd.DecrementStreamCount()
 	<-ctx.Done()
-	consumer.Close()
+	_ = consumer.Close()
 	return nil
 }
 
@@ -1566,13 +1556,17 @@ func (prov *amqp091provider) publishOneStream(ctx context.Context, msg *pb.Messa
 
 func (prov *amqp091provider) getStreamConnection(bd *BrokerDetails) *pb.Error {
 	// Not all of our clients are using streams, so we only connect if streams are used.
+	bd.Lock()
+	created := false
 	if bd.StreamConnection == nil {
 		connStr := getStreamConnectionString(bd)
-		bd.Lock()
 		bd.StreamConnection = NewStreamConn(connStr, bd.ClientIdentifier, bd.tlsConfig)
-		bd.Unlock()
-		connErr := bd.StreamConnection.Connect()
-		if connErr != nil {
+		created = true
+	}
+	streamConnection := bd.StreamConnection
+	bd.Unlock()
+	if created || streamConnection.IsClosed() {
+		if connErr := streamConnection.Connect(); connErr != nil {
 			return &pb.Error{Message: fmt.Sprintf("failed to create stream connection to broker: %s", connErr.Error())}
 		}
 	}
@@ -1636,14 +1630,14 @@ func (prov *amqp091provider) prepareAndSend(ctx context.Context, msg *pb.Message
 	return nil
 }
 
-func (prov *amqp091provider) streamPrepareAndSend(ctx context.Context, msg *pb.Message, bd *BrokerDetails, publisher streamPublisherShim) *pb.Error {
+func (prov *amqp091provider) streamPrepareAndSend(ctx context.Context, msg *pb.Message, bd *BrokerDetails, publisher rabbitstream.Publisher) *pb.Error {
 	_, span := tracing.SpanFromHeaders(ctx, msg.GetHeaders(), msg.GetAddress().GetName()+" publish", trace.SpanKindProducer)
 	defer span.End()
 
 	span.SetAttributes(attribute.String("subject.name", msg.GetAddress().GetSubjects()[0]),
 		attribute.String("messaging.client_id", bd.ClientIdentifier))
 
-	strMsg := streamMessage{Body: msg.GetBody()}
+	strMsg := rabbitstream.Message{Body: msg.GetBody()}
 	strMsg.Headers = msg.GetHeaders()
 	strMsg.PublishID = msg.GetPublishId()
 	err := publisher.Publish(strMsg)
@@ -1668,12 +1662,15 @@ PCLoop:
 		// timeout after 5 seconds
 		case <-ctx.Done():
 			return &pb.Error{Message: "Publish interrupted before confirmation received", IsFatal: true}
-		case status := <-publisher.GetPCChannel():
+		case status := <-publisher.Confirmations():
 			// Should we check message ID here?
-			if status.IsConfirmed() {
+			if status.Confirmed {
 				break PCLoop
 			} else {
-				return &pb.Error{Message: status.GetError().Error()}
+				if status.Err != nil {
+					return &pb.Error{Message: status.Err.Error()}
+				}
+				return &pb.Error{Message: "stream publish was not confirmed"}
 			}
 		}
 	}

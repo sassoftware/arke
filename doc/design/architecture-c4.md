@@ -124,13 +124,14 @@ C4Component
 
     Container_Boundary(connector, "AMQP 0.9.1 Connector") {
         Component(amqp091prov, "amqp091provider", "Go struct", "Implements the Provider interface. Entry point for all broker operations.")
-        Component(brokerdetails, "BrokerDetails", "Go struct", "Per-client state: AMQP connection, stream connection, channel pools, active messages map, retry/dead-letter config.")
+        Component(brokerdetails, "BrokerDetails", "Go struct", "Per-client state: AMQP connection, Stream connection reference, channel pools, active messages map, retry/dead-letter config.")
         Component(connwatcher, "Connection Watcher", "Go goroutine", "Monitors the AMQP error channel and triggers reconnection on failure.")
         Component(queueshim, "AMQP Channel Shim", "Go interface", "Wraps amqp091 channels. Enables mocking in unit tests.")
-        Component(streamshim, "Stream Connection Shim", "Go interface", "Wraps rabbitmq-stream-go. Handles stream declare, consumer lifecycle, offset storage, and publisher pooling.")
         Component(ratelatch, "Blocking Latch", "Go", "Applies back-pressure when the prefetch window is full for stream consumers.")
         Component(deadletter, "Dead Letter Handler", "Go", "Routes exhausted-retry messages to a configured dead-letter exchange/queue.")
     }
+
+    Component(stream_package, "RabbitMQ Stream Package", "Go package", "Provider-neutral wrapper for RabbitMQ Stream connections, publishers, consumers, offsets, message conversion, and compression.")
 
     Container_Ext(provider, "Provider Layer")
     System_Ext(rabbitmq, "RabbitMQ")
@@ -139,11 +140,11 @@ C4Component
     Rel(amqp091prov, brokerdetails, "Reads and mutates per-client state")
     Rel(amqp091prov, connwatcher, "Spawns on connect")
     Rel(amqp091prov, queueshim, "Queue publish / consume / ack")
-    Rel(amqp091prov, streamshim, "Stream declare / consume / offset store")
+    Rel(amqp091prov, stream_package, "Stream declare / publish / consume / offset store")
     Rel(amqp091prov, deadletter, "Routes failed messages")
-    Rel(streamshim, ratelatch, "Applies prefetch back-pressure")
+    Rel(amqp091prov, ratelatch, "Applies consumer prefetch back-pressure")
     Rel(queueshim, rabbitmq, "AMQP 0.9.1")
-    Rel(streamshim, rabbitmq, "RabbitMQ Streams protocol")
+    Rel(stream_package, rabbitmq, "RabbitMQ Streams protocol")
     Rel(connwatcher, rabbitmq, "Reconnects on error")
 ```
 
@@ -336,7 +337,7 @@ classDiagram
 
     class BrokerDetails {
         +Connection amqp091ConnectionShim
-        +StreamConnection streamConnectionShim
+        +StreamConnection stream.Connection
         +ClientIdentifier string
         +ActiveStreams int64
         -pubChannels BlockingPool
@@ -391,21 +392,22 @@ classDiagram
         +QueueDeclare()
     }
 
-    class streamConnectionShim {
+    class StreamConnectionInterface {
         <<interface>>
         +Connect() error
         +Close() error
         +IsClosed() bool
-        +NewConsumer(stream, consumer, offset, handler, singleActive) streamConsumerShim
+        +NewConsumer(stream, consumer, offset, handler, singleActive) Consumer
         +DeclareStream(name, ttl) error
-        +GetPublisher(stream, name, confirm) streamPublisherShim
+        +GetPublisher(stream, name, confirm) Publisher
         +PutPublisher(confirm, publisher)
         +StoreOffset(stream, consumer, offset) error
-        +GetLastOffset(stream, consumer) int64
+        +GetConsumerOffset(stream, consumer) (int64, error)
+        +GetStreamOffset(stream) (int64, error)
     }
 
-    class streamConnection {
-        -env stream.Environment
+    class StreamConnectionImpl {
+        -env RabbitMQ Stream Environment
         -publishers ConcurrentMap
         -clientIdentifier string
         +NewConsumer()
@@ -414,63 +416,71 @@ classDiagram
         +GetPublisher() / PutPublisher()
     }
 
-    class streamConsumerShim {
+    class StreamConsumerInterface {
         <<interface>>
         +Close() error
     }
 
-    class streamConsumer {
+    class StreamConsumerImpl {
         -consumer ha.ReliableConsumer
-        -streamName string
-        -consumerName string
         +Close()
     }
 
-    class streamPublisherShim {
+    class StreamPublisherInterface {
         <<interface>>
-        +Publish(msg) error
+        +Publish(Message) error
+        +Confirmations() channel
         +Close() error
-        +GetStreamName() string
-        +GetPublisherName() string
-        +GetPCChannel() chan
+        +StreamName() string
+        +PublisherName() string
     }
 
-    class streamPublisher {
+    class StreamPublisherImpl {
         -publisher ha.ReliableProducer
         -streamName string
         -publisherName string
-        -pcChannel chan
+        -confirmations chan
         +Publish()
         +Close()
     }
 
-    class streamMessage {
+    class StreamMessage {
         +Body []byte
         +Headers map
         +ContentType string
+        +ContentEncoding string
+        +PublishID int64
+    }
+
+    class StreamDelivery {
+        +Message Message
+        +StreamName string
+        +Offset int64
+    }
+
+    class activeStreamMessage {
         +Ack func()
         +Nack func()
-        +PublishID int64
     }
 
     Provider <|.. amqp091provider : implements
     amqp091provider "1" --> "n" BrokerDetails : manages per-client
 
     BrokerDetails --> amqp091ConnectionShim : Connection
-    BrokerDetails --> streamConnectionShim : StreamConnection
+    BrokerDetails --> StreamConnectionInterface : StreamConnection
 
     amqp091ConnectionShim <|.. amqp091Connection : implements
     amqp091Connection --> amqp091ChannelShim : creates
     amqp091ChannelShim <|.. amqp091Channel : implements
 
-    streamConnectionShim <|.. streamConnection : implements
-    streamConnection --> streamConsumerShim : creates
-    streamConnection --> streamPublisherShim : manages pool
-    streamConsumerShim <|.. streamConsumer : implements
-    streamPublisherShim <|.. streamPublisher : implements
-
-    streamConnection ..> streamMessage : publishes
-    amqp091Channel ..> streamMessage : delivers
+    StreamConnectionInterface <|.. StreamConnectionImpl : internal implementation
+    StreamConnectionImpl --> StreamConsumerInterface : creates
+    StreamConnectionImpl --> StreamPublisherInterface : manages pool
+    StreamConsumerInterface <|.. StreamConsumerImpl : internal implementation
+    StreamPublisherInterface <|.. StreamPublisherImpl : internal implementation
+    StreamPublisherInterface ..> StreamMessage : publishes
+    StreamConsumerInterface ..> StreamDelivery : delivers
+    amqp091provider ..> activeStreamMessage : tracks Ack/Nack state
 ```
 
 <!-- markdownlint-enable MD013 -->

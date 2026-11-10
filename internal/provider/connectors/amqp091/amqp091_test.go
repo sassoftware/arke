@@ -22,6 +22,7 @@ import (
 	"github.com/sassoftware/arke/internal/provider"
 	iamqp "github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/sassoftware/arke/internal/provider/connectors/amqp/track"
+	rabbitstream "github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/stream"
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -3290,7 +3291,7 @@ func Test_SourceStats(t *testing.T) {
 					smock.On("GetConsumerOffset", src.GetName(), test.sourceName).Return(int(test.consumerOffset), nil).Once()
 				}
 
-				NewStreamConn = func(string, string, *tls.Config) streamConnectionShim {
+				NewStreamConn = func(string, string, *tls.Config) rabbitstream.Connection {
 					return smock
 				}
 			}
