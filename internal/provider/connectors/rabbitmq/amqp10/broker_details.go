@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	rabbitmqamqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
 	pb "github.com/sassoftware/arke/api"
@@ -141,22 +140,6 @@ func (bd *BrokerDetails) transitionSubscriptionState(newState subscribeState) {
 		}
 		go ss.state.transitionState(newState)
 	}
-}
-
-func (bd *BrokerDetails) updateLastPubSubEvent() {
-	bd.lastPubSubEventMutex.Lock()
-	defer bd.lastPubSubEventMutex.Unlock()
-	bd.lastPubSubEvent = time.Now()
-}
-
-func (bd *BrokerDetails) incrementStreamCount() {
-	atomic.AddInt64(&bd.ActiveStreams, 1)
-	bd.updateLastPubSubEvent()
-}
-
-func (bd *BrokerDetails) decrementStreamCount() {
-	atomic.AddInt64(&bd.ActiveStreams, -1)
-	bd.updateLastPubSubEvent()
 }
 
 func (bd *BrokerDetails) exchangeExists(name string) bool {
