@@ -53,6 +53,9 @@ func (e *behaviorEnvironmentStub) QueryOffset(consumerName, streamName string) (
 func (e *behaviorEnvironmentStub) StoreOffset(consumerName, streamName string, offset int64) error {
 	e.storeArgs = append(e.storeArgs, [3]any{consumerName, streamName, offset})
 	e.storeOffset = offset
+	if e.storeErr == nil {
+		e.queryOffset = offset
+	}
 	return e.storeErr
 }
 
@@ -329,9 +332,26 @@ func TestConnectionOffsetAndDeclarationErrors(t *testing.T) {
 	environment.queryErr = wantErr
 	_, err := conn.GetConsumerOffset("events", "workers")
 	assert.ErrorIs(t, err, wantErr)
-	environment.storeErr = wantErr
 	assert.ErrorIs(t, conn.StoreOffset("events", "workers", 3), wantErr)
+	assert.Empty(t, environment.storeArgs)
+
+	environment.queryErr = nil
+	environment.storeErr = wantErr
+	assert.ErrorIs(t, conn.StoreOffset("events", "workers", 9), wantErr)
 
 	environment.declareErr = wantErr
 	assert.ErrorIs(t, conn.DeclareStream("events", 0), wantErr)
+}
+
+func TestConnectionStoreOffsetDoesNotMoveBackwards(t *testing.T) {
+	conn, environment := newConnectedBehaviorConnection(t)
+	environment.queryOffset = 11
+
+	require.NoError(t, conn.StoreOffset("events", "workers", 7))
+	assert.Empty(t, environment.storeArgs)
+	assert.Equal(t, int64(11), environment.queryOffset)
+
+	require.NoError(t, conn.StoreOffset("events", "workers", 12))
+	assert.Equal(t, [][3]any{{"workers", "events", int64(12)}}, environment.storeArgs)
+	assert.Equal(t, int64(12), environment.queryOffset)
 }

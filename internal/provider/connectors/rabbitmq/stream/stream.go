@@ -357,6 +357,17 @@ func (c *connection) StoreOffset(streamName, consumerName string, offset int64) 
 	if c.clientDisconnect.Load() || c.env == nil || c.env.IsClosed() {
 		return errConnectionClosed
 	}
+	// Multiple messages can be acknowledged concurrently. Query while holding
+	// the connection lock so a late acknowledgement for an earlier offset does
+	// not overwrite a newer offset already stored for this consumer.
+	currentOffset, err := c.env.QueryOffset(consumerName, streamName)
+	if err == nil && currentOffset >= offset {
+		util.Logger.Tracef("Skipping stale stream offset (%s)(%s)(%d); current offset is %d", consumerName, streamName, offset, currentOffset)
+		return nil
+	}
+	if err != nil && !errors.Is(err, streamclient.OffsetNotFoundError) {
+		return err
+	}
 	util.Logger.Tracef("StoreOffset (%s)(%s)(%d)", consumerName, streamName, offset)
 	return c.env.StoreOffset(consumerName, streamName, offset)
 }
