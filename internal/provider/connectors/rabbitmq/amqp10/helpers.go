@@ -34,11 +34,9 @@ func delCtxToMessage(delCtx ramqp.IDeliveryContext, source *pb.Source) *pb.Messa
 	}
 	headers := make(map[string]string)
 	for header, value := range delCtx.Message().ApplicationProperties {
-		switch value.(type) {
+		switch value := value.(type) {
 		case string:
-			if strVal, ok := value.(string); ok {
-				headers[header] = strVal
-			}
+			headers[header] = value
 		default:
 			headers[header] = fmt.Sprintf("%v", value)
 		}
