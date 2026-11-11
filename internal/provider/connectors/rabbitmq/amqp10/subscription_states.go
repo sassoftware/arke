@@ -65,7 +65,12 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 		ConsumerTimeout:                  0,   // TODO
 		OnDeliveryRelease:                nil, // TODO
 	}
-	consumer, err := s.bd.Connection.NewConsumer(s.ctx, queueName, opts)
+	conn := s.bd.connection()
+	if conn == nil {
+		// disconnect() clears the connection, so there is nothing to consume from.
+		return subscribeStateStopping, nil
+	}
+	consumer, err := conn.NewConsumer(s.ctx, queueName, opts)
 	if err != nil {
 		if s.ctx.Err() != nil || s.bd.ClientDisconnect.Load() {
 			return subscribeStateStopping, nil
@@ -158,7 +163,7 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 			if m == nil {
 				continue
 			}
-			s.bd.activeMessages.Add(m.Uuid, &activeDelivery{subscription: s, delivery: delCtx})
+			s.bd.ActiveMessages.Add(m.Uuid, &activeDelivery{subscription: s, delivery: delCtx})
 			select {
 			case s.messageCh <- m:
 				util.Logger.Debugf("message forwarded to channel: %s", m.Uuid)
@@ -169,7 +174,7 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 				return recoverFromReceiveError(err)
 			case <-s.ctx.Done():
 				util.Logger.Info("subscription context canceled while forwarding message")
-				s.bd.activeMessages.Delete(m.Uuid)
+				s.bd.ActiveMessages.Delete(m.Uuid)
 				return subscribeStateStopping, nil
 			}
 		}
@@ -177,14 +182,14 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 }
 
 func (s *Subscription) cleanupActiveDeliveries() {
-	for _, uuid := range s.bd.activeMessages.GetList() {
-		value, ok := s.bd.activeMessages.Get(uuid)
+	for _, uuid := range s.bd.ActiveMessages.GetList() {
+		value, ok := s.bd.ActiveMessages.Get(uuid)
 		if !ok {
 			continue
 		}
 		delivery, ok := value.(*activeDelivery)
 		if ok && delivery.subscription == s {
-			s.bd.activeMessages.DeleteIfEqual(uuid, delivery)
+			s.bd.ActiveMessages.DeleteIfEqual(uuid, delivery)
 		}
 	}
 }
@@ -234,7 +239,8 @@ func (s *Subscription) recovering() (subscribeState, *subscribeStateTransitionEr
 
 func (s *Subscription) stopping() (subscribeState, *subscribeStateTransitionError) {
 	// TODO
-	s.bd.subscriptions.Delete(subscriptionKey(s.source))
+	// Only remove our own entry; a newer subscription may now own this key.
+	s.bd.subscriptions.DeleteIfEqual(subscriptionKey(s.source), s)
 	return subscribeStateStopped, nil
 }
 
