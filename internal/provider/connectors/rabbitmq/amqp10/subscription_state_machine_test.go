@@ -347,3 +347,59 @@ func Test_subscribeStateMachineWaitUntilStopped(t *testing.T) {
 		t.Fatal("waitUntilStopped did not return after the state machine stopped")
 	}
 }
+
+func Test_subscribeStateMachineCyclesWithoutRecursion(t *testing.T) {
+	const cycles = 50000
+	sm := newSubscribeStateMachine()
+	sm.state = subscribeStateStarting
+	count := 0
+	sm.registerTransitionFunc(subscribeStateRunning, func() (subscribeState, *subscribeStateTransitionError) {
+		count++
+		if count >= cycles {
+			return subscribeStateStopping, nil
+		}
+		return subscribeStateRecovering, nil
+	})
+	sm.registerTransitionFunc(subscribeStateRecovering, func() (subscribeState, *subscribeStateTransitionError) {
+		return subscribeStateRunning, nil
+	})
+	sm.registerTransitionFunc(subscribeStateStopping, func() (subscribeState, *subscribeStateTransitionError) {
+		return subscribeStateStopped, nil
+	})
+
+	require.NoError(t, sm.transitionStateInner(subscribeStateRunning, nil))
+
+	assert.Equal(t, cycles, count)
+	assert.Equal(t, subscribeStateStopped, sm.getState())
+}
+
+func Test_subscribeStateMachineRegistryUsableWhileHookRuns(t *testing.T) {
+	sm := newSubscribeStateMachine()
+	sm.state = subscribeStateStarting
+	hookRunning := make(chan struct{})
+	releaseHook := make(chan struct{})
+	sm.registerTransitionFunc(subscribeStateRunning, func() (subscribeState, *subscribeStateTransitionError) {
+		close(hookRunning)
+		<-releaseHook
+		return subscribeStateStopped, nil
+	})
+	done := make(chan error, 1)
+	go func() { done <- sm.transitionState(subscribeStateRunning) }()
+	<-hookRunning
+
+	registered := make(chan struct{})
+	go func() {
+		sm.registerTransitionFunc(subscribeStateStopping, func() (subscribeState, *subscribeStateTransitionError) {
+			return subscribeStateStopped, nil
+		})
+		close(registered)
+	}()
+
+	select {
+	case <-registered:
+	case <-time.After(time.Second):
+		t.Fatal("registering a hook blocked while another hook was running")
+	}
+	close(releaseHook)
+	require.NoError(t, <-done)
+}

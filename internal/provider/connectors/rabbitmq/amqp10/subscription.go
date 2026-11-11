@@ -15,7 +15,6 @@ type Subscription struct {
 	ctx               context.Context
 	source            *pb.Source
 	bd                *BrokerDetails
-	consumer          rabbitMQAMQP10ConsumerShim
 	publisher         *ramqp.Publisher
 	state             *subscribeStateMachine
 	messageCh         chan<- *pb.Message
