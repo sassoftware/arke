@@ -13,7 +13,6 @@ import (
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/i18n"
 	"github.com/sassoftware/arke/internal/provider"
-	"github.com/sassoftware/arke/internal/provider/connectors/amqp/track"
 	"github.com/sassoftware/arke/internal/util"
 
 	"github.com/sassoftware/arke/internal/provider/connectors/amqp"
@@ -52,10 +51,6 @@ type BrokerDetails struct {
 
 	// TODO: Issue 216 - Create streamConnectionShim
 	// StreamConnection streamConnectionShim
-
-	ClientIdentifier string
-	knownEntities    *track.EntityTracker
-	activeMessages   *util.ConcurrentMap
 
 	stateChannel  chan *rabbitmqamqp.StateChanged
 	subscriptions *util.ConcurrentMap
@@ -140,6 +135,14 @@ func (bd *BrokerDetails) transitionSubscriptionState(newState subscribeState) {
 		}
 		go ss.state.transitionState(newState)
 	}
+}
+
+// connection returns the current connection, or nil after disconnect. Reads go
+// through bd's lock because disconnect() clears the field concurrently.
+func (bd *BrokerDetails) connection() rabbitMQAMQP10ConnectionShim {
+	bd.Lock()
+	defer bd.Unlock()
+	return bd.Connection
 }
 
 func (bd *BrokerDetails) exchangeExists(name string) bool {

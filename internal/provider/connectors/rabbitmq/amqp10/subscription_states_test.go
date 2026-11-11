@@ -71,7 +71,7 @@ func newTestSubscription(t *testing.T, ctx context.Context, source *pb.Source, c
 		ctx:              ctx,
 		ClientIdentifier: "subscription-test",
 		Connection:       connection,
-		activeMessages:   util.NewConcurrentMap(),
+		ActiveMessages:   util.NewConcurrentMap(),
 		subscriptions:    util.NewConcurrentMap(),
 	}
 	t.Cleanup(func() { connection.AssertExpectations(t) })
@@ -142,14 +142,14 @@ func Test_SubscriptionRunningCancellationUnblocksMessageForwarding(t *testing.T)
 	subscription, _ := newTestSubscription(t, ctx, source, consumer, make(chan *pb.Message))
 	otherSubscription := &Subscription{}
 	otherDelivery := &activeDelivery{subscription: otherSubscription, delivery: delivery}
-	subscription.bd.activeMessages.Add("other-subscription-message", otherDelivery)
+	subscription.bd.ActiveMessages.Add("other-subscription-message", otherDelivery)
 	result := make(chan subscribeState, 1)
 	go func() {
 		state, _ := subscription.running()
 		result <- state
 	}()
 
-	assert.Eventually(t, func() bool { return subscription.bd.activeMessages.Length() == 1 }, time.Second, time.Millisecond)
+	assert.Eventually(t, func() bool { return subscription.bd.ActiveMessages.Length() == 1 }, time.Second, time.Millisecond)
 	cancel()
 	select {
 	case state := <-result:
@@ -157,8 +157,8 @@ func Test_SubscriptionRunningCancellationUnblocksMessageForwarding(t *testing.T)
 	case <-time.After(time.Second):
 		t.Fatal("message forwarding remained blocked after cancellation")
 	}
-	assert.Equal(t, 1, subscription.bd.activeMessages.Length())
-	got, ok := subscription.bd.activeMessages.Get("other-subscription-message")
+	assert.Equal(t, 1, subscription.bd.ActiveMessages.Length())
+	got, ok := subscription.bd.ActiveMessages.Get("other-subscription-message")
 	assert.True(t, ok)
 	assert.Same(t, otherDelivery, got)
 }
@@ -199,7 +199,7 @@ func Test_SubscriptionRunningReceiveErrorUnblocksMessageForwarding(t *testing.T)
 	case <-time.After(time.Second):
 		t.Fatal("receive worker did not request the second message")
 	}
-	require.Eventually(t, func() bool { return subscription.bd.activeMessages.Length() == 1 }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return subscription.bd.ActiveMessages.Length() == 1 }, time.Second, time.Millisecond)
 	close(failReceive)
 	select {
 	case state := <-result:
@@ -207,7 +207,7 @@ func Test_SubscriptionRunningReceiveErrorUnblocksMessageForwarding(t *testing.T)
 	case <-time.After(time.Second):
 		t.Fatal("receive error did not unblock forwarding")
 	}
-	assert.Equal(t, 0, subscription.bd.activeMessages.Length())
+	assert.Equal(t, 0, subscription.bd.ActiveMessages.Length())
 	require.NotNil(t, subscription.lastRecoveryError)
 	assert.EqualError(t, subscription.lastRecoveryError.err, "receiver failed")
 	select {
@@ -244,7 +244,7 @@ func Test_SubscriptionRunningReceiveErrorCleansOwnedDeliveries(t *testing.T) {
 	assert.Nil(t, err)
 	require.NotNil(t, subscription.lastRecoveryError)
 	assert.EqualError(t, subscription.lastRecoveryError.err, "receiver failed")
-	assert.Equal(t, 0, subscription.bd.activeMessages.Length())
+	assert.Equal(t, 0, subscription.bd.ActiveMessages.Length())
 	select {
 	case <-consumer.closeCalled:
 	case <-time.After(time.Second):
@@ -364,4 +364,35 @@ func Test_SubscriptionRunningRejectsNilConsumer(t *testing.T) {
 	assert.Equal(t, subscribeStateStopping, state)
 	require.Error(t, err)
 	assert.ErrorContains(t, err.err, "nil consumer")
+}
+
+func Test_SubscriptionRunningStopsWhenConnectionIsGone(t *testing.T) {
+	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
+	bd := &BrokerDetails{ctx: context.Background(), ClientIdentifier: "subscription-test", subscriptions: util.NewConcurrentMap()}
+	subscription := &Subscription{ctx: context.Background(), source: source, bd: bd}
+
+	state, err := subscription.running()
+
+	assert.Nil(t, err)
+	assert.Equal(t, subscribeStateStopping, state)
+}
+
+func Test_SubscriptionStoppingKeepsReplacementSubscription(t *testing.T) {
+	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
+	bd := &BrokerDetails{subscriptions: util.NewConcurrentMap()}
+	old := &Subscription{source: source, bd: bd}
+	replacement := &Subscription{source: source, bd: bd}
+	bd.subscriptions.Add(subscriptionKey(source), replacement)
+
+	state, err := old.stopping()
+
+	assert.Nil(t, err)
+	assert.Equal(t, subscribeStateStopped, state)
+	got, ok := bd.subscriptions.Get(subscriptionKey(source))
+	require.True(t, ok)
+	assert.Same(t, replacement, got)
+
+	_, _ = replacement.stopping()
+	_, ok = bd.subscriptions.Get(subscriptionKey(source))
+	assert.False(t, ok)
 }
