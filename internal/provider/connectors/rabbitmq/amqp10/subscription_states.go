@@ -51,6 +51,11 @@ func (s *Subscription) starting() (subscribeState, *subscribeStateTransitionErro
 }
 
 func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError) {
+	// Entering running means the connection is usable, so a queued Recovering
+	// request is stale. A queued Stopping request still applies.
+	if s.takeEvent() == subscribeStateStopping {
+		return subscribeStateStopping, nil
+	}
 	// create the consumer
 	queueName := amqp.SourceName(s.source)
 	linkName := fmt.Sprintf("%s-consumer-%s", s.bd.ClientIdentifier, queueName)
@@ -147,11 +152,16 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 		return subscribeStateRecovering, nil
 	}
 
+	events := s.events()
 	for {
 		select {
 		case <-s.ctx.Done():
 			util.Logger.Info("subscription context canceled, stopping subscription")
 			return subscribeStateStopping, nil
+		case <-events:
+			if next := s.takeEvent(); next != subscribeStateNone {
+				return next, nil
+			}
 		case err := <-receiveErrors:
 			return recoverFromReceiveError(err)
 		case delCtx := <-incoming:
@@ -164,18 +174,28 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 				continue
 			}
 			s.bd.ActiveMessages.Add(m.Uuid, &activeDelivery{subscription: s, delivery: delCtx})
-			select {
-			case s.messageCh <- m:
-				util.Logger.Debugf("message forwarded to channel: %s", m.Uuid)
-				s.bd.consumed.Add(1)
-				s.recoveryAttempts = 0
-				s.lastRecoveryError = nil
-			case err := <-receiveErrors:
-				return recoverFromReceiveError(err)
-			case <-s.ctx.Done():
-				util.Logger.Info("subscription context canceled while forwarding message")
-				s.bd.ActiveMessages.Delete(m.Uuid)
-				return subscribeStateStopping, nil
+		forward:
+			for {
+				select {
+				case s.messageCh <- m:
+					util.Logger.Debugf("message forwarded to channel: %s", m.Uuid)
+					s.bd.consumed.Add(1)
+					s.recoveryAttempts = 0
+					s.lastRecoveryError = nil
+					break forward
+				case err := <-receiveErrors:
+					return recoverFromReceiveError(err)
+				case <-events:
+					// A wake-up can outlive its event, so keep forwarding when none is pending.
+					if next := s.takeEvent(); next != subscribeStateNone {
+						s.bd.ActiveMessages.Delete(m.Uuid)
+						return next, nil
+					}
+				case <-s.ctx.Done():
+					util.Logger.Info("subscription context canceled while forwarding message")
+					s.bd.ActiveMessages.Delete(m.Uuid)
+					return subscribeStateStopping, nil
+				}
 			}
 		}
 	}
@@ -198,6 +218,10 @@ func (s *Subscription) recovering() (subscribeState, *subscribeStateTransitionEr
 	if s.ctx.Err() != nil || s.bd.ClientDisconnect.Load() {
 		return subscribeStateStopping, nil
 	}
+	// A Recovering event is moot while already recovering; only Stopping matters.
+	if s.takeEvent() == subscribeStateStopping {
+		return subscribeStateStopping, nil
+	}
 	s.recoveryAttempts++
 	if s.recoveryAttempts >= maxConsumerRecoveryAttempts {
 		if s.lastRecoveryError != nil {
@@ -212,16 +236,25 @@ func (s *Subscription) recovering() (subscribeState, *subscribeStateTransitionEr
 	}
 	timer := time.NewTimer(consumerRecoveryBackoff(s.recoveryAttempts))
 	defer timer.Stop()
-	select {
-	case <-s.ctx.Done():
-		return subscribeStateStopping, nil
-	case <-timer.C:
+	events := s.events()
+wait:
+	for {
+		select {
+		case <-s.ctx.Done():
+			return subscribeStateStopping, nil
+		case <-events:
+			if s.peekStopping() {
+				return subscribeStateStopping, nil
+			}
+		case <-timer.C:
+			break wait
+		}
 	}
-	if s.bd.ClientDisconnect.Load() {
+	if s.bd.ClientDisconnect.Load() || s.peekStopping() {
 		return subscribeStateStopping, nil
 	}
 	if s.bd.provider == nil || !s.bd.provider.WaitForConnect(s.ctx) {
-		if s.ctx.Err() != nil || s.bd.ClientDisconnect.Load() {
+		if s.ctx.Err() != nil || s.bd.ClientDisconnect.Load() || s.peekStopping() {
 			return subscribeStateStopping, nil
 		}
 		if s.lastRecoveryError != nil {

@@ -85,18 +85,18 @@ func (bd *BrokerDetails) watchConnection() {
 
 			switch change.To.(type) {
 			case *rabbitmqamqp.StateOpen:
+				// Subscriptions in Recovering wait for CONNECTED themselves.
 				bd.State.Store(provider.CONNECTED)
-				bd.transitionSubscriptionState(subscribeStateStarting)
 			case *rabbitmqamqp.StateReconnecting:
 				bd.State.Store(provider.CONNECTING)
-				bd.transitionSubscriptionState(subscribeStateRecovering)
+				bd.notifySubscriptions(subscribeStateRecovering)
 			case *rabbitmqamqp.StateClosed:
 				bd.State.Store(provider.CLOSED)
-				bd.transitionSubscriptionState(subscribeStateStopping)
+				bd.notifySubscriptions(subscribeStateStopping)
 				return
 			case *rabbitmqamqp.StateClosing:
 				bd.State.Store(provider.CLOSED)
-				bd.transitionSubscriptionState(subscribeStateStopping)
+				bd.notifySubscriptions(subscribeStateStopping)
 				return
 			}
 		}
@@ -120,20 +120,16 @@ func (bd *BrokerDetails) subscribe(ctx context.Context, source *pb.Source, mc ch
 	return nil
 }
 
-// Called when connection state changes
-func (bd *BrokerDetails) transitionSubscriptionState(newState subscribeState) {
-	bd.Lock()
-	defer bd.Unlock()
+// notifySubscriptions forwards a connection state change to every subscription.
+func (bd *BrokerDetails) notifySubscriptions(newState subscribeState) {
 	for _, subName := range bd.subscriptions.GetList() {
 		s, ok := bd.subscriptions.Get(subName)
 		if !ok {
 			continue
 		}
-		ss, ok := s.(*Subscription)
-		if !ok {
-			continue
+		if ss, ok := s.(*Subscription); ok && ss != nil {
+			ss.notify(newState)
 		}
-		go ss.state.transitionState(newState)
 	}
 }
 

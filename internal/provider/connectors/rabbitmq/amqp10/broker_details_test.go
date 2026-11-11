@@ -276,18 +276,9 @@ func Test_BrokerDetails_watchConnection(t *testing.T) {
 	})
 }
 
-func Test_BrokerDetails_transitionSubscriptionState(t *testing.T) {
-	newSubscription := func() *Subscription {
-		state := newSubscribeStateMachine()
-		state.state = subscribeStateRunning
-		state.registerTransitionFunc(subscribeStateStopping, func() (subscribeState, *subscribeStateTransitionError) {
-			return subscribeStateStopped, nil
-		})
-		return &Subscription{state: state}
-	}
-
-	first := newSubscription()
-	second := newSubscription()
+func Test_BrokerDetails_notifySubscriptions(t *testing.T) {
+	first := &Subscription{}
+	second := &Subscription{}
 	subscriptions := util.NewConcurrentMap()
 	subscriptions.Add("first", first)
 	subscriptions.Add("second", second)
@@ -295,9 +286,8 @@ func Test_BrokerDetails_transitionSubscriptionState(t *testing.T) {
 	subscriptions.Add("nil", nil)
 	bd := &BrokerDetails{subscriptions: subscriptions}
 
-	bd.transitionSubscriptionState(subscribeStateStopping)
+	bd.notifySubscriptions(subscribeStateStopping)
 
-	assert.Eventually(t, func() bool {
-		return first.state.getState() == subscribeStateStopped && second.state.getState() == subscribeStateStopped
-	}, time.Second, 10*time.Millisecond)
+	assert.Equal(t, subscribeStateStopping, first.takeEvent())
+	assert.Equal(t, subscribeStateStopping, second.takeEvent())
 }

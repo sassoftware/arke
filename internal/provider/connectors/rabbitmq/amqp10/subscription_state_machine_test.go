@@ -198,47 +198,6 @@ func Test_subscribeStateMachineRejectsInvalidHookState(t *testing.T) {
 	assert.Equal(t, subscribeStateStarting, sm.getState())
 }
 
-func Test_subscribeStateMachineInterruptState(t *testing.T) {
-	t.Run("same state is a no-op", func(t *testing.T) {
-		sm := newSubscribeStateMachine()
-
-		require.NoError(t, sm.interruptState(subscribeStateIdle))
-		assert.Nil(t, sm.overrideState)
-		assert.Equal(t, subscribeStateIdle, sm.getState())
-	})
-
-	t.Run("valid interrupt records an override", func(t *testing.T) {
-		sm := newSubscribeStateMachine()
-
-		require.NoError(t, sm.interruptState(subscribeStateStarting))
-		require.NotNil(t, sm.overrideState)
-		assert.Equal(t, subscribeStateStarting, *sm.overrideState)
-		assert.Equal(t, subscribeStateIdle, sm.getState())
-	})
-
-	t.Run("invalid interrupt is rejected", func(t *testing.T) {
-		tests := []struct {
-			current subscribeState
-			next    subscribeState
-		}{
-			{current: subscribeStateIdle, next: subscribeStateRunning},
-			{current: subscribeStateStopped, next: subscribeStateRunning},
-			{current: 1 << 10, next: subscribeStateRunning},
-			{current: subscribeStateIdle, next: subscribeStateIdle | subscribeStateStarting},
-			{current: subscribeStateIdle | subscribeStateRunning, next: subscribeStateStopping},
-		}
-		for _, test := range tests {
-			sm := newSubscribeStateMachine()
-			sm.state = test.current
-
-			err := sm.interruptState(test.next)
-
-			assert.ErrorIs(t, err, ErrInvalidSubscribeStateTransition)
-			assert.Nil(t, sm.overrideState)
-		}
-	})
-}
-
 func Test_subscribeStateMachineSerializesConcurrentTransitions(t *testing.T) {
 	sm := newSubscribeStateMachine()
 	sm.state = subscribeStateRunning
@@ -298,28 +257,6 @@ func Test_subscribeStateMachineSerializesConcurrentTransitions(t *testing.T) {
 		t.Fatal("second transition did not finish after the first")
 	}
 	assert.Equal(t, subscribeStateStopped, sm.getState())
-}
-
-func Test_subscribeStateMachineInterruptOverridesHook(t *testing.T) {
-	sm := newSubscribeStateMachine()
-	runningHookCalled := false
-	sm.registerTransitionFunc(subscribeStateStarting, func() (subscribeState, *subscribeStateTransitionError) {
-		if err := sm.interruptState(subscribeStateStopped); err != nil {
-			return subscribeStateStopped, &subscribeStateTransitionError{err: err}
-		}
-		return subscribeStateRunning, nil
-	})
-	sm.registerTransitionFunc(subscribeStateRunning, func() (subscribeState, *subscribeStateTransitionError) {
-		runningHookCalled = true
-		return subscribeStateStopped, nil
-	})
-
-	err := sm.transitionState(subscribeStateStarting)
-	require.NoError(t, err, "transition to starting state failed: %v", err)
-
-	assert.Equal(t, subscribeStateStopped, sm.getState(), "expected state to be %s", subscribeStateStopped)
-	assert.Nil(t, sm.overrideState)
-	assert.False(t, runningHookCalled, "hook for the overridden state should not be called")
 }
 
 func Test_subscribeStateMachineWaitForState(t *testing.T) {
