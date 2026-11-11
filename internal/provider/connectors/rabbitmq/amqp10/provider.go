@@ -97,9 +97,11 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 
 	// Check if we already have an active connection for this client
 	bd := prov.getBrokerDetailsByIdentifier(clientIdentifier)
-	if bd != nil && bd.Connection != nil && !bd.Connection.IsClosed() {
-		util.Logger.Debugf("client already connected: %s", clientIdentifier)
-		return nil
+	if bd != nil {
+		if existing := bd.connection(); existing != nil && !existing.IsClosed() {
+			util.Logger.Debugf("client already connected: %s", clientIdentifier)
+			return nil
+		}
 	}
 
 	var tlsConfig *tls.Config
@@ -129,14 +131,28 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 	}
 
 	util.Logger.Debugf("New connection established for client %s: %+v", clientIdentifier, conn)
-	// TODO: setup connection listening
+
+	// Anything that fails from here on must close the connection, or it leaks.
+	closeOnError := func(err error) *pb.Error {
+		if closeErr := conn.Close(ctx); closeErr != nil {
+			util.Logger.Debugf("failed to close connection for client %s after connect error: %v", clientIdentifier, closeErr)
+		}
+		return &pb.Error{Message: err.Error()}
+	}
+
 	connCh := make(chan *rabbitmqamqp.StateChanged, 5)
-	conn.WatchConnection(connCh)
+	if err := conn.WatchConnection(connCh); err != nil {
+		return closeOnError(err)
+	}
+	initialState, err := initialProviderState(conn)
+	if err != nil {
+		return closeOnError(err)
+	}
 	endpoint := amqp.GetMgmtEndpoint(cf)
 	username, password := amqp.GetUsernamePassword(cf)
 	mgmtClient, err := amqp.NewManagementClient(ctx, endpoint, username, password, tlsConfig)
 	if err != nil {
-		return &pb.Error{Message: err.Error()}
+		return closeOnError(err)
 	}
 
 	bd = &BrokerDetails{
@@ -155,11 +171,22 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 		stateChannel:     connCh,
 		subscriptions:    util.NewConcurrentMap(),
 	}
-	bd.State.Store(provider.CONNECTED) // new env connection guarantees
+	bd.State.Store(initialState)
 	go bd.watchConnection()
 	util.Logger.Debugf("adding client %s", clientIdentifier)
 	prov.connections.Add(clientIdentifier, bd)
 	return nil
+}
+
+// initialProviderState reports the state of a just-created connection. A
+// connection that is already closed must not be registered as usable.
+func initialProviderState(conn rabbitMQAMQP10ConnectionShim) (uint32, error) {
+	switch state := conn.State(); state {
+	case provider.CONNECTED, provider.CONNECTING:
+		return uint32(state), nil
+	default:
+		return 0, errors.New("broker connection is not open")
+	}
 }
 
 func (prov *rabbitMQAMQP10Provider) ClientExists(clientIdentifier string) bool {
