@@ -396,3 +396,188 @@ func Test_SubscriptionStoppingKeepsReplacementSubscription(t *testing.T) {
 	_, ok = bd.subscriptions.Get(subscriptionKey(source))
 	assert.False(t, ok)
 }
+
+func Test_SubscriptionNotifyKeepsStopping(t *testing.T) {
+	subscription := &Subscription{}
+
+	subscription.notify(subscribeStateRecovering)
+	subscription.notify(subscribeStateStopping)
+	subscription.notify(subscribeStateRecovering)
+	subscription.notify(subscribeStateRunning) // not a connection-driven state
+
+	assert.Equal(t, subscribeStateStopping, subscription.takeEvent())
+	assert.Equal(t, subscribeStateNone, subscription.takeEvent())
+}
+
+func Test_SubscriptionRunningReturnsStateRequestedByEvent(t *testing.T) {
+	for _, requested := range []subscribeState{subscribeStateRecovering, subscribeStateStopping} {
+		t.Run(requested.String(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			receiveStarted := make(chan struct{})
+			consumer := &subscriptionConsumerStub{
+				closeCalled: make(chan struct{}),
+				receive: func(ctx context.Context) (ramqp10.IDeliveryContext, error) {
+					close(receiveStarted)
+					<-ctx.Done()
+					return nil, ctx.Err()
+				},
+			}
+			source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
+			subscription, _ := newTestSubscription(t, ctx, source, consumer, nil)
+			result := make(chan subscribeState, 1)
+			go func() {
+				state, _ := subscription.running()
+				result <- state
+			}()
+			<-receiveStarted
+
+			subscription.notify(requested)
+
+			select {
+			case state := <-result:
+				assert.Equal(t, requested, state)
+			case <-time.After(time.Second):
+				t.Fatal("running did not react to the connection event")
+			}
+			select {
+			case <-consumer.closeCalled:
+			case <-time.After(time.Second):
+				t.Fatal("consumer was not closed")
+			}
+		})
+	}
+}
+
+func Test_SubscriptionRecoveringStopsOnStoppingEvent(t *testing.T) {
+	waitCalled := false
+	newSub := func() *Subscription {
+		return &Subscription{
+			ctx:    context.Background(),
+			source: &pb.Source{Name: "orders"},
+			bd: &BrokerDetails{provider: waitForConnectProviderStub{wait: func(context.Context) bool {
+				waitCalled = true
+				return true
+			}}},
+		}
+	}
+
+	t.Run("queued before recovering", func(t *testing.T) {
+		subscription := newSub()
+		subscription.notify(subscribeStateStopping)
+
+		state, err := subscription.recovering()
+
+		assert.Nil(t, err)
+		assert.Equal(t, subscribeStateStopping, state)
+		assert.False(t, waitCalled)
+	})
+
+	t.Run("arrives during backoff", func(t *testing.T) {
+		subscription := newSub()
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			subscription.notify(subscribeStateStopping)
+		}()
+
+		state, err := subscription.recovering()
+
+		assert.Nil(t, err)
+		assert.Equal(t, subscribeStateStopping, state)
+		assert.False(t, waitCalled)
+	})
+}
+
+func Test_SubscriptionRunningDiscardsStaleRecoveringEvent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	consumer := &subscriptionConsumerStub{
+		closeCalled: make(chan struct{}),
+		receive: func(ctx context.Context) (ramqp10.IDeliveryContext, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
+	subscription, _ := newTestSubscription(t, ctx, source, consumer, nil)
+	subscription.notify(subscribeStateRecovering)
+	result := make(chan subscribeState, 1)
+	go func() {
+		state, _ := subscription.running()
+		result <- state
+	}()
+
+	select {
+	case state := <-result:
+		t.Fatalf("running returned %s on a stale event", state.String())
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	assert.Equal(t, subscribeStateStopping, <-result)
+}
+
+func Test_ConnectionEventsDriveSubscriptionLifecycle(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	newConsumer := func(started chan struct{}) *subscriptionConsumerStub {
+		return &subscriptionConsumerStub{
+			closeCalled: make(chan struct{}),
+			receive: func(ctx context.Context) (ramqp10.IDeliveryContext, error) {
+				started <- struct{}{}
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		}
+	}
+	started := make(chan struct{}, 2)
+	first, second := newConsumer(started), newConsumer(started)
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	connection.On("NewConsumer", ctx, mock.Anything, mock.Anything).Return(first, nil).Once()
+	connection.On("NewConsumer", ctx, mock.Anything, mock.Anything).Return(second, nil).Once()
+	bd := &BrokerDetails{
+		ctx:              ctx,
+		ClientIdentifier: "lifecycle-test",
+		Connection:       connection,
+		ActiveMessages:   util.NewConcurrentMap(),
+		subscriptions:    util.NewConcurrentMap(),
+		stateChannel:     make(chan *ramqp10.StateChanged, 5),
+		shutdownChan:     make(chan struct{}),
+		provider:         waitForConnectProviderStub{wait: func(context.Context) bool { return true }},
+	}
+	go bd.watchConnection()
+	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
+	result := make(chan error, 1)
+	go func() { result <- bd.subscribe(ctx, source, make(chan *pb.Message)) }()
+	waitStarted := func(what string) {
+		t.Helper()
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s did not start receiving", what)
+		}
+	}
+	waitStarted("first consumer")
+
+	bd.stateChannel <- &ramqp10.StateChanged{From: &ramqp10.StateOpen{}, To: &ramqp10.StateReconnecting{}}
+	select {
+	case <-first.closeCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first consumer was not closed on reconnect")
+	}
+	waitStarted("replacement consumer")
+
+	bd.stateChannel <- &ramqp10.StateChanged{From: &ramqp10.StateOpen{}, To: &ramqp10.StateClosed{}}
+	select {
+	case err := <-result:
+		assert.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscription did not stop when the connection closed")
+	}
+	select {
+	case <-second.closeCalled:
+	default:
+		t.Fatal("replacement consumer was not closed")
+	}
+	assert.Equal(t, 0, bd.subscriptions.Length())
+	connection.AssertExpectations(t)
+}

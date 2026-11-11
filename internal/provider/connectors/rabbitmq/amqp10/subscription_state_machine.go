@@ -93,7 +93,6 @@ type subscribeStateMachine struct {
 	mu                   *sync.Mutex
 	cond                 *sync.Cond
 	state                subscribeState
-	overrideState        *subscribeState
 	transitionRegistryMu sync.RWMutex
 	transitionRegistry   map[subscribeState]subscribeStateTransitionFunc
 }
@@ -112,23 +111,6 @@ func (sm *subscribeStateMachine) getState() subscribeState {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	return sm.state
-}
-
-func (sm *subscribeStateMachine) interruptState(newState subscribeState) error {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	currentState := sm.state
-	if !isValidSubscribeState(currentState) || !isValidSubscribeState(newState) {
-		return ErrInvalidSubscribeStateTransition
-	}
-	if newState == currentState {
-		return nil
-	}
-	if subscribeStateTranstions[currentState]&newState != newState {
-		return ErrInvalidSubscribeStateTransition
-	}
-	sm.overrideState = &newState
-	return nil
 }
 
 func (sm *subscribeStateMachine) registerTransitionFunc(state subscribeState, fn subscribeStateTransitionFunc) {
@@ -196,13 +178,6 @@ func (sm *subscribeStateMachine) transitionStateInner(newState subscribeState, t
 		return ErrInvalidSubscribeStateTransition
 	}
 
-	sm.mu.Lock()
-	if sm.overrideState != nil {
-		logger.Debugf("overriding next subscribe state from %s to %s", nextState.String(), (*sm.overrideState).String())
-		nextState = *sm.overrideState
-		sm.overrideState = nil
-	}
-	sm.mu.Unlock()
 	if subscribeStateTranstions[nextState] == subscribeStateNone {
 		logger.Debugf("next state %s is terminal, exiting", nextState.String())
 		sm.mu.Lock()
