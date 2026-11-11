@@ -45,7 +45,7 @@ func (s *subscribeState) String() string {
 	}
 }
 
-var subscribeStateTranstions = map[subscribeState]subscribeState{
+var subscribeStateTransitions = map[subscribeState]subscribeState{
 	subscribeStateIdle:       subscribeStateStarting | subscribeStateStopped,
 	subscribeStateStarting:   subscribeStateRunning | subscribeStateStopped,
 	subscribeStateRunning:    subscribeStateRecovering | subscribeStateStopping | subscribeStateStopped,
@@ -63,7 +63,7 @@ func isValidSubscribeState(state subscribeState) bool {
 	if state == subscribeStateNone || state&(state-1) != 0 {
 		return false
 	}
-	_, ok := subscribeStateTranstions[state]
+	_, ok := subscribeStateTransitions[state]
 	return ok
 }
 
@@ -145,57 +145,64 @@ func (sm *subscribeStateMachine) transitionState(newState subscribeState) error 
 }
 
 func (sm *subscribeStateMachine) transitionStateInner(newState subscribeState, transitionErr *subscribeStateTransitionError) error {
-	sm.mu.Lock()
-	currentState := sm.state
-	logger.Debugf("transitioning subscribe state from %s to %s", currentState.String(), newState.String())
-
-	if !isValidSubscribeState(currentState) || !isValidSubscribeState(newState) {
-		sm.mu.Unlock()
-		return ErrInvalidSubscribeStateTransition
-	}
-	if newState == currentState {
-		sm.mu.Unlock()
-		if transitionErr == nil {
-			return nil
-		}
-		return transitionErr
-	}
-	if subscribeStateTranstions[currentState]&newState != newState {
-		sm.mu.Unlock()
-		return ErrInvalidSubscribeStateTransition
-	}
-	sm.state = newState
-	// Waiters can target different states; wake all so each can check its target.
-	sm.cond.Broadcast()
-	sm.mu.Unlock()
-	nextState, err := sm.callTransitionFunc(newState)
-	if err != nil {
-		logger.Debugf("subscribe state transition from %s to %s returned error: %v", newState.String(), nextState.String(), err)
-		// TODO: how to handle
-		transitionErr = err
-	}
-	if !isValidSubscribeState(nextState) {
-		return ErrInvalidSubscribeStateTransition
-	}
-
-	if subscribeStateTranstions[nextState] == subscribeStateNone {
-		logger.Debugf("next state %s is terminal, exiting", nextState.String())
+	// Looping rather than recursing keeps the stack flat for subscriptions that
+	// cycle between Running and Recovering for their whole lifetime.
+	for {
 		sm.mu.Lock()
-		sm.state = nextState
+		currentState := sm.state
+		logger.Debugf("transitioning subscribe state from %s to %s", currentState.String(), newState.String())
+
+		if !isValidSubscribeState(currentState) || !isValidSubscribeState(newState) {
+			sm.mu.Unlock()
+			return ErrInvalidSubscribeStateTransition
+		}
+		if newState == currentState {
+			sm.mu.Unlock()
+			if transitionErr == nil {
+				return nil
+			}
+			return transitionErr
+		}
+		if subscribeStateTransitions[currentState]&newState != newState {
+			sm.mu.Unlock()
+			return ErrInvalidSubscribeStateTransition
+		}
+		sm.state = newState
+		// Waiters can target different states; wake all so each can check its target.
 		sm.cond.Broadcast()
 		sm.mu.Unlock()
-		if transitionErr == nil {
-			return nil
+
+		nextState, err := sm.callTransitionFunc(newState)
+		if err != nil {
+			logger.Debugf("subscribe state transition from %s to %s returned error: %v", newState.String(), nextState.String(), err)
+			transitionErr = err
 		}
-		return transitionErr
+		if !isValidSubscribeState(nextState) {
+			return ErrInvalidSubscribeStateTransition
+		}
+
+		if subscribeStateTransitions[nextState] == subscribeStateNone {
+			logger.Debugf("next state %s is terminal, exiting", nextState.String())
+			sm.mu.Lock()
+			sm.state = nextState
+			sm.cond.Broadcast()
+			sm.mu.Unlock()
+			if transitionErr == nil {
+				return nil
+			}
+			return transitionErr
+		}
+		newState = nextState
 	}
-	return sm.transitionStateInner(nextState, transitionErr)
 }
 
 func (sm *subscribeStateMachine) callTransitionFunc(state subscribeState) (subscribeState, *subscribeStateTransitionError) {
+	// Hooks such as running() block for the life of the subscription, so the
+	// registry lock must not be held while one executes.
 	sm.transitionRegistryMu.RLock()
-	defer sm.transitionRegistryMu.RUnlock()
-	if fn, ok := sm.transitionRegistry[state]; ok {
+	fn, ok := sm.transitionRegistry[state]
+	sm.transitionRegistryMu.RUnlock()
+	if ok {
 		nextState, err := fn()
 		if err != nil && sm.getState() < subscribeStateRecovering {
 			logger.Warn("%s [%s]", err.msg, err.queue)

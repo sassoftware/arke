@@ -22,6 +22,12 @@ const (
 	consumerCloseTimeout        = 5 * time.Second
 )
 
+// consumerStableDuration is how long a consumer must survive before a later
+// failure is treated as a new problem instead of part of an ongoing flap.
+// Resetting on NewConsumer success alone would let a consumer that dies on
+// every attach retry forever.
+var consumerStableDuration = 30 * time.Second
+
 func consumerRecoveryBackoff(attempt int) time.Duration {
 	delay := consumerRecoveryDelay
 	for i := 1; i < attempt && delay < consumerRecoveryMaxDelay; i++ {
@@ -38,7 +44,6 @@ func (s *Subscription) configureStateTransitions() {
 	s.state.registerTransitionFunc(subscribeStateRunning, s.running)
 	s.state.registerTransitionFunc(subscribeStateRecovering, s.recovering)
 	s.state.registerTransitionFunc(subscribeStateStopping, s.stopping)
-	s.state.registerTransitionFunc(subscribeStateStopped, s.stop)
 }
 
 func (s *Subscription) starting() (subscribeState, *subscribeStateTransitionError) {
@@ -97,7 +102,7 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 			clientIdentifier: s.bd.ClientIdentifier,
 		}
 	}
-	s.consumer = consumer
+	startedAt := time.Now()
 	consumerCtx, cancel := context.WithCancel(s.ctx)
 	var receiveWG sync.WaitGroup
 
@@ -143,6 +148,9 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 			return subscribeStateStopping, nil
 		}
 		util.Logger.Error("error received from consumer", "error", err)
+		if time.Since(startedAt) >= consumerStableDuration {
+			s.resetRecovery()
+		}
 		s.lastRecoveryError = &subscribeStateTransitionError{
 			err:              err,
 			msg:              "an error occurred while receiving a message",
@@ -160,6 +168,7 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 			return subscribeStateStopping, nil
 		case <-events:
 			if next := s.takeEvent(); next != subscribeStateNone {
+				s.resetRecoveryIfRecovering(next)
 				return next, nil
 			}
 		case err := <-receiveErrors:
@@ -189,6 +198,7 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 					// A wake-up can outlive its event, so keep forwarding when none is pending.
 					if next := s.takeEvent(); next != subscribeStateNone {
 						s.bd.ActiveMessages.Delete(m.Uuid)
+						s.resetRecoveryIfRecovering(next)
 						return next, nil
 					}
 				case <-s.ctx.Done():
@@ -198,6 +208,19 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 				}
 			}
 		}
+	}
+}
+
+func (s *Subscription) resetRecovery() {
+	s.recoveryAttempts = 0
+	s.lastRecoveryError = nil
+}
+
+// resetRecoveryIfRecovering clears the failure count when a connection event,
+// rather than a consumer failure, is what sends the subscription to Recovering.
+func (s *Subscription) resetRecoveryIfRecovering(next subscribeState) {
+	if next == subscribeStateRecovering {
+		s.resetRecovery()
 	}
 }
 
@@ -274,10 +297,5 @@ func (s *Subscription) stopping() (subscribeState, *subscribeStateTransitionErro
 	// TODO
 	// Only remove our own entry; a newer subscription may now own this key.
 	s.bd.subscriptions.DeleteIfEqual(subscriptionKey(s.source), s)
-	return subscribeStateStopped, nil
-}
-
-func (s *Subscription) stop() (subscribeState, *subscribeStateTransitionError) {
-	// TODO
 	return subscribeStateStopped, nil
 }

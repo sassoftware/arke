@@ -581,3 +581,66 @@ func Test_ConnectionEventsDriveSubscriptionLifecycle(t *testing.T) {
 	assert.Equal(t, 0, bd.subscriptions.Length())
 	connection.AssertExpectations(t)
 }
+
+func Test_SubscriptionRecoveryAttemptsReset(t *testing.T) {
+	failingConsumer := func() *subscriptionConsumerStub {
+		return &subscriptionConsumerStub{
+			closeCalled: make(chan struct{}),
+			receive: func(context.Context) (ramqp10.IDeliveryContext, error) {
+				return nil, errors.New("link detached")
+			},
+		}
+	}
+	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
+
+	t.Run("consumer that fails immediately keeps counting", func(t *testing.T) {
+		subscription, _ := newTestSubscription(t, context.Background(), source, failingConsumer(), nil)
+		subscription.recoveryAttempts = 3
+
+		state, _ := subscription.running()
+
+		assert.Equal(t, subscribeStateRecovering, state)
+		assert.Equal(t, 3, subscription.recoveryAttempts)
+	})
+
+	t.Run("consumer that was stable starts a fresh count", func(t *testing.T) {
+		old := consumerStableDuration
+		consumerStableDuration = 0
+		t.Cleanup(func() { consumerStableDuration = old })
+		subscription, _ := newTestSubscription(t, context.Background(), source, failingConsumer(), nil)
+		subscription.recoveryAttempts = 3
+
+		state, _ := subscription.running()
+
+		assert.Equal(t, subscribeStateRecovering, state)
+		assert.Equal(t, 0, subscription.recoveryAttempts)
+		assert.NotNil(t, subscription.lastRecoveryError)
+	})
+
+	t.Run("connection event is not counted as a failure", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		consumer := &subscriptionConsumerStub{
+			closeCalled: make(chan struct{}),
+			receive: func(ctx context.Context) (ramqp10.IDeliveryContext, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		}
+		subscription, _ := newTestSubscription(t, ctx, source, consumer, nil)
+		subscription.recoveryAttempts = 4
+		subscription.lastRecoveryError = &subscribeStateTransitionError{msg: "old"}
+		result := make(chan subscribeState, 1)
+		go func() {
+			state, _ := subscription.running()
+			result <- state
+		}()
+		time.Sleep(20 * time.Millisecond)
+
+		subscription.notify(subscribeStateRecovering)
+
+		assert.Equal(t, subscribeStateRecovering, <-result)
+		assert.Equal(t, 0, subscription.recoveryAttempts)
+		assert.Nil(t, subscription.lastRecoveryError)
+	})
+}
