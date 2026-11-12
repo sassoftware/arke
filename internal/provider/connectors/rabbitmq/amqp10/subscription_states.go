@@ -105,8 +105,10 @@ func (s *Subscription) createConsumer(queueName string) (rabbitMQAMQP10ConsumerS
 		InitialCredits: s.source.GetPrefetchCount(),
 		SettleStrategy: ramqp.ExplicitSettle,
 		SingleActiveConsumerStateChanged: func(consumer *ramqp.Consumer, isActive bool) {
-			queue, _ := consumer.GetQueue()
-			logger.Debugf("SAC state changed for consumerID %s on queue %s: active=%v", consumer.Id(), queue, isActive)
+			if s.source.GetSingleActiveConsumer() {
+				queue, _ := consumer.GetQueue()
+				logger.Debugf("SAC state changed for consumerID %s on queue %s: active=%v", consumer.Id(), queue, isActive)
+			}
 		},
 		OnDeliveryRelease: nil, // TODO: ack ticket
 	}
