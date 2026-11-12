@@ -117,7 +117,7 @@ func (c *AMQPManagementClient) Do(req *http.Request) ([]byte, int, error) {
 func (c *AMQPManagementClient) Request(ctx context.Context, method, path string) ([]byte, int, error) {
 	requestURL := strings.TrimRight(c.endpoint, "/") + "/" + strings.TrimLeft(path, "/")
 	util.Logger.Debugf("mgmt request %s %s", method, requestURL)
-	req, err := makeRequest(ctx, method, requestURL, c.username, c.password)
+	req, err := makeRequestWithAuth(ctx, method, requestURL, c.username, c.password, c.forceBasicAuth)
 	if err != nil {
 		return nil, 0, err
 	}

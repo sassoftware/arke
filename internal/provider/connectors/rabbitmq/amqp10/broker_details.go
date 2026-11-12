@@ -54,6 +54,8 @@ type BrokerDetails struct {
 
 	stateChannel  chan *rabbitmqamqp.StateChanged
 	subscriptions *util.ConcurrentMap
+	lifecycleMu   sync.Mutex
+	generation    uint64
 
 	tlsSkipVerify bool
 	tlsConfig     *tls.Config
@@ -86,21 +88,37 @@ func (bd *BrokerDetails) watchConnection() {
 			switch change.To.(type) {
 			case *rabbitmqamqp.StateOpen:
 				// Subscriptions in Recovering wait for CONNECTED themselves.
-				bd.State.Store(provider.CONNECTED)
+				bd.setConnectionState(provider.CONNECTED)
 			case *rabbitmqamqp.StateReconnecting:
-				bd.State.Store(provider.CONNECTING)
-				bd.notifySubscriptions(subscribeStateRecovering)
+				generation := bd.setConnectionState(provider.CONNECTING)
+				bd.notifySubscriptions(subscribeStateRecovering, generation)
 			case *rabbitmqamqp.StateClosed:
-				bd.State.Store(provider.CLOSED)
-				bd.notifySubscriptions(subscribeStateStopping)
+				bd.setConnectionState(provider.CLOSED)
+				bd.notifySubscriptions(subscribeStateStopping, 0)
 				return
 			case *rabbitmqamqp.StateClosing:
-				bd.State.Store(provider.CLOSED)
-				bd.notifySubscriptions(subscribeStateStopping)
+				bd.setConnectionState(provider.CLOSED)
+				bd.notifySubscriptions(subscribeStateStopping, 0)
 				return
 			}
 		}
 	}
+}
+
+func (bd *BrokerDetails) setConnectionState(state uint32) uint64 {
+	bd.lifecycleMu.Lock()
+	defer bd.lifecycleMu.Unlock()
+	if state == provider.CONNECTING {
+		bd.generation++
+	}
+	bd.State.Store(state)
+	return bd.generation
+}
+
+func (bd *BrokerDetails) connectionSnapshot() (uint32, uint64) {
+	bd.lifecycleMu.Lock()
+	defer bd.lifecycleMu.Unlock()
+	return bd.State.Load(), bd.generation
 }
 
 func (bd *BrokerDetails) subscribe(ctx context.Context, source *pb.Source, mc chan<- *pb.Message) error {
@@ -121,14 +139,14 @@ func (bd *BrokerDetails) subscribe(ctx context.Context, source *pb.Source, mc ch
 }
 
 // notifySubscriptions forwards a connection state change to every subscription.
-func (bd *BrokerDetails) notifySubscriptions(newState subscribeState) {
+func (bd *BrokerDetails) notifySubscriptions(newState subscribeState, generation uint64) {
 	for _, subName := range bd.subscriptions.GetList() {
 		s, ok := bd.subscriptions.Get(subName)
 		if !ok {
 			continue
 		}
 		if ss, ok := s.(*Subscription); ok && ss != nil {
-			ss.notify(newState)
+			ss.notify(newState, generation)
 		}
 	}
 }
@@ -176,7 +194,7 @@ func (bd *BrokerDetails) disconnect() {
 		bd.Connection = nil
 	}
 
-	bd.State.Store(provider.DISCONNECTED)
+	bd.setConnectionState(provider.DISCONNECTED)
 	util.Logger.Info(i18n.ClientDisconnect, bd.ClientIdentifier)
 }
 

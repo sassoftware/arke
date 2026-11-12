@@ -11,6 +11,7 @@ import (
 	"time"
 
 	ramqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
+	"github.com/sassoftware/arke/internal/provider"
 	"github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/sassoftware/arke/internal/util"
 )
@@ -52,14 +53,22 @@ func (s *Subscription) starting() (subscribeState, *subscribeStateTransitionErro
 	}
 	// validate subscription configuration
 	s.bd.subscriptions.Add(subscriptionKey(s.source), s)
+	_, s.consumerGeneration = s.bd.connectionSnapshot()
 	return subscribeStateRunning, nil
 }
 
 func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError) {
-	// Entering running means the connection is usable, so a queued Recovering
-	// request is stale. A queued Stopping request still applies.
-	if s.takeEvent() == subscribeStateStopping {
+	if next := s.takeEventAfter(s.consumerGeneration); next != subscribeStateNone {
+		s.resetRecoveryIfRecovering(next)
+		return next, nil
+	}
+	state, generation := s.bd.connectionSnapshot()
+	if state == provider.CLOSED || state == provider.DISCONNECTED {
 		return subscribeStateStopping, nil
+	}
+	if state != provider.CONNECTED || generation > s.consumerGeneration {
+		s.resetRecovery()
+		return subscribeStateRecovering, nil
 	}
 	// create the consumer
 	queueName := amqp.SourceName(s.source)
@@ -167,7 +176,7 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 			util.Logger.Info("subscription context canceled, stopping subscription")
 			return subscribeStateStopping, nil
 		case <-events:
-			if next := s.takeEvent(); next != subscribeStateNone {
+			if next := s.takeEventAfter(s.consumerGeneration); next != subscribeStateNone {
 				s.resetRecoveryIfRecovering(next)
 				return next, nil
 			}
@@ -196,7 +205,7 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 					return recoverFromReceiveError(err)
 				case <-events:
 					// A wake-up can outlive its event, so keep forwarding when none is pending.
-					if next := s.takeEvent(); next != subscribeStateNone {
+					if next := s.takeEventAfter(s.consumerGeneration); next != subscribeStateNone {
 						s.bd.ActiveMessages.Delete(m.Uuid)
 						s.resetRecoveryIfRecovering(next)
 						return next, nil
@@ -276,21 +285,33 @@ wait:
 	if s.bd.ClientDisconnect.Load() || s.peekStopping() {
 		return subscribeStateStopping, nil
 	}
-	if s.bd.provider == nil || !s.bd.provider.WaitForConnect(s.ctx) {
-		if s.ctx.Err() != nil || s.bd.ClientDisconnect.Load() || s.peekStopping() {
-			return subscribeStateStopping, nil
+	waitCtx, cancel := context.WithTimeout(s.ctx, provider.CONNECTTIMEOUT*time.Second)
+	defer cancel()
+	for s.bd.provider != nil && s.bd.provider.WaitForConnect(waitCtx) {
+		state, generation := s.bd.connectionSnapshot()
+		if state == provider.CONNECTED {
+			s.consumerGeneration = generation
+			return subscribeStateRunning, nil
 		}
-		if s.lastRecoveryError != nil {
-			return subscribeStateStopping, s.lastRecoveryError
+		if state == provider.CLOSED || state == provider.DISCONNECTED {
+			break
 		}
-		return subscribeStateStopping, &subscribeStateTransitionError{
-			err:              errors.New("broker connection is unavailable"),
-			msg:              "failed to recover broker connection",
-			queue:            amqp.SourceName(s.source),
-			clientIdentifier: s.bd.ClientIdentifier,
+		if waitCtx.Err() != nil || s.bd.ClientDisconnect.Load() || s.peekStopping() {
+			break
 		}
 	}
-	return subscribeStateRunning, nil
+	if s.ctx.Err() != nil || s.bd.ClientDisconnect.Load() || s.peekStopping() {
+		return subscribeStateStopping, nil
+	}
+	if s.lastRecoveryError != nil {
+		return subscribeStateStopping, s.lastRecoveryError
+	}
+	return subscribeStateStopping, &subscribeStateTransitionError{
+		err:              errors.New("broker connection is unavailable"),
+		msg:              "failed to recover broker connection",
+		queue:            amqp.SourceName(s.source),
+		clientIdentifier: s.bd.ClientIdentifier,
+	}
 }
 
 func (s *Subscription) stopping() (subscribeState, *subscribeStateTransitionError) {

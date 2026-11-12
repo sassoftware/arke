@@ -171,7 +171,7 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 		stateChannel:     connCh,
 		subscriptions:    util.NewConcurrentMap(),
 	}
-	bd.State.Store(initialState)
+	bd.setConnectionState(initialState)
 	go bd.watchConnection()
 	util.Logger.Debugf("adding client %s", clientIdentifier)
 	prov.connections.Add(clientIdentifier, bd)
