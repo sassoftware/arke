@@ -102,11 +102,13 @@ func (s *Subscription) createConsumer(queueName string) (rabbitMQAMQP10ConsumerS
 		Id:               linkName,
 
 		// Note that 0 means 256 credits, not unlimited as in amqp091
-		InitialCredits:                   s.source.GetPrefetchCount(),
-		SettleStrategy:                   ramqp.ExplicitSettle,
-		SingleActiveConsumerStateChanged: nil, // TODO
-		ConsumerTimeout:                  0,   // TODO
-		OnDeliveryRelease:                nil, // TODO
+		InitialCredits: s.source.GetPrefetchCount(),
+		SettleStrategy: ramqp.ExplicitSettle,
+		SingleActiveConsumerStateChanged: func(consumer *ramqp.Consumer, isActive bool) {
+			queue, _ := consumer.GetQueue()
+			logger.Debugf("SAC state changed for consumerID %s on queue %s: active=%v", consumer.Id(), queue, isActive)
+		},
+		OnDeliveryRelease: nil, // TODO: ack ticket
 	}
 	conn := s.bd.connection()
 	if conn == nil {
@@ -355,7 +357,6 @@ wait:
 }
 
 func (s *Subscription) stopping() (subscribeState, *subscribeStateTransitionError) {
-	// TODO
 	// Only remove our own entry; a newer subscription may now own this key.
 	s.bd.subscriptions.DeleteIfEqual(subscriptionKey(s.source), s)
 	return subscribeStateStopped, nil
