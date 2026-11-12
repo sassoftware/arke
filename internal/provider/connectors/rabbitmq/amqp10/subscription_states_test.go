@@ -20,8 +20,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const testSubscriptionClient = "subscription-test"
+
+func newTestQueueSource() *pb.Source {
+	return &pb.Source{Name: testBindingQueueName, Type: pb.Source_QUEUE, Address: &pb.Address{Name: testBindingQueueName, Type: pb.Address_TOPIC}}
+}
+
 type subscriptionConsumerStub struct {
 	receive     func(context.Context) (ramqp10.IDeliveryContext, error)
+	closeErr    error
 	closeOnce   sync.Once
 	closeCalled chan struct{}
 }
@@ -32,7 +39,7 @@ func (c *subscriptionConsumerStub) Receive(ctx context.Context) (ramqp10.IDelive
 
 func (c *subscriptionConsumerStub) Close(context.Context) error {
 	c.closeOnce.Do(func() { close(c.closeCalled) })
-	return nil
+	return c.closeErr
 }
 
 type subscriptionDeliveryStub struct {
@@ -63,20 +70,44 @@ func (p waitForConnectProviderStub) WaitForConnect(ctx context.Context) bool {
 	return p.wait(ctx)
 }
 
-func newTestSubscription(t *testing.T, ctx context.Context, source *pb.Source, consumer rabbitMQAMQP10ConsumerShim, messageCh chan<- *pb.Message) (*Subscription, *rabbitMQAMQP10ConnectionMock) {
+func newTestSubscription(t *testing.T, ctx context.Context, source *pb.Source, consumer rabbitMQAMQP10ConsumerShim, messageCh chan<- *pb.Message) *Subscription {
 	t.Helper()
 	connection := &rabbitMQAMQP10ConnectionMock{}
 	connection.On("NewConsumer", ctx, mock.Anything, mock.Anything).Return(consumer, nil).Once()
 	bd := &BrokerDetails{
 		ctx:              ctx,
-		ClientIdentifier: "subscription-test",
+		ClientIdentifier: testSubscriptionClient,
 		Connection:       connection,
 		ActiveMessages:   util.NewConcurrentMap(),
 		subscriptions:    util.NewConcurrentMap(),
 	}
 	bd.setConnectionState(provider.CONNECTED)
 	t.Cleanup(func() { connection.AssertExpectations(t) })
-	return &Subscription{ctx: ctx, source: source, bd: bd, messageCh: messageCh}, connection
+	return &Subscription{ctx: ctx, source: source, bd: bd, messageCh: messageCh}
+}
+
+func Test_SubscriptionRunningLogsConsumerErrors(t *testing.T) {
+	logger, cleanupLogger := util.GetTestLoggerWithCleanup()
+	defer cleanupLogger()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	consumer := &subscriptionConsumerStub{
+		closeCalled: make(chan struct{}),
+		closeErr:    errors.New("link detach failed"),
+		receive: func(ctx context.Context) (ramqp10.IDeliveryContext, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	source := &pb.Source{Name: testBindingQueueName, Type: pb.Source_QUEUE, Address: &pb.Address{Name: testBindingQueueName, Type: pb.Address_TOPIC}}
+	subscription := newTestSubscription(t, ctx, source, consumer, nil)
+
+	state, _ := subscription.running()
+
+	assert.Equal(t, subscribeStateStopping, state)
+	output := string(logger.GetOutput())
+	assert.Contains(t, output, "link detach failed")
+	assert.Contains(t, output, "orders.quorum")
 }
 
 func Test_SubscriptionRunningCancellationStopsReceiveWorker(t *testing.T) {
@@ -91,8 +122,8 @@ func Test_SubscriptionRunningCancellationStopsReceiveWorker(t *testing.T) {
 			return nil, ctx.Err()
 		},
 	}
-	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
-	subscription, _ := newTestSubscription(t, ctx, source, consumer, nil)
+	source := newTestQueueSource()
+	subscription := newTestSubscription(t, ctx, source, consumer, nil)
 	result := make(chan subscribeState, 1)
 	go func() {
 		state, _ := subscription.running()
@@ -139,8 +170,8 @@ func Test_SubscriptionRunningCancellationUnblocksMessageForwarding(t *testing.T)
 			return nil, ctx.Err()
 		},
 	}
-	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
-	subscription, _ := newTestSubscription(t, ctx, source, consumer, make(chan *pb.Message))
+	source := newTestQueueSource()
+	subscription := newTestSubscription(t, ctx, source, consumer, make(chan *pb.Message))
 	otherSubscription := &Subscription{}
 	otherDelivery := &activeDelivery{subscription: otherSubscription, delivery: delivery}
 	subscription.bd.ActiveMessages.Add("other-subscription-message", otherDelivery)
@@ -187,8 +218,8 @@ func Test_SubscriptionRunningReceiveErrorUnblocksMessageForwarding(t *testing.T)
 			return nil, errors.New("receiver failed")
 		},
 	}
-	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
-	subscription, _ := newTestSubscription(t, ctx, source, consumer, make(chan *pb.Message))
+	source := newTestQueueSource()
+	subscription := newTestSubscription(t, ctx, source, consumer, make(chan *pb.Message))
 	result := make(chan subscribeState, 1)
 	go func() {
 		state, _ := subscription.running()
@@ -236,8 +267,8 @@ func Test_SubscriptionRunningReceiveErrorCleansOwnedDeliveries(t *testing.T) {
 			return nil, errors.New("receiver failed")
 		},
 	}
-	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
-	subscription, _ := newTestSubscription(t, ctx, source, consumer, make(chan *pb.Message, 1))
+	source := newTestQueueSource()
+	subscription := newTestSubscription(t, ctx, source, consumer, make(chan *pb.Message, 1))
 
 	state, err := subscription.running()
 
@@ -278,9 +309,9 @@ func Test_SubscriptionRecoveringStopsAfterRetryLimit(t *testing.T) {
 	waitCalled := false
 	subscription := &Subscription{
 		ctx:    context.Background(),
-		source: &pb.Source{Name: "orders"},
+		source: &pb.Source{Name: testBindingQueueName},
 		bd: &BrokerDetails{
-			ClientIdentifier: "subscription-test",
+			ClientIdentifier: testSubscriptionClient,
 			provider: waitForConnectProviderStub{wait: func(context.Context) bool {
 				waitCalled = true
 				return true
@@ -304,7 +335,7 @@ func Test_SubscriptionRecoveringWaitsForConnection(t *testing.T) {
 	ctx := context.Background()
 	waitCalled := false
 	bd := &BrokerDetails{
-		ClientIdentifier: "subscription-test",
+		ClientIdentifier: testSubscriptionClient,
 		provider: waitForConnectProviderStub{wait: func(got context.Context) bool {
 			waitCalled = true
 			assert.NotNil(t, got)
@@ -312,7 +343,7 @@ func Test_SubscriptionRecoveringWaitsForConnection(t *testing.T) {
 		}},
 	}
 	bd.setConnectionState(provider.CONNECTED)
-	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: "orders"}, bd: bd}
+	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: testBindingQueueName}, bd: bd}
 
 	state, err := subscription.recovering()
 
@@ -324,10 +355,10 @@ func Test_SubscriptionRecoveringWaitsForConnection(t *testing.T) {
 func Test_SubscriptionRecoveringStopsWhenConnectionCannotRecover(t *testing.T) {
 	ctx := context.Background()
 	bd := &BrokerDetails{
-		ClientIdentifier: "subscription-test",
+		ClientIdentifier: testSubscriptionClient,
 		provider:         waitForConnectProviderStub{wait: func(context.Context) bool { return false }},
 	}
-	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: "orders"}, bd: bd}
+	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: testBindingQueueName}, bd: bd}
 
 	state, err := subscription.recovering()
 
@@ -341,13 +372,13 @@ func Test_SubscriptionRecoveringStopsOnCancellation(t *testing.T) {
 	cancel()
 	waitCalled := false
 	bd := &BrokerDetails{
-		ClientIdentifier: "subscription-test",
+		ClientIdentifier: testSubscriptionClient,
 		provider: waitForConnectProviderStub{wait: func(context.Context) bool {
 			waitCalled = true
 			return true
 		}},
 	}
-	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: "orders"}, bd: bd}
+	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: testBindingQueueName}, bd: bd}
 
 	state, err := subscription.recovering()
 
@@ -358,8 +389,8 @@ func Test_SubscriptionRecoveringStopsOnCancellation(t *testing.T) {
 
 func Test_SubscriptionRunningRejectsNilConsumer(t *testing.T) {
 	ctx := context.Background()
-	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
-	subscription, _ := newTestSubscription(t, ctx, source, nil, nil)
+	source := newTestQueueSource()
+	subscription := newTestSubscription(t, ctx, source, nil, nil)
 
 	state, err := subscription.running()
 
@@ -369,8 +400,8 @@ func Test_SubscriptionRunningRejectsNilConsumer(t *testing.T) {
 }
 
 func Test_SubscriptionRunningStopsWhenConnectionIsGone(t *testing.T) {
-	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
-	bd := &BrokerDetails{ctx: context.Background(), ClientIdentifier: "subscription-test", subscriptions: util.NewConcurrentMap()}
+	source := newTestQueueSource()
+	bd := &BrokerDetails{ctx: context.Background(), ClientIdentifier: testSubscriptionClient, subscriptions: util.NewConcurrentMap()}
 	subscription := &Subscription{ctx: context.Background(), source: source, bd: bd}
 
 	state, err := subscription.running()
@@ -380,7 +411,7 @@ func Test_SubscriptionRunningStopsWhenConnectionIsGone(t *testing.T) {
 }
 
 func Test_SubscriptionStoppingKeepsReplacementSubscription(t *testing.T) {
-	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
+	source := newTestQueueSource()
 	bd := &BrokerDetails{subscriptions: util.NewConcurrentMap()}
 	old := &Subscription{source: source, bd: bd}
 	replacement := &Subscription{source: source, bd: bd}
@@ -425,8 +456,8 @@ func Test_SubscriptionRunningReturnsStateRequestedByEvent(t *testing.T) {
 					return nil, ctx.Err()
 				},
 			}
-			source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
-			subscription, _ := newTestSubscription(t, ctx, source, consumer, nil)
+			source := newTestQueueSource()
+			subscription := newTestSubscription(t, ctx, source, consumer, nil)
 			result := make(chan subscribeState, 1)
 			go func() {
 				state, _ := subscription.running()
@@ -456,7 +487,7 @@ func Test_SubscriptionRecoveringStopsOnStoppingEvent(t *testing.T) {
 	newSub := func() *Subscription {
 		return &Subscription{
 			ctx:    context.Background(),
-			source: &pb.Source{Name: "orders"},
+			source: &pb.Source{Name: testBindingQueueName},
 			bd: &BrokerDetails{provider: waitForConnectProviderStub{wait: func(context.Context) bool {
 				waitCalled = true
 				return true
@@ -500,8 +531,8 @@ func Test_SubscriptionRunningDiscardsStaleRecoveringEvent(t *testing.T) {
 			return nil, ctx.Err()
 		},
 	}
-	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
-	subscription, _ := newTestSubscription(t, ctx, source, consumer, nil)
+	source := newTestQueueSource()
+	subscription := newTestSubscription(t, ctx, source, consumer, nil)
 	subscription.consumerGeneration = subscription.bd.setConnectionState(provider.CONNECTING)
 	subscription.bd.setConnectionState(provider.CONNECTED)
 	subscription.notify(subscribeStateRecovering, subscription.consumerGeneration)
@@ -526,7 +557,7 @@ func Test_SubscriptionRunningDoesNotDiscardNewReconnect(t *testing.T) {
 	connection.On("NewConsumer", ctx, mock.Anything, mock.Anything).Return(nil, nil).Maybe()
 	bd := &BrokerDetails{Connection: connection}
 	generation := bd.setConnectionState(provider.CONNECTING)
-	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: "orders"}, bd: bd}
+	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: testBindingQueueName}, bd: bd}
 	subscription.notify(subscribeStateRecovering, generation)
 
 	state, err := subscription.running()
@@ -544,7 +575,7 @@ func Test_SubscriptionRecoverySnapshotRejectsNewReconnect(t *testing.T) {
 		provider:   waitForConnectProviderStub{wait: func(context.Context) bool { return true }},
 	}
 	bd.setConnectionState(provider.CONNECTED)
-	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: "orders"}, bd: bd}
+	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: testBindingQueueName}, bd: bd}
 	state, err := subscription.recovering()
 	require.Nil(t, err)
 	require.Equal(t, subscribeStateRunning, state)
@@ -571,7 +602,7 @@ func Test_SubscriptionRecoveryRechecksConnectedSnapshot(t *testing.T) {
 		}
 		return true
 	}}
-	subscription := &Subscription{ctx: context.Background(), source: &pb.Source{Name: "orders"}, bd: bd}
+	subscription := &Subscription{ctx: context.Background(), source: &pb.Source{Name: testBindingQueueName}, bd: bd}
 
 	state, err := subscription.recovering()
 
@@ -585,7 +616,7 @@ func Test_SubscriptionStartingDuringReconnect(t *testing.T) {
 	connection := &rabbitMQAMQP10ConnectionMock{}
 	bd := &BrokerDetails{Connection: connection, subscriptions: util.NewConcurrentMap()}
 	bd.setConnectionState(provider.CONNECTING)
-	source := &pb.Source{Name: "orders", Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
+	source := &pb.Source{Name: testBindingQueueName, Address: &pb.Address{Name: testBindingQueueName, Type: pb.Address_TOPIC}}
 	subscription := &Subscription{ctx: context.Background(), source: source, bd: bd}
 
 	state, err := subscription.starting()
@@ -627,7 +658,7 @@ func Test_SubscriptionReconnectDuringConsumerCreation(t *testing.T) {
 	}).Return(consumer, nil).Once()
 	bd := &BrokerDetails{Connection: connection, ActiveMessages: util.NewConcurrentMap()}
 	bd.setConnectionState(provider.CONNECTED)
-	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: "orders"}, bd: bd}
+	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: testBindingQueueName}, bd: bd}
 	result := make(chan subscribeState, 1)
 	go func() {
 		state, _ := subscription.running()
@@ -687,7 +718,7 @@ func Test_ConnectionEventsDriveSubscriptionLifecycle(t *testing.T) {
 	}
 	bd.setConnectionState(provider.CONNECTED)
 	go bd.watchConnection()
-	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
+	source := newTestQueueSource()
 	result := make(chan error, 1)
 	go func() { result <- bd.subscribe(ctx, source, make(chan *pb.Message)) }()
 	waitStarted := func(what string) {
@@ -700,7 +731,10 @@ func Test_ConnectionEventsDriveSubscriptionLifecycle(t *testing.T) {
 	}
 	waitStarted("first consumer")
 
-	bd.stateChannel <- &ramqp10.StateChanged{From: &ramqp10.StateOpen{}, To: &ramqp10.StateReconnecting{}}
+	// The library reports an unexpected drop as Closed(err), Reconnecting, Open.
+	dropped := closedWithError(errors.New("connection forced"))
+	bd.stateChannel <- &ramqp10.StateChanged{From: &ramqp10.StateOpen{}, To: dropped}
+	bd.stateChannel <- &ramqp10.StateChanged{From: dropped, To: &ramqp10.StateReconnecting{}}
 	select {
 	case <-first.closeCalled:
 	case <-time.After(2 * time.Second):
@@ -722,7 +756,55 @@ func Test_ConnectionEventsDriveSubscriptionLifecycle(t *testing.T) {
 		t.Fatal("replacement consumer was not closed")
 	}
 	assert.Equal(t, 0, bd.subscriptions.Length())
+	assert.Equal(t, int64(0), bd.ActiveStreams.Load())
 	connection.AssertExpectations(t)
+}
+
+func Test_BrokerDetailsSubscribeCountsActiveStream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	receiving := make(chan struct{})
+	consumer := &subscriptionConsumerStub{
+		closeCalled: make(chan struct{}),
+		receive: func(ctx context.Context) (ramqp10.IDeliveryContext, error) {
+			close(receiving)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	connection.On("NewConsumer", ctx, mock.Anything, mock.Anything).Return(consumer, nil).Once()
+	bd := &BrokerDetails{ctx: ctx, Connection: connection, ActiveMessages: util.NewConcurrentMap(), subscriptions: util.NewConcurrentMap()}
+	bd.setConnectionState(provider.CONNECTED)
+	source := newTestQueueSource()
+	result := make(chan error, 1)
+	go func() { result <- bd.subscribe(ctx, source, make(chan *pb.Message)) }()
+
+	select {
+	case <-receiving:
+	case <-time.After(2 * time.Second):
+		t.Fatal("consumer did not start receiving")
+	}
+	assert.Equal(t, int64(1), bd.ActiveStreams.Load())
+	cancel()
+
+	select {
+	case err := <-result:
+		assert.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscription did not stop after cancellation")
+	}
+	assert.Equal(t, int64(0), bd.ActiveStreams.Load())
+}
+
+func Test_BrokerDetailsSubscribeDoesNotLeakStreamCountWhenNotStarted(t *testing.T) {
+	bd := &BrokerDetails{subscriptions: util.NewConcurrentMap()}
+	bd.ClientDisconnect.Store(true)
+	source := &pb.Source{Name: testBindingQueueName, Address: &pb.Address{Name: testBindingQueueName}}
+
+	require.NoError(t, bd.subscribe(context.Background(), source, nil))
+
+	assert.Equal(t, int64(0), bd.ActiveStreams.Load())
 }
 
 func Test_SubscriptionRecoveryAttemptsReset(t *testing.T) {
@@ -734,10 +816,10 @@ func Test_SubscriptionRecoveryAttemptsReset(t *testing.T) {
 			},
 		}
 	}
-	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
+	source := newTestQueueSource()
 
 	t.Run("consumer that fails immediately keeps counting", func(t *testing.T) {
-		subscription, _ := newTestSubscription(t, context.Background(), source, failingConsumer(), nil)
+		subscription := newTestSubscription(t, context.Background(), source, failingConsumer(), nil)
 		subscription.recoveryAttempts = 3
 
 		state, _ := subscription.running()
@@ -750,7 +832,7 @@ func Test_SubscriptionRecoveryAttemptsReset(t *testing.T) {
 		old := consumerStableDuration
 		consumerStableDuration = 0
 		t.Cleanup(func() { consumerStableDuration = old })
-		subscription, _ := newTestSubscription(t, context.Background(), source, failingConsumer(), nil)
+		subscription := newTestSubscription(t, context.Background(), source, failingConsumer(), nil)
 		subscription.recoveryAttempts = 3
 
 		state, _ := subscription.running()
@@ -770,7 +852,7 @@ func Test_SubscriptionRecoveryAttemptsReset(t *testing.T) {
 				return nil, ctx.Err()
 			},
 		}
-		subscription, _ := newTestSubscription(t, ctx, source, consumer, nil)
+		subscription := newTestSubscription(t, ctx, source, consumer, nil)
 		subscription.recoveryAttempts = 4
 		subscription.lastRecoveryError = &subscribeStateTransitionError{msg: "old"}
 		result := make(chan subscribeState, 1)

@@ -38,6 +38,8 @@ func Test_getAmqp10ConnOptions(t *testing.T) {
 
 	assert.NotNil(t, options.SASLType)
 	assert.Same(t, tlsCfg, options.TLSConfig)
+	require.NotNil(t, options.RecoveryConfiguration)
+	assert.True(t, options.RecoveryConfiguration.ActiveRecovery)
 }
 
 func Test_rabbitMQAMQP10Connection_WatchConnectionRejectsNilConnection(t *testing.T) {

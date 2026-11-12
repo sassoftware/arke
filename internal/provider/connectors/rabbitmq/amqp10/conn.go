@@ -62,6 +62,8 @@ func getRabbitMQAMQP10ConnOptions(ctx context.Context, cf *pb.ConnectionConfigur
 			cf.GetCredentials().GetPassword(),
 		),
 		TLSConfig: tlsCfg,
+		// The connection watcher relies on the library reconnecting after a drop.
+		RecoveryConfiguration: ramqp.NewRecoveryConfiguration(),
 	}, nil
 }
 

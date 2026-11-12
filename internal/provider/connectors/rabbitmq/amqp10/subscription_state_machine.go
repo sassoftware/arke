@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/sassoftware/arke/i18n"
 	"github.com/sassoftware/arke/internal/util"
 )
 
@@ -28,6 +29,8 @@ const (
 
 func (s *subscribeState) String() string {
 	switch *s {
+	case subscribeStateNone:
+		return "none"
 	case subscribeStateIdle:
 		return "idle"
 	case subscribeStateStarting:
@@ -205,7 +208,11 @@ func (sm *subscribeStateMachine) callTransitionFunc(state subscribeState) (subsc
 	if ok {
 		nextState, err := fn()
 		if err != nil && sm.getState() < subscribeStateRecovering {
-			logger.Warn("%s [%s]", err.msg, err.queue)
+			detail := err.msg
+			if err.err != nil {
+				detail += ": " + err.err.Error()
+			}
+			logger.Warn(i18n.SubscribeTransitionError, err.clientIdentifier, err.queue, detail)
 		} else {
 			if err != nil {
 				logger.Debugf("subscribe state transition from %s to %s error: %s", state.String(), nextState.String(), err.msg)

@@ -834,6 +834,27 @@ func Test_amqp10provider_subscribeDeclaresExchange(t *testing.T) {
 	connection.AssertNumberOfCalls(t, "DeclareQueue", 1)
 }
 
+func Test_amqp10provider_subscribeRejectsMissingAddressName(t *testing.T) {
+	for name, source := range map[string]*pb.Source{
+		"nil address":        {Name: testBindingQueueName},
+		"empty address name": {Name: testBindingQueueName, Address: &pb.Address{Type: pb.Address_TOPIC}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, clientIdentifier := newTestProviderContext(t, "subscribe-missing-address")
+			connection := &rabbitMQAMQP10ConnectionMock{}
+			bd := &BrokerDetails{ctx: ctx, Connection: connection, subscriptions: util.NewConcurrentMap()}
+			prov := newTestRabbitMQAMQP10Provider()
+			prov.connections.Add(clientIdentifier, bd)
+
+			err := prov.Subscribe(ctx, source, nil)
+
+			require.NotNil(t, err)
+			assert.Equal(t, "address name not defined", err.GetMessage())
+			connection.AssertNotCalled(t, "DeclareExchange", mock.Anything, mock.Anything)
+		})
+	}
+}
+
 func Test_amqp10provider_subscribeReturnsDeclarationError(t *testing.T) {
 	ctx, clientIdentifier := newTestProviderContext(t, "subscribe-declare-error")
 	connection := &rabbitMQAMQP10ConnectionMock{}

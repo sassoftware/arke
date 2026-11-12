@@ -139,6 +139,66 @@ func Test_AMQPManagementClient_RequestUsesPerCallContextOverConfiguredContext(t 
 	}
 }
 
+func Test_AMQPManagementClientWithBasicAuth_RequestSendsEmptyCredentials(t *testing.T) {
+	tests := []struct {
+		name     string
+		username string
+		password string
+	}{
+		{name: "empty username", password: "password"},
+		{name: "empty password", username: "user"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			type credentials struct {
+				username string
+				password string
+				ok       bool
+			}
+			requests := make(chan credentials, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				username, password, ok := req.BasicAuth()
+				requests <- credentials{username: username, password: password, ok: ok}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+
+			client, err := NewManagementClientWithBasicAuth(context.Background(), server.URL, tt.username, tt.password, nil)
+			require.NoError(t, err)
+
+			_, status, err := client.Request(context.Background(), http.MethodGet, "/api/queues")
+
+			require.NoError(t, err)
+			assert.Equal(t, http.StatusNoContent, status)
+			gotCredentials := <-requests
+			assert.True(t, gotCredentials.ok)
+			assert.Equal(t, tt.username, gotCredentials.username)
+			assert.Equal(t, tt.password, gotCredentials.password)
+		})
+	}
+}
+
+func Test_IsBindingExpected(t *testing.T) {
+	tests := []struct {
+		name       string
+		routingKey string
+		subjects   []string
+		want       bool
+	}{
+		{name: "requested subject", routingKey: "wanted", subjects: []string{"wanted", "other"}, want: true},
+		{name: "stale subject", routingKey: "stale", subjects: []string{"wanted"}},
+		{name: "empty routing key", routingKey: "", subjects: []string{""}, want: true},
+		{name: "no subjects", routingKey: "stale"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsBindingExpected(tt.routingKey, tt.subjects))
+		})
+	}
+}
+
 func Test_ManagementClientMock_Request(t *testing.T) {
 	ctx := context.Background()
 	clientMock := &ManagementClientMock{Mock: &mock.Mock{}}

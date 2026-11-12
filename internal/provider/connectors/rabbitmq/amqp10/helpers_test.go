@@ -12,6 +12,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func Test_subscriptionKey(t *testing.T) {
+	assert.Equal(t, testBindingStreamName+"/"+testBindingQueueName, subscriptionKey(&pb.Source{Name: testBindingQueueName, Address: &pb.Address{Name: testBindingStreamName}}))
+	assert.NotPanics(t, func() {
+		assert.Equal(t, "/"+testBindingQueueName, subscriptionKey(&pb.Source{Name: testBindingQueueName}))
+		assert.Equal(t, "/", subscriptionKey(nil))
+	})
+}
+
 func Test_DelCtxToMessage_NilMessage(t *testing.T) {
 	delivery := &subscriptionDeliveryStub{}
 
@@ -21,12 +29,12 @@ func Test_DelCtxToMessage_NilMessage(t *testing.T) {
 func Test_DelCtxToMessage_MapsBodyAndHeaders(t *testing.T) {
 	contentType := "application/json"
 	contentEncoding := "gzip"
-	address := &pb.Address{Name: "events"}
+	address := &pb.Address{Name: testBindingStreamName}
 	delivery := &subscriptionDeliveryStub{message: &amqp.Message{
 		Data: [][]byte{[]byte("payload")},
 		ApplicationProperties: map[string]any{
-			"trace-id":           "trace-123",
-			"attempt":            3,
+			"trace-id":            "trace-123",
+			"attempt":             3,
 			headerContentType:     "application/property",
 			headerContentEncoding: "identity",
 		},
@@ -41,8 +49,8 @@ func Test_DelCtxToMessage_MapsBodyAndHeaders(t *testing.T) {
 	require.NotNil(t, message)
 	assert.Equal(t, []byte("payload"), message.Body)
 	assert.Equal(t, map[string]string{
-		"trace-id":           "trace-123",
-		"attempt":            "3",
+		"trace-id":            "trace-123",
+		"attempt":             "3",
 		headerContentType:     contentType,
 		headerContentEncoding: contentEncoding,
 	}, message.Headers)

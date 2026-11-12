@@ -6,6 +6,7 @@ package amqp10
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"sync"
 	"sync/atomic"
 
@@ -83,9 +84,9 @@ func (bd *BrokerDetails) watchConnection() {
 			if !ok || change == nil || change.To == nil {
 				return
 			}
-			util.Logger.Info("connection %s state changed from %v to %v", bd.ClientIdentifier, change.From, change.To)
+			util.Logger.Info(i18n.ConnectionStateChanged, bd.ClientIdentifier, change.String())
 
-			switch change.To.(type) {
+			switch to := change.To.(type) {
 			case *rabbitmqamqp.StateOpen:
 				// Subscriptions in Recovering wait for CONNECTED themselves.
 				bd.setConnectionState(provider.CONNECTED)
@@ -93,6 +94,11 @@ func (bd *BrokerDetails) watchConnection() {
 				generation := bd.setConnectionState(provider.CONNECTING)
 				bd.notifySubscriptions(subscribeStateRecovering, generation)
 			case *rabbitmqamqp.StateClosed:
+				if isRecoverableClose(to.GetError()) {
+					generation := bd.setConnectionState(provider.CONNECTING)
+					bd.notifySubscriptions(subscribeStateRecovering, generation)
+					continue
+				}
 				bd.setConnectionState(provider.CLOSED)
 				bd.notifySubscriptions(subscribeStateStopping, 0)
 				return
@@ -105,10 +111,18 @@ func (bd *BrokerDetails) watchConnection() {
 	}
 }
 
+// isRecoverableClose reports whether the client library will reconnect after a
+// Closed event; it emits Closed(err) before Reconnecting on an unexpected drop.
+func isRecoverableClose(err error) bool {
+	return err != nil && !errors.Is(err, rabbitmqamqp.ErrMaxReconnectAttemptsReached)
+}
+
+// setConnectionState stores the state and returns the reconnect generation. The
+// generation advances once per reconnect cycle, not for each CONNECTING event.
 func (bd *BrokerDetails) setConnectionState(state uint32) uint64 {
 	bd.lifecycleMu.Lock()
 	defer bd.lifecycleMu.Unlock()
-	if state == provider.CONNECTING {
+	if state == provider.CONNECTING && bd.State.Load() != provider.CONNECTING {
 		bd.generation++
 	}
 	bd.State.Store(state)
@@ -122,6 +136,9 @@ func (bd *BrokerDetails) connectionSnapshot() (uint32, uint64) {
 }
 
 func (bd *BrokerDetails) subscribe(ctx context.Context, source *pb.Source, mc chan<- *pb.Message) error {
+	bd.IncrementStreamCount()
+	defer bd.DecrementStreamCount()
+
 	s := &Subscription{
 		ctx:       ctx,
 		bd:        bd,
@@ -171,7 +188,8 @@ func (bd *BrokerDetails) disconnect() {
 	bd.Lock()
 	defer bd.Unlock()
 
-	if bd.State.Load() == provider.DISCONNECTED || bd.State.Load() == provider.CLOSED {
+	// A CLOSED broker can still hold a connection the library reconnected.
+	if state := bd.State.Load(); bd.Connection == nil && (state == provider.DISCONNECTED || state == provider.CLOSED) {
 		return
 	}
 

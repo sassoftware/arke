@@ -6,16 +6,18 @@ package amqp10
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
+	"unsafe"
 
 	rabbitmqamqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/internal/provider"
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -164,21 +166,32 @@ func Test_BrokerDetails_disconnect(t *testing.T) {
 		assert.True(t, bd.ClientDisconnect.Load())
 	})
 
-	t.Run("already disconnected or closed broker details are noops", func(t *testing.T) {
+	t.Run("already disconnected or closed broker details without a connection are noops", func(t *testing.T) {
 		states := []uint32{provider.DISCONNECTED, provider.CLOSED}
 		for _, state := range states {
-			conn := &rabbitMQAMQP10ConnectionMock{}
 			bd := newTestBrokerDetails()
-			bd.Connection = conn
 			bd.State.Store(state)
 
 			bd.disconnect()
 
-			conn.AssertNotCalled(t, "Close", mock.Anything)
-			assert.Same(t, conn, bd.Connection)
 			assert.Equal(t, state, bd.State.Load())
 			assert.False(t, bd.ClientDisconnect.Load())
 		}
+	})
+
+	t.Run("closed broker details still close a reconnected connection", func(t *testing.T) {
+		conn := &rabbitMQAMQP10ConnectionMock{}
+		bd := newTestBrokerDetails()
+		conn.On("Close", bd.ctx).Return(nil).Once()
+		bd.Connection = conn
+		bd.State.Store(provider.CLOSED)
+
+		bd.disconnect()
+
+		conn.AssertExpectations(t)
+		assert.Nil(t, bd.Connection)
+		assert.Equal(t, uint32(provider.DISCONNECTED), bd.State.Load())
+		assert.True(t, bd.ClientDisconnect.Load())
 	})
 }
 
@@ -274,6 +287,84 @@ func Test_BrokerDetails_watchConnection(t *testing.T) {
 
 		assert.Eventually(t, func() bool { return bd.State.Load() == provider.CLOSED }, time.Second, 10*time.Millisecond)
 	})
+
+	t.Run("closed with an error recovers and keeps watching", func(t *testing.T) {
+		sub := &Subscription{}
+		bd := &BrokerDetails{stateChannel: make(chan *rabbitmqamqp.StateChanged, 3), subscriptions: util.NewConcurrentMap()}
+		bd.subscriptions.Add("sub", sub)
+		bd.setConnectionState(provider.CONNECTED)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			bd.watchConnection()
+		}()
+
+		dropped := closedWithError(errors.New("connection forced"))
+		bd.stateChannel <- &rabbitmqamqp.StateChanged{From: &rabbitmqamqp.StateOpen{}, To: dropped}
+		bd.stateChannel <- &rabbitmqamqp.StateChanged{From: dropped, To: &rabbitmqamqp.StateReconnecting{}}
+		bd.stateChannel <- &rabbitmqamqp.StateChanged{From: &rabbitmqamqp.StateReconnecting{}, To: &rabbitmqamqp.StateOpen{}}
+
+		// Closed(err) and Reconnecting are one reconnect cycle, so the generation is 1.
+		require.Eventually(t, func() bool {
+			state, generation := bd.connectionSnapshot()
+			return state == provider.CONNECTED && generation == 1
+		}, time.Second, 10*time.Millisecond)
+		assert.Equal(t, subscribeStateRecovering, sub.takeEvent())
+		select {
+		case <-done:
+			t.Fatal("watcher exited on a recoverable close")
+		default:
+		}
+		close(bd.stateChannel)
+		<-done
+	})
+
+	t.Run("closed without recovery stops subscriptions and exits", func(t *testing.T) {
+		for name, to := range map[string]*rabbitmqamqp.StateClosed{
+			"client close":       {},
+			"attempts exhausted": closedWithError(rabbitmqamqp.ErrMaxReconnectAttemptsReached),
+		} {
+			t.Run(name, func(t *testing.T) {
+				sub := &Subscription{}
+				bd := &BrokerDetails{stateChannel: make(chan *rabbitmqamqp.StateChanged, 1), subscriptions: util.NewConcurrentMap()}
+				bd.subscriptions.Add("sub", sub)
+				bd.stateChannel <- &rabbitmqamqp.StateChanged{From: &rabbitmqamqp.StateOpen{}, To: to}
+
+				bd.watchConnection()
+
+				assert.Equal(t, uint32(provider.CLOSED), bd.State.Load())
+				assert.Equal(t, subscribeStateStopping, sub.takeEvent())
+			})
+		}
+	})
+}
+
+// closedWithError builds a StateClosed carrying err; the library has no constructor.
+func closedWithError(err error) *rabbitmqamqp.StateClosed {
+	closed := &rabbitmqamqp.StateClosed{}
+	field := reflect.ValueOf(closed).Elem().FieldByName("error")
+	reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Set(reflect.ValueOf(err))
+	return closed
+}
+
+func Test_BrokerDetails_setConnectionState(t *testing.T) {
+	bd := newTestBrokerDetails()
+
+	first := bd.setConnectionState(provider.CONNECTING)
+	repeated := bd.setConnectionState(provider.CONNECTING)
+	bd.setConnectionState(provider.CONNECTED)
+	next := bd.setConnectionState(provider.CONNECTING)
+
+	assert.Equal(t, uint64(1), first)
+	assert.Equal(t, first, repeated)
+	assert.Equal(t, uint64(2), next)
+}
+
+func Test_isRecoverableClose(t *testing.T) {
+	assert.False(t, isRecoverableClose(nil))
+	assert.False(t, isRecoverableClose(rabbitmqamqp.ErrMaxReconnectAttemptsReached))
+	assert.False(t, isRecoverableClose(fmt.Errorf("wrapped: %w", rabbitmqamqp.ErrMaxReconnectAttemptsReached)))
+	assert.True(t, isRecoverableClose(errors.New("connection forced")))
 }
 
 func Test_BrokerDetails_notifySubscriptions(t *testing.T) {
