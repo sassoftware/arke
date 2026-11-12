@@ -90,4 +90,8 @@ const (
 	HPAScaled                        = BundleID + ".info.hpaScaled.log"
 	ErrorClosingConnection           = BundleID + ".error.errorClosingConnection.log"
 	TLSCABundleError                 = BundleID + ".error.tls.ca.bundle.log"
+	ConsumerCloseError               = BundleID + ".error.consumerCloseError.log"
+	ConsumerReceiveError             = BundleID + ".error.consumerReceiveError.log"
+	ConnectionStateChanged           = BundleID + ".info.connectionStateChanged.log"
+	SubscribeTransitionError         = BundleID + ".warn.subscribeTransitionError.log"
 )

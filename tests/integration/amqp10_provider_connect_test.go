@@ -10,9 +10,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -107,7 +109,7 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 		}
 	})
 
-	provCtx := context.Context(ctx)
+	provCtx := ctx
 	go prov.Subscribe(provCtx, bindingSource, make(chan *pb.Message))
 	bindingPath := fmt.Sprintf("/api/bindings/%s/e/%s/q/%s",
 		url.PathEscape(vhost), url.PathEscape(exchangeName), url.PathEscape(queueName))
@@ -163,7 +165,7 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 
 	bindingSource.Address.Subjects = []string{routingKeys[0]}
 	prov.Disconnect(provCtx)
-	provCtx = context.Context(ctx)
+	provCtx = ctx
 
 	pbErr := prov.Connect(provCtx, &connConfig, false)
 	require.Nil(t, pbErr, "provider connect failed: %v", pbErr)
@@ -181,100 +183,251 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 }
 
 func Test_AMQP10ProviderSubscribe(t *testing.T) {
-	hostname := os.Getenv("ARKE_BROKER_HOSTNAME")
-	if hostname == "" {
-		hostname = "localhost"
+	f := newAMQP10SubscribeFixture(t, 30*time.Second)
+	assert.True(t, f.prov.ClientExists(f.clientID))
+
+	f.publishWhenRouted("hello")
+	f.expectMessage("hello", 15*time.Second)
+
+	stats := f.prov.SourceStats(f.ctx, f.source)
+	assert.Nil(t, stats.Error)
+
+	f.prov.Disconnect(f.ctx)
+	f.expectSubscribeReturns()
+	assert.False(t, f.prov.ClientExists(f.clientID), "client should not exist after disconnect")
+}
+
+func Test_AMQP10ProviderSubscribeRecoversFromBrokerClose(t *testing.T) {
+	f := newAMQP10SubscribeFixture(t, 90*time.Second)
+	f.publishWhenRouted("before-drop")
+	f.expectMessage("before-drop", 15*time.Second)
+
+	closed := f.closeBrokerConnection()
+
+	// The client library waits at least 5s before its first reconnect attempt.
+	require.Eventually(t, func() bool {
+		for _, name := range f.brokerConnections() {
+			if !slices.Contains(closed, name) {
+				return true
+			}
+		}
+		return false
+	}, 40*time.Second, 500*time.Millisecond, "client did not reconnect after the broker closed its connection")
+	assert.True(t, f.prov.ClientExists(f.clientID))
+	select {
+	case err := <-f.subscribeDone:
+		t.Fatalf("Subscribe returned during recovery: %v", err)
+	default:
 	}
-	t.Setenv("ARKE_BROKER_HOSTNAME", hostname)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+
+	f.publishWhenRouted("after-drop")
+	f.expectMessage("after-drop", 30*time.Second, "before-drop")
+
+	f.prov.Disconnect(f.ctx)
+	f.expectSubscribeReturns()
+	assert.False(t, f.prov.ClientExists(f.clientID))
+	assert.Eventually(t, func() bool { return len(f.brokerConnections()) == 0 },
+		5*time.Second, 200*time.Millisecond, "Disconnect left a broker connection open")
+}
+
+// amqp10SubscribeFixture connects an AMQP 1.0 client and subscribes it to a new
+// queue. The management API publishes messages and drops the connection.
+type amqp10SubscribeFixture struct {
+	t             *testing.T
+	ctx           context.Context
+	prov          provider.Provider
+	clientID      string
+	exchange      string
+	vhost         string
+	source        *pb.Source
+	messages      chan *pb.Message
+	subscribeDone chan *pb.Error
+	endpoint      string
+	username      string
+	password      string
+}
+
+func newAMQP10SubscribeFixture(t *testing.T, timeout time.Duration) *amqp10SubscribeFixture {
+	t.Helper()
+	if os.Getenv("ARKE_BROKER_HOSTNAME") == "" {
+		t.Setenv("ARKE_BROKER_HOSTNAME", "localhost")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	t.Cleanup(cancel)
-
-	clientAddr := fmt.Sprintf("test-connect-integration-%d", time.Now().UnixNano())
-	ctx = peer.NewContext(ctx, &peer.Peer{Addr: mockPeerAddr{clientAddr: clientAddr}})
-
-	clientIdentifier, err := util.SetClientIdentifier(ctx, "test-connect-integration")
+	ctx = peer.NewContext(ctx, &peer.Peer{Addr: mockPeerAddr{clientAddr: fmt.Sprintf("test-amqp10-subscribe-%d", time.Now().UnixNano())}})
+	clientID, err := util.SetClientIdentifier(ctx, "test-amqp10-subscribe")
 	require.NoError(t, err)
-	defer util.RemoveClientIdentifier(ctx)
+	t.Cleanup(func() { util.RemoveClientIdentifier(ctx) })
 
 	connConfig := cfg.ConnectionConfigurationFromEnv()
-	t.Logf("cf: %+v", connConfig)
-	connConfig.ClientName = clientIdentifier
-	prov, err := provider.NewProvider(cfg.ConnectionConfigurationFromEnv().Provider)
+	connConfig.ClientName = clientID
+	prov, err := provider.NewProvider("rabbitmq-amqp10")
 	require.NoError(t, err)
 
-	connectErr := prov.Connect(ctx, &connConfig, false)
-	require.Nil(t, connectErr, "provider connect failed: %v", connectErr)
-	assert.True(t, prov.ClientExists(clientIdentifier))
-	assert.Eventually(t, func() bool {
-		return prov.WaitForConnect(ctx)
-	}, 2*time.Second, 100*time.Millisecond)
-
+	exchange := "arke-amqp10-subscribe-" + uuid.NewString()
 	source := &pb.Source{
-		Name: "queue-name",
-		Address: &pb.Address{
-			Name:     "queue-name",
-			Subjects: []string{},
-			Type:     pb.Address_QUEUE,
-		},
-	}
-	stats := prov.SourceStats(ctx, source)
-	assert.Nil(t, stats.Error)
-	assert.NotNil(t, stats)
-	// Used UI to create the queue queue-name.quorum and publish msgs.
-	// Ran this test and observed message_count and publish_rate.
-	t.Logf("Source stats: %+v", stats)
-
-	exchangeName := "arke-amqp10-bindings-" + uuid.NewString()
-	queueName := exchangeName + "-queue"
-	routingKeys := []string{"integration.subject.retained", "integration.subject.removed"}
-	bindingSource := &pb.Source{
-		Name:       queueName,
+		Name:       exchange + "-queue",
 		Type:       pb.Source_QUEUE,
 		AutoDelete: true,
 		Address: &pb.Address{
-			Name:     exchangeName,
+			Name:     exchange,
 			Type:     pb.Address_TOPIC,
-			Subjects: routingKeys,
+			Subjects: []string{"integration.subscribe"},
 		},
 	}
 	username, password := amqp.GetUsernamePassword(&connConfig)
-	management, err := amqp.NewManagementClient(ctx, amqp.GetMgmtEndpoint(&connConfig), username, password, nil)
-	require.NoError(t, err)
+	endpoint := amqp.GetMgmtEndpoint(&connConfig)
 	vhost := amqp.GetVhost(&connConfig)
-	queueName = amqp.SourceName(bindingSource)
+	management, err := amqp.NewManagementClient(ctx, endpoint, username, password, nil)
+	require.NoError(t, err)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
-		if err := deleteQueue(cleanupCtx, management, vhost, queueName); err != nil {
-			t.Errorf("delete AMQP 1.0 binding test queue: %v", err)
+		if err := deleteQueue(cleanupCtx, management, vhost, amqp.SourceName(source)); err != nil {
+			t.Errorf("delete queue: %v", err)
 		}
-		exchangePath := "/api/exchanges/" + url.PathEscape(vhost) + "/" + url.PathEscape(exchangeName)
-		_, statusCode, err := management.Request(cleanupCtx, http.MethodDelete, exchangePath)
-		if err != nil {
-			t.Errorf("delete AMQP 1.0 binding test exchange: %v", err)
-		} else if statusCode != http.StatusNoContent && statusCode != http.StatusNotFound {
-			t.Errorf("delete AMQP 1.0 binding test exchange returned %d", statusCode)
+		_, statusCode, err := management.Request(cleanupCtx, http.MethodDelete, "/api/exchanges/"+url.PathEscape(vhost)+"/"+url.PathEscape(exchange))
+		if err != nil || (statusCode != http.StatusNoContent && statusCode != http.StatusNotFound) {
+			t.Errorf("delete exchange: status %d, error %v", statusCode, err)
 		}
 	})
 
-	msgs := make(chan *pb.Message)
-	go func(msgs chan *pb.Message) {
+	require.Nil(t, prov.Connect(ctx, &connConfig, false))
+	t.Cleanup(func() { prov.Disconnect(ctx) })
+	require.True(t, prov.WaitForConnect(ctx))
+
+	f := &amqp10SubscribeFixture{
+		t:             t,
+		ctx:           ctx,
+		prov:          prov,
+		clientID:      clientID,
+		exchange:      exchange,
+		vhost:         vhost,
+		source:        source,
+		messages:      make(chan *pb.Message, 10),
+		subscribeDone: make(chan *pb.Error, 1),
+		endpoint:      endpoint,
+		username:      username,
+		password:      password,
+	}
+	go func() { f.subscribeDone <- prov.Subscribe(ctx, source, f.messages) }()
+	return f
+}
+
+// managementRequest returns an error rather than failing the test so it is safe
+// to call from require.Eventually callbacks.
+func (f *amqp10SubscribeFixture) managementRequest(method, path string, body []byte) ([]byte, int, error) {
+	req, err := http.NewRequestWithContext(f.ctx, method, f.endpoint+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, err
+	}
+	req.SetBasicAuth(f.username, f.password)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	return data, resp.StatusCode, err
+}
+
+// publish reports whether the broker routed the message to the queue.
+func (f *amqp10SubscribeFixture) publish(payload string) bool {
+	body, err := json.Marshal(map[string]any{
+		"properties":       map[string]any{},
+		"routing_key":      f.source.GetAddress().GetSubjects()[0],
+		"payload":          payload,
+		"payload_encoding": "string",
+	})
+	if err != nil {
+		return false
+	}
+	path := "/api/exchanges/" + url.PathEscape(f.vhost) + "/" + url.PathEscape(f.exchange) + "/publish"
+	data, status, err := f.managementRequest(http.MethodPost, path, body)
+	if err != nil || status != http.StatusOK {
+		return false
+	}
+	var result struct {
+		Routed bool `json:"routed"`
+	}
+	return json.Unmarshal(data, &result) == nil && result.Routed
+}
+
+// publishWhenRouted waits for Subscribe to create the queue and binding.
+func (f *amqp10SubscribeFixture) publishWhenRouted(payload string) {
+	f.t.Helper()
+	require.Eventually(f.t, func() bool { return f.publish(payload) },
+		15*time.Second, 200*time.Millisecond, "message %q was never routed to the queue", payload)
+}
+
+func (f *amqp10SubscribeFixture) expectMessage(payload string, timeout time.Duration, redelivered ...string) {
+	f.t.Helper()
+	deadline := time.After(timeout)
+	for {
 		select {
-		case msg := <-msgs:
-			t.Logf("Received message: %+v", msg)
+		case msg := <-f.messages:
+			// Ack is not implemented yet, so the broker redelivers unacked messages.
+			if slices.Contains(redelivered, string(msg.GetBody())) {
+				continue
+			}
+			require.Equal(f.t, payload, string(msg.GetBody()))
 			return
-		case <-time.After(5 * time.Second):
-			t.Logf("Timeout waiting for message")
-			return
+		case err := <-f.subscribeDone:
+			f.t.Fatalf("Subscribe returned before %q was delivered: %v", payload, err)
+		case <-deadline:
+			f.t.Fatalf("timed out waiting for message %q", payload)
 		}
-	}(msgs)
+	}
+}
 
-	go func(msgs chan *pb.Message) {
-		require.Nil(t, prov.Subscribe(ctx, bindingSource, msgs))
-	}(msgs)
+func (f *amqp10SubscribeFixture) expectSubscribeReturns() {
+	f.t.Helper()
+	select {
+	case err := <-f.subscribeDone:
+		assert.Nil(f.t, err)
+	case <-time.After(10 * time.Second):
+		f.t.Fatal("Subscribe did not return")
+	}
+}
 
-	prov.Disconnect(ctx)
-	assert.False(t, prov.ClientExists(clientIdentifier), "client should not exist after disconnect")
+// brokerConnections lists the names of this client's connections as the broker sees them.
+func (f *amqp10SubscribeFixture) brokerConnections() []string {
+	data, status, err := f.managementRequest(http.MethodGet, "/api/connections", nil)
+	if err != nil || status != http.StatusOK {
+		return nil
+	}
+	var connections []struct {
+		Name        string `json:"name"`
+		ContainerID string `json:"container_id"`
+	}
+	if json.Unmarshal(data, &connections) != nil {
+		return nil
+	}
+	var names []string
+	for _, connection := range connections {
+		if connection.ContainerID == f.clientID {
+			names = append(names, connection.Name)
+		}
+	}
+	return names
+}
+
+// closeBrokerConnection force-closes this client's connections and returns their names.
+func (f *amqp10SubscribeFixture) closeBrokerConnection() []string {
+	f.t.Helper()
+	// The management API lists a connection only after its next stats update.
+	var names []string
+	require.Eventually(f.t, func() bool {
+		names = f.brokerConnections()
+		return len(names) > 0
+	}, 15*time.Second, 200*time.Millisecond, "broker has no connection for client %s", f.clientID)
+	for _, name := range names {
+		_, status, err := f.managementRequest(http.MethodDelete, "/api/connections/"+url.PathEscape(name), nil)
+		require.NoError(f.t, err)
+		require.Equal(f.t, http.StatusNoContent, status)
+	}
+	return names
 }
 
 func Test_AMQP10DeclareExchangeAllowsIncompatibleRedeclaration(t *testing.T) {

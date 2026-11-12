@@ -13,6 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	testUnknownName = "unknown"
+	testQueueLabel  = "queue"
+)
+
 func Test_subscribeStateString(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -25,7 +30,7 @@ func Test_subscribeStateString(t *testing.T) {
 		{name: "recovering", state: subscribeStateRecovering, want: "recovering"},
 		{name: "stopping", state: subscribeStateStopping, want: "stopping"},
 		{name: "stopped", state: subscribeStateStopped, want: "stopped"},
-		{name: "unknown", state: 1 << 10, want: "unknown"},
+		{name: testUnknownName, state: 1 << 10, want: testUnknownName},
 	}
 
 	for _, test := range tests {
@@ -140,7 +145,7 @@ func Test_subscribeStateMachineCallTransitionFunc(t *testing.T) {
 		transitionErr := &subscribeStateTransitionError{
 			err:   errors.New("test transition failed"),
 			msg:   "transition failed",
-			queue: "queue",
+			queue: testQueueLabel,
 		}
 		sm.registerTransitionFunc(subscribeStateStarting, func() (subscribeState, *subscribeStateTransitionError) {
 			return subscribeStateRecovering, transitionErr
@@ -168,7 +173,7 @@ func Test_subscribeStateMachineReturnsHookErrorAfterRecovery(t *testing.T) {
 	transitionErr := &subscribeStateTransitionError{
 		err:   errors.New("consumer failed"),
 		msg:   "consumer failed",
-		queue: "queue",
+		queue: testQueueLabel,
 	}
 	recoveryHookCalled := false
 	sm.registerTransitionFunc(subscribeStateRunning, func() (subscribeState, *subscribeStateTransitionError) {

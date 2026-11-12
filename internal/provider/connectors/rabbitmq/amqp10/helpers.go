@@ -24,7 +24,7 @@ type CtxKey struct {
 }
 
 func subscriptionKey(source *pb.Source) string {
-	return source.GetAddress().Name + "/" + source.GetName()
+	return source.GetAddress().GetName() + "/" + source.GetName()
 }
 
 func delCtxToMessage(delCtx ramqp.IDeliveryContext, source *pb.Source) *pb.Message {

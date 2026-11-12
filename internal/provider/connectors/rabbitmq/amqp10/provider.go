@@ -30,6 +30,8 @@ const (
 	providerName string = "rabbitmq-amqp10"
 )
 
+var errConnectionUnavailable = errors.New("broker connection is not available")
+
 var supportedSourceOptions = map[string]bool{
 	"MessageTTL":        true,
 	"DeadLetterAddress": true,
@@ -130,7 +132,7 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 		return &pb.Error{Message: err.Error()}
 	}
 
-	util.Logger.Debugf("New connection established for client %s: %+v", clientIdentifier, conn)
+	util.Logger.Debugf("New connection established for client %s", clientIdentifier)
 
 	// Anything that fails from here on must close the connection, or it leaks.
 	closeOnError := func(err error) *pb.Error {
@@ -191,7 +193,7 @@ func initialProviderState(conn rabbitMQAMQP10ConnectionShim) (uint32, error) {
 
 func (prov *rabbitMQAMQP10Provider) ClientExists(clientIdentifier string) bool {
 	value, ok := prov.connections.Get(clientIdentifier)
-	util.Logger.Debugf("checking if client %s exists: ok=%v, value=%+v", clientIdentifier, ok, value)
+	util.Logger.Debugf("checking if client %s exists: ok=%v", clientIdentifier, ok)
 	if !ok {
 		return false
 	}
@@ -220,6 +222,10 @@ func (prov *rabbitMQAMQP10Provider) PublishOne(context.Context, *pb.Message) *pb
 }
 
 func (prov *rabbitMQAMQP10Provider) Subscribe(ctx context.Context, source *pb.Source, mc chan<- *pb.Message) *pb.Error {
+	if source.GetAddress().GetName() == "" {
+		return &pb.Error{Message: "address name not defined"}
+	}
+
 	bd, err := prov.getBrokerDetails(ctx)
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
@@ -381,7 +387,11 @@ func (prov *rabbitMQAMQP10Provider) declareExchange(address *pb.Address, bd *Bro
 	if err != nil {
 		return err
 	}
-	_, err = bd.Connection.DeclareExchange(bd.ctx, specification)
+	conn := bd.connection()
+	if conn == nil {
+		return errConnectionUnavailable
+	}
+	_, err = conn.DeclareExchange(bd.ctx, specification)
 	if err != nil {
 		if errors.Is(err, rabbitmqamqp.ErrPreconditionFailed) {
 			bd.EntityTracker().AddExchange(name)
@@ -467,7 +477,11 @@ func (prov *rabbitMQAMQP10Provider) declareQueue(source *pb.Source, bd *BrokerDe
 	if err != nil {
 		return err
 	}
-	_, declarationErr := bd.Connection.DeclareQueue(bd.ctx, specification)
+	conn := bd.connection()
+	if conn == nil {
+		return errConnectionUnavailable
+	}
+	_, declarationErr := conn.DeclareQueue(bd.ctx, specification)
 	if declarationErr != nil && !errors.Is(declarationErr, rabbitmqamqp.ErrPreconditionFailed) {
 		util.Logger.Warn(i18n.ClientQueueDeclareError, declarationErr.Error(), bd.ClientIdentifier)
 		return declarationErr
@@ -577,7 +591,12 @@ func bindingArguments(source *pb.Source, address *pb.Address) []map[string]any {
 }
 
 func (prov *rabbitMQAMQP10Provider) bindQueueOrStream(source *pb.Source, address *pb.Address, subject string, arguments map[string]any, bd *BrokerDetails) {
-	_, err := bd.Connection.DeclareBind(bd.ctx, &rabbitmqamqp.ExchangeToQueueBindingSpecification{
+	conn := bd.connection()
+	if conn == nil {
+		util.Logger.Warn(i18n.ClientQueueBindError, errConnectionUnavailable.Error(), bd.ClientIdentifier)
+		return
+	}
+	_, err := conn.DeclareBind(bd.ctx, &rabbitmqamqp.ExchangeToQueueBindingSpecification{
 		SourceExchange:   address.GetName(),
 		DestinationQueue: amqp.SourceName(source),
 		BindingKey:       subject,
@@ -604,7 +623,11 @@ func (prov *rabbitMQAMQP10Provider) declareParentAddressBindings(address *pb.Add
 		return err
 	}
 	for _, subject := range address.GetSubjects() {
-		_, err := bd.Connection.DeclareBind(bd.ctx, &rabbitmqamqp.ExchangeToExchangeBindingSpecification{
+		conn := bd.connection()
+		if conn == nil {
+			return errConnectionUnavailable
+		}
+		_, err := conn.DeclareBind(bd.ctx, &rabbitmqamqp.ExchangeToExchangeBindingSpecification{
 			SourceExchange:      parent.GetName(),
 			DestinationExchange: address.GetName(),
 			BindingKey:          subject,
