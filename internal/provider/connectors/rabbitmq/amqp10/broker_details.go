@@ -6,6 +6,7 @@ package amqp10
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"sync"
 	"sync/atomic"
 
@@ -13,7 +14,6 @@ import (
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/i18n"
 	"github.com/sassoftware/arke/internal/provider"
-	"github.com/sassoftware/arke/internal/provider/connectors/amqp/track"
 	"github.com/sassoftware/arke/internal/util"
 
 	"github.com/sassoftware/arke/internal/provider/connectors/amqp"
@@ -53,7 +53,10 @@ type BrokerDetails struct {
 	// TODO: Issue 216 - Create streamConnectionShim
 	// StreamConnection streamConnectionShim
 
-	stateChannel chan *rabbitmqamqp.StateChanged
+	stateChannel  chan *rabbitmqamqp.StateChanged
+	subscriptions *util.ConcurrentMap
+	lifecycleMu   sync.Mutex
+	generation    uint64
 
 	tlsSkipVerify bool
 	tlsConfig     *tls.Config
@@ -81,22 +84,96 @@ func (bd *BrokerDetails) watchConnection() {
 			if !ok || change == nil || change.To == nil {
 				return
 			}
+			util.Logger.Info(i18n.ConnectionStateChanged, bd.ClientIdentifier, change.String())
 
-			switch change.To.(type) {
+			switch to := change.To.(type) {
 			case *rabbitmqamqp.StateOpen:
-				bd.State.Store(provider.CONNECTED)
+				// Subscriptions in Recovering wait for CONNECTED themselves.
+				bd.setConnectionState(provider.CONNECTED)
 			case *rabbitmqamqp.StateReconnecting:
-				bd.State.Store(provider.CONNECTING)
+				generation := bd.setConnectionState(provider.CONNECTING)
+				bd.notifySubscriptions(subscribeStateRecovering, generation)
 			case *rabbitmqamqp.StateClosed:
-				bd.State.Store(provider.CLOSED)
+				if isRecoverableClose(to.GetError()) {
+					generation := bd.setConnectionState(provider.CONNECTING)
+					bd.notifySubscriptions(subscribeStateRecovering, generation)
+					continue
+				}
+				bd.setConnectionState(provider.CLOSED)
+				bd.notifySubscriptions(subscribeStateStopping, 0)
 				return
 			case *rabbitmqamqp.StateClosing:
-				// TODO: Issue 204 - provider does not have a distinct CLOSING state, so we treat it as CLOSED (do we need a CLOSING state?)
-				bd.State.Store(provider.CLOSED)
+				bd.setConnectionState(provider.CLOSED)
+				bd.notifySubscriptions(subscribeStateStopping, 0)
 				return
 			}
 		}
 	}
+}
+
+// isRecoverableClose reports whether the client library will reconnect after a
+// Closed event; it emits Closed(err) before Reconnecting on an unexpected drop.
+func isRecoverableClose(err error) bool {
+	return err != nil && !errors.Is(err, rabbitmqamqp.ErrMaxReconnectAttemptsReached)
+}
+
+// setConnectionState stores the state and returns the reconnect generation. The
+// generation advances once per reconnect cycle, not for each CONNECTING event.
+func (bd *BrokerDetails) setConnectionState(state uint32) uint64 {
+	bd.lifecycleMu.Lock()
+	defer bd.lifecycleMu.Unlock()
+	if state == provider.CONNECTING && bd.State.Load() != provider.CONNECTING {
+		bd.generation++
+	}
+	bd.State.Store(state)
+	return bd.generation
+}
+
+func (bd *BrokerDetails) connectionSnapshot() (uint32, uint64) {
+	bd.lifecycleMu.Lock()
+	defer bd.lifecycleMu.Unlock()
+	return bd.State.Load(), bd.generation
+}
+
+func (bd *BrokerDetails) subscribe(ctx context.Context, source *pb.Source, mc chan<- *pb.Message) error {
+	bd.IncrementStreamCount()
+	defer bd.DecrementStreamCount()
+
+	s := &Subscription{
+		ctx:       ctx,
+		bd:        bd,
+		source:    source,
+		state:     newSubscribeStateMachine(),
+		messageCh: mc,
+	}
+	s.configureStateTransitions()
+	err := s.state.transitionState(subscribeStateStarting)
+	if err != nil {
+		util.Logger.Debugf("failed to initialize subscription state to starting: %v", err)
+		return err
+	}
+	return nil
+}
+
+// notifySubscriptions forwards a connection state change to every subscription.
+func (bd *BrokerDetails) notifySubscriptions(newState subscribeState, generation uint64) {
+	for _, subName := range bd.subscriptions.GetList() {
+		s, ok := bd.subscriptions.Get(subName)
+		if !ok {
+			continue
+		}
+		if ss, ok := s.(*Subscription); ok && ss != nil {
+			ss.notify(newState, generation)
+		}
+	}
+}
+
+// connection returns the current connection, or nil after disconnect. Reads go
+// through bd's lock because disconnect() clears the field concurrently.
+func (bd *BrokerDetails) connection() rabbitMQAMQP10ConnectionShim {
+	bd.Lock()
+	defer bd.Unlock()
+	return bd.Connection
 }
 
 func (bd *BrokerDetails) exchangeExists(name string) bool {
@@ -107,67 +184,12 @@ func (bd *BrokerDetails) queueExists(name string) bool {
 	return bd.EntityTracker().QueueExists(name)
 }
 
-func (bd *BrokerDetails) connect() (bool, error) {
-	if bd.ClientDisconnect.Load() {
-		return false, nil
-	}
-
-	if bd.State.Load() == provider.CONNECTING {
-		switch bd.WaitWhileConnecting() {
-		case provider.CONNECTED:
-			return true, nil
-		case provider.CLOSED:
-			return false, nil
-		}
-	}
-
-	bd.Lock()
-	defer bd.Unlock()
-	if bd.State.Load() == provider.CONNECTED {
-		return true, nil
-	}
-
-	bd.State.Store(provider.CONNECTING)
-	bd.shutdownChan = make(chan struct{})
-
-	// Reinitialize these maps early, we especially want to
-	// ensure activeMessages gets cleared out before an Ack/Nacks
-	// are sent from the client.
-	bd.KnownEntities = track.New()
-	bd.ActiveMessages = util.NewConcurrentMap()
-
-	util.Logger.Info(i18n.ClientConnect, bd.ClientIdentifier, bd.ConnectionConfig.GetHost())
-	conn, err := bd.Env.NewConnection(bd.ctx)
-	if err != nil {
-		util.Logger.Warn(i18n.ClientBrokerConnectError, err.Error(), bd.ClientIdentifier)
-		bd.State.Store(provider.CLOSED)
-		return false, err
-	}
-	bd.State.Store(provider.CONNECTED)
-
-	// buf of 5 to account for possible quick state changes and avoid blocking
-	bd.Connection = conn
-	bd.stateChannel = make(chan *rabbitmqamqp.StateChanged, 5)
-	err = bd.Connection.WatchConnection(bd.stateChannel)
-	if err != nil {
-		bd.disconnect()
-		return false, err
-	}
-	go bd.watchConnection()
-
-	util.Logger.Info(i18n.ClientConnected, bd.ClientIdentifier)
-
-	// TODO: Issue 203
-	// go bd.loadExchanges()
-
-	return true, nil
-}
-
 func (bd *BrokerDetails) disconnect() {
 	bd.Lock()
 	defer bd.Unlock()
 
-	if bd.State.Load() == provider.DISCONNECTED || bd.State.Load() == provider.CLOSED {
+	// A CLOSED broker can still hold a connection the library reconnected.
+	if state := bd.State.Load(); bd.Connection == nil && (state == provider.DISCONNECTED || state == provider.CLOSED) {
 		return
 	}
 
@@ -190,7 +212,7 @@ func (bd *BrokerDetails) disconnect() {
 		bd.Connection = nil
 	}
 
-	bd.State.Store(provider.DISCONNECTED)
+	bd.setConnectionState(provider.DISCONNECTED)
 	util.Logger.Info(i18n.ClientDisconnect, bd.ClientIdentifier)
 }
 

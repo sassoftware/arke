@@ -30,6 +30,8 @@ const (
 	providerName string = "rabbitmq-amqp10"
 )
 
+var errConnectionUnavailable = errors.New("broker connection is not available")
+
 var supportedSourceOptions = map[string]bool{
 	"MessageTTL":        true,
 	"DeadLetterAddress": true,
@@ -80,6 +82,7 @@ func (prov *rabbitMQAMQP10Provider) getBrokerDetailsByIdentifier(clientIdentifie
 }
 
 func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.ConnectionConfiguration, tlsSkipVerify bool) *pb.Error {
+	util.Logger.Info("Connecting to broker")
 	if cf == nil {
 		return &pb.Error{Message: "connection configuration is required"}
 	}
@@ -96,9 +99,11 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 
 	// Check if we already have an active connection for this client
 	bd := prov.getBrokerDetailsByIdentifier(clientIdentifier)
-	if bd != nil && bd.Connection != nil && !bd.Connection.IsClosed() {
-		util.Logger.Debugf("client already connected: %s", clientIdentifier)
-		return nil
+	if bd != nil {
+		if existing := bd.connection(); existing != nil && !existing.IsClosed() {
+			util.Logger.Debugf("client already connected: %s", clientIdentifier)
+			return nil
+		}
 	}
 
 	var tlsConfig *tls.Config
@@ -117,15 +122,39 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 			}
 		}
 	}
-	env, err := newRabbitMQAMQP10EnvironmentFunc(ctx, cf, tlsConfig)
+	env, err := newRabbitMQAMQP10EnvironmentFunc(ctx, cf, tlsConfig, prov)
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
+	}
+
+	conn, err := env.NewConnection(ctx)
+	if err != nil {
+		return &pb.Error{Message: err.Error()}
+	}
+
+	util.Logger.Debugf("New connection established for client %s", clientIdentifier)
+
+	// Anything that fails from here on must close the connection, or it leaks.
+	closeOnError := func(err error) *pb.Error {
+		if closeErr := conn.Close(ctx); closeErr != nil {
+			util.Logger.Debugf("failed to close connection for client %s after connect error: %v", clientIdentifier, closeErr)
+		}
+		return &pb.Error{Message: err.Error()}
+	}
+
+	connCh := make(chan *rabbitmqamqp.StateChanged, 5)
+	if err := conn.WatchConnection(connCh); err != nil {
+		return closeOnError(err)
+	}
+	initialState, err := initialProviderState(conn)
+	if err != nil {
+		return closeOnError(err)
 	}
 	endpoint := amqp.GetMgmtEndpoint(cf)
 	username, password := amqp.GetUsernamePassword(cf)
 	mgmtClient, err := amqp.NewManagementClient(ctx, endpoint, username, password, tlsConfig)
 	if err != nil {
-		return &pb.Error{Message: err.Error()}
+		return closeOnError(err)
 	}
 
 	bd = &BrokerDetails{
@@ -133,6 +162,7 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 		provider:         prov,
 		mgmtClient:       mgmtClient,
 		Env:              env,
+		Connection:       conn,
 		ClientIdentifier: clientIdentifier,
 		ActiveMessages:   util.NewConcurrentMap(),
 		ConnectionConfig: cf,
@@ -140,25 +170,37 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 		tlsConfig:        tlsConfig,
 		tlsSkipVerify:    tlsSkipVerify,
 		shutdownChan:     make(chan struct{}),
+		stateChannel:     connCh,
+		subscriptions:    util.NewConcurrentMap(),
 	}
-	ok, err := bd.connect()
-	if !ok {
-		return &pb.Error{Message: err.Error()}
-	}
-
-	// TODO: Issue 204 - setup lifecycle management to listen for state change
+	bd.setConnectionState(initialState)
+	go bd.watchConnection()
+	util.Logger.Debugf("adding client %s", clientIdentifier)
 	prov.connections.Add(clientIdentifier, bd)
 	return nil
 }
 
+// initialProviderState reports the state of a just-created connection. A
+// connection that is already closed must not be registered as usable.
+func initialProviderState(conn rabbitMQAMQP10ConnectionShim) (uint32, error) {
+	switch state := conn.State(); state {
+	case provider.CONNECTED, provider.CONNECTING:
+		return uint32(state), nil
+	default:
+		return 0, errors.New("broker connection is not open")
+	}
+}
+
 func (prov *rabbitMQAMQP10Provider) ClientExists(clientIdentifier string) bool {
 	value, ok := prov.connections.Get(clientIdentifier)
+	util.Logger.Debugf("checking if client %s exists: ok=%v", clientIdentifier, ok)
 	if !ok {
 		return false
 	}
 
 	bd, ok := value.(*BrokerDetails)
 	if !ok {
+		util.Logger.Debugf("client %s exists but value is not of type *BrokerDetails", clientIdentifier)
 		return false
 	}
 
@@ -166,6 +208,7 @@ func (prov *rabbitMQAMQP10Provider) ClientExists(clientIdentifier string) bool {
 	case provider.CONNECTED, provider.CONNECTING:
 		return true
 	default:
+		util.Logger.Debugf("client %s exists but is in state %v", clientIdentifier, bd.State.Load())
 		return false
 	}
 }
@@ -178,7 +221,11 @@ func (prov *rabbitMQAMQP10Provider) PublishOne(context.Context, *pb.Message) *pb
 	return nil
 }
 
-func (prov *rabbitMQAMQP10Provider) Subscribe(ctx context.Context, source *pb.Source, _ chan<- *pb.Message) *pb.Error {
+func (prov *rabbitMQAMQP10Provider) Subscribe(ctx context.Context, source *pb.Source, mc chan<- *pb.Message) *pb.Error {
+	if source.GetAddress().GetName() == "" {
+		return &pb.Error{Message: "address name not defined"}
+	}
+
 	bd, err := prov.getBrokerDetails(ctx)
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
@@ -190,6 +237,14 @@ func (prov *rabbitMQAMQP10Provider) Subscribe(ctx context.Context, source *pb.So
 		return &pb.Error{Message: err.Error()}
 	}
 	if err := prov.declareBindings(source, bd); err != nil {
+		return &pb.Error{Message: err.Error()}
+	}
+	if source.GetDeclareOnly() {
+		return nil
+	}
+
+	err = bd.subscribe(ctx, source, mc)
+	if err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
 	return nil
@@ -216,6 +271,7 @@ func (prov *rabbitMQAMQP10Provider) Disconnect(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	util.Logger.Info(i18n.ClientDisconnect, bd.ClientIdentifier)
 	bd.disconnect()
 
 	prov.connections.DeleteIfEqual(bd.ClientIdentifier, bd)
@@ -331,7 +387,11 @@ func (prov *rabbitMQAMQP10Provider) declareExchange(address *pb.Address, bd *Bro
 	if err != nil {
 		return err
 	}
-	_, err = bd.Connection.DeclareExchange(bd.ctx, specification)
+	conn := bd.connection()
+	if conn == nil {
+		return errConnectionUnavailable
+	}
+	_, err = conn.DeclareExchange(bd.ctx, specification)
 	if err != nil {
 		if errors.Is(err, rabbitmqamqp.ErrPreconditionFailed) {
 			bd.EntityTracker().AddExchange(name)
@@ -417,7 +477,11 @@ func (prov *rabbitMQAMQP10Provider) declareQueue(source *pb.Source, bd *BrokerDe
 	if err != nil {
 		return err
 	}
-	_, declarationErr := bd.Connection.DeclareQueue(bd.ctx, specification)
+	conn := bd.connection()
+	if conn == nil {
+		return errConnectionUnavailable
+	}
+	_, declarationErr := conn.DeclareQueue(bd.ctx, specification)
 	if declarationErr != nil && !errors.Is(declarationErr, rabbitmqamqp.ErrPreconditionFailed) {
 		util.Logger.Warn(i18n.ClientQueueDeclareError, declarationErr.Error(), bd.ClientIdentifier)
 		return declarationErr
@@ -527,7 +591,12 @@ func bindingArguments(source *pb.Source, address *pb.Address) []map[string]any {
 }
 
 func (prov *rabbitMQAMQP10Provider) bindQueueOrStream(source *pb.Source, address *pb.Address, subject string, arguments map[string]any, bd *BrokerDetails) {
-	_, err := bd.Connection.DeclareBind(bd.ctx, &rabbitmqamqp.ExchangeToQueueBindingSpecification{
+	conn := bd.connection()
+	if conn == nil {
+		util.Logger.Warn(i18n.ClientQueueBindError, errConnectionUnavailable.Error(), bd.ClientIdentifier)
+		return
+	}
+	_, err := conn.DeclareBind(bd.ctx, &rabbitmqamqp.ExchangeToQueueBindingSpecification{
 		SourceExchange:   address.GetName(),
 		DestinationQueue: amqp.SourceName(source),
 		BindingKey:       subject,
@@ -554,7 +623,11 @@ func (prov *rabbitMQAMQP10Provider) declareParentAddressBindings(address *pb.Add
 		return err
 	}
 	for _, subject := range address.GetSubjects() {
-		_, err := bd.Connection.DeclareBind(bd.ctx, &rabbitmqamqp.ExchangeToExchangeBindingSpecification{
+		conn := bd.connection()
+		if conn == nil {
+			return errConnectionUnavailable
+		}
+		_, err := conn.DeclareBind(bd.ctx, &rabbitmqamqp.ExchangeToExchangeBindingSpecification{
 			SourceExchange:      parent.GetName(),
 			DestinationExchange: address.GetName(),
 			BindingKey:          subject,

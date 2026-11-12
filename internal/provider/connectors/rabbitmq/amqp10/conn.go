@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	goamqp "github.com/Azure/go-amqp"
@@ -17,6 +18,11 @@ import (
 )
 
 // rabbitMQAMQP10ConnectionShim Shim so we can do unit testing
+type rabbitMQAMQP10ConsumerShim interface {
+	Receive(context.Context) (ramqp.IDeliveryContext, error)
+	Close(context.Context) error
+}
+
 type rabbitMQAMQP10ConnectionShim interface {
 	Close(context.Context) error
 	WatchConnection(ch chan *ramqp.StateChanged) error
@@ -25,6 +31,7 @@ type rabbitMQAMQP10ConnectionShim interface {
 	DeclareExchange(context.Context, ramqp.IExchangeSpecification) (*ramqp.AmqpExchangeInfo, error)
 	DeclareQueue(context.Context, ramqp.IQueueSpecification) (*ramqp.AmqpQueueInfo, error)
 	DeclareBind(context.Context, ramqp.IBindingSpecification) (string, error)
+	NewConsumer(ctx context.Context, queueName string, options ramqp.IConsumerOptions) (rabbitMQAMQP10ConsumerShim, error)
 }
 
 // rabbitMQAMQP10Connection A connection to the broker
@@ -37,6 +44,7 @@ type rabbitMQAMQP10Connection struct {
 	tlsCfg                       *tls.Config
 	state                        int
 	stateChannel                 chan *ramqp.StateChanged
+	closed                       atomic.Bool
 }
 
 func getRabbitMQAMQP10ConnOptions(ctx context.Context, cf *pb.ConnectionConfiguration, tlsCfg *tls.Config) (*ramqp.AmqpConnOptions, error) {
@@ -54,6 +62,8 @@ func getRabbitMQAMQP10ConnOptions(ctx context.Context, cf *pb.ConnectionConfigur
 			cf.GetCredentials().GetPassword(),
 		),
 		TLSConfig: tlsCfg,
+		// The connection watcher relies on the library reconnecting after a drop.
+		RecoveryConfiguration: ramqp.NewRecoveryConfiguration(),
 	}, nil
 }
 
@@ -65,16 +75,39 @@ func (a *rabbitMQAMQP10Connection) WatchConnection(ch chan *ramqp.StateChanged) 
 	return nil
 }
 
+// IsClosed reports whether the connection is unusable. A reconnecting
+// connection is not closed because the client library is recovering it.
 func (a *rabbitMQAMQP10Connection) IsClosed() bool {
-	// TODO: Issue 204 - implement IsClosed based on connection state changes
-	return false
+	if a.closed.Load() {
+		return true
+	}
+	switch a.State() {
+	case provider.CLOSED, provider.DISCONNECTED:
+		return true
+	default:
+		return false
+	}
 }
 
+// State maps the client library lifecycle state to a provider.* state.
 func (a *rabbitMQAMQP10Connection) State() int {
-	// TODO: Issue 204 - implement state retrieval based on connection state changes
-	// but states should be provider.*
-	// return a.connection.State()
-	return 0
+	if a.connection == nil {
+		return provider.DISCONNECTED
+	}
+	return providerStateFromLifecycle(a.connection.State())
+}
+
+func providerStateFromLifecycle(state ramqp.ILifeCycleState) int {
+	switch state.(type) {
+	case *ramqp.StateOpen:
+		return provider.CONNECTED
+	case *ramqp.StateReconnecting:
+		return provider.CONNECTING
+	case *ramqp.StateClosed, *ramqp.StateClosing:
+		return provider.CLOSED
+	default:
+		return provider.DISCONNECTED
+	}
 }
 
 func (a *rabbitMQAMQP10Connection) DeclareExchange(ctx context.Context, specification ramqp.IExchangeSpecification) (*ramqp.AmqpExchangeInfo, error) {
@@ -91,6 +124,12 @@ func (a *rabbitMQAMQP10Connection) DeclareBind(ctx context.Context, specificatio
 
 // TODO: Issue 204 - cancel context used by state channel (i.e., make sure connection watcher channel shuts down) and close state channel
 func (a *rabbitMQAMQP10Connection) Close(_ context.Context) error {
+	// The client library does not move to Closed on a client-initiated Close.
+	a.closed.Store(true)
 	defer a.connectionCancel()
 	return a.connection.Close(a.connectionCtx)
+}
+
+func (a *rabbitMQAMQP10Connection) NewConsumer(ctx context.Context, queueName string, options ramqp.IConsumerOptions) (rabbitMQAMQP10ConsumerShim, error) {
+	return a.connection.NewConsumer(ctx, queueName, options)
 }

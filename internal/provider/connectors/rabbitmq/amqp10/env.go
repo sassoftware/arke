@@ -11,6 +11,7 @@ import (
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/internal/provider"
 	"github.com/sassoftware/arke/internal/provider/connectors/amqp"
+	"github.com/sassoftware/arke/internal/util"
 )
 
 var newRabbitMQAMQP10EnvironmentFunc = newRabbitMQAMQP10Environment
@@ -26,9 +27,10 @@ type rabbitMQAMQP10Environment struct {
 	environment                   *rabbitmqamqp.Environment
 	connectionConfig              *pb.ConnectionConfiguration
 	tlsConfig                     *tls.Config
+	provider                      provider.Provider
 }
 
-func newRabbitMQAMQP10Environment(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config) (rabbitMQAMQP10EnvironmentShim, error) {
+func newRabbitMQAMQP10Environment(ctx context.Context, cf *pb.ConnectionConfiguration, tlsConfig *tls.Config, provider provider.Provider) (rabbitMQAMQP10EnvironmentShim, error) {
 	connURL := amqp.GetConnURL(cf)
 	options, err := getRabbitMQAMQP10ConnOptions(ctx, cf, tlsConfig)
 	if err != nil {
@@ -39,6 +41,7 @@ func newRabbitMQAMQP10Environment(ctx context.Context, cf *pb.ConnectionConfigur
 		connectionConfig: cf,
 		tlsConfig:        tlsConfig,
 		environment:      rabbitmqamqp.NewEnvironment(connURL, options),
+		provider:         provider,
 	}, nil
 }
 
@@ -49,11 +52,13 @@ func (e *rabbitMQAMQP10Environment) NewConnection(ctx context.Context) (rabbitMQ
 		connCancel()
 		return nil, err
 	}
+	util.Logger.Debugf("creating new environment connection")
 	return &rabbitMQAMQP10Connection{
 		connection:       conn,
 		connectionCtx:    connCtx,
 		connectionCancel: connCancel,
 		tlsCfg:           e.tlsConfig,
 		state:            provider.CONNECTED,
+		provider:         e.provider,
 	}, nil
 }

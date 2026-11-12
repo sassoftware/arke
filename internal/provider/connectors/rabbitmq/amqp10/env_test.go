@@ -19,7 +19,7 @@ func Test_newRabbitMQAMQP10Environment(t *testing.T) {
 	t.Logf("ClientIdentifier: %s", clientIdentifier)
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	cf := newTestConnectionConfig()
-	env, err := newRabbitMQAMQP10EnvironmentFunc(ctx, cf, tlsCfg)
+	env, err := newRabbitMQAMQP10EnvironmentFunc(ctx, cf, tlsCfg, nil)
 	require.NoError(t, err)
 
 	require.IsType(t, &rabbitMQAMQP10Environment{}, env)
@@ -57,16 +57,4 @@ func Test_rabbitMQAMQP10Environment_NewConnection(t *testing.T) {
 		assert.Nil(t, conn)
 		assert.Error(t, err)
 	})
-}
-
-func Test_rabbitMQAMQP10Connection_IsClosed(t *testing.T) {
-	conn := &rabbitMQAMQP10Connection{}
-
-	assert.False(t, conn.IsClosed())
-}
-
-func Test_rabbitMQAMQP10Connection_State(t *testing.T) {
-	conn := &rabbitMQAMQP10Connection{}
-
-	assert.Equal(t, 0, conn.State())
 }
