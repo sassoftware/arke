@@ -74,6 +74,7 @@ func newTestSubscription(t *testing.T, ctx context.Context, source *pb.Source, c
 		ActiveMessages:   util.NewConcurrentMap(),
 		subscriptions:    util.NewConcurrentMap(),
 	}
+	bd.setConnectionState(provider.CONNECTED)
 	t.Cleanup(func() { connection.AssertExpectations(t) })
 	return &Subscription{ctx: ctx, source: source, bd: bd, messageCh: messageCh}, connection
 }
@@ -306,10 +307,11 @@ func Test_SubscriptionRecoveringWaitsForConnection(t *testing.T) {
 		ClientIdentifier: "subscription-test",
 		provider: waitForConnectProviderStub{wait: func(got context.Context) bool {
 			waitCalled = true
-			assert.Equal(t, ctx, got)
+			assert.NotNil(t, got)
 			return true
 		}},
 	}
+	bd.setConnectionState(provider.CONNECTED)
 	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: "orders"}, bd: bd}
 
 	state, err := subscription.recovering()
@@ -400,10 +402,10 @@ func Test_SubscriptionStoppingKeepsReplacementSubscription(t *testing.T) {
 func Test_SubscriptionNotifyKeepsStopping(t *testing.T) {
 	subscription := &Subscription{}
 
-	subscription.notify(subscribeStateRecovering)
-	subscription.notify(subscribeStateStopping)
-	subscription.notify(subscribeStateRecovering)
-	subscription.notify(subscribeStateRunning) // not a connection-driven state
+	subscription.notify(subscribeStateRecovering, 1)
+	subscription.notify(subscribeStateStopping, 0)
+	subscription.notify(subscribeStateRecovering, 2)
+	subscription.notify(subscribeStateRunning, 0) // not a connection-driven state
 
 	assert.Equal(t, subscribeStateStopping, subscription.takeEvent())
 	assert.Equal(t, subscribeStateNone, subscription.takeEvent())
@@ -432,7 +434,7 @@ func Test_SubscriptionRunningReturnsStateRequestedByEvent(t *testing.T) {
 			}()
 			<-receiveStarted
 
-			subscription.notify(requested)
+			subscription.notify(requested, 1)
 
 			select {
 			case state := <-result:
@@ -464,7 +466,7 @@ func Test_SubscriptionRecoveringStopsOnStoppingEvent(t *testing.T) {
 
 	t.Run("queued before recovering", func(t *testing.T) {
 		subscription := newSub()
-		subscription.notify(subscribeStateStopping)
+		subscription.notify(subscribeStateStopping, 0)
 
 		state, err := subscription.recovering()
 
@@ -477,7 +479,7 @@ func Test_SubscriptionRecoveringStopsOnStoppingEvent(t *testing.T) {
 		subscription := newSub()
 		go func() {
 			time.Sleep(10 * time.Millisecond)
-			subscription.notify(subscribeStateStopping)
+			subscription.notify(subscribeStateStopping, 0)
 		}()
 
 		state, err := subscription.recovering()
@@ -500,7 +502,9 @@ func Test_SubscriptionRunningDiscardsStaleRecoveringEvent(t *testing.T) {
 	}
 	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
 	subscription, _ := newTestSubscription(t, ctx, source, consumer, nil)
-	subscription.notify(subscribeStateRecovering)
+	subscription.consumerGeneration = subscription.bd.setConnectionState(provider.CONNECTING)
+	subscription.bd.setConnectionState(provider.CONNECTED)
+	subscription.notify(subscribeStateRecovering, subscription.consumerGeneration)
 	result := make(chan subscribeState, 1)
 	go func() {
 		state, _ := subscription.running()
@@ -514,6 +518,143 @@ func Test_SubscriptionRunningDiscardsStaleRecoveringEvent(t *testing.T) {
 	}
 	cancel()
 	assert.Equal(t, subscribeStateStopping, <-result)
+}
+
+func Test_SubscriptionRunningDoesNotDiscardNewReconnect(t *testing.T) {
+	ctx := context.Background()
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	connection.On("NewConsumer", ctx, mock.Anything, mock.Anything).Return(nil, nil).Maybe()
+	bd := &BrokerDetails{Connection: connection}
+	generation := bd.setConnectionState(provider.CONNECTING)
+	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: "orders"}, bd: bd}
+	subscription.notify(subscribeStateRecovering, generation)
+
+	state, err := subscription.running()
+
+	assert.Nil(t, err)
+	assert.Equal(t, subscribeStateRecovering, state)
+	connection.AssertNotCalled(t, "NewConsumer", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func Test_SubscriptionRecoverySnapshotRejectsNewReconnect(t *testing.T) {
+	ctx := context.Background()
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	bd := &BrokerDetails{
+		Connection: connection,
+		provider:   waitForConnectProviderStub{wait: func(context.Context) bool { return true }},
+	}
+	bd.setConnectionState(provider.CONNECTED)
+	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: "orders"}, bd: bd}
+	state, err := subscription.recovering()
+	require.Nil(t, err)
+	require.Equal(t, subscribeStateRunning, state)
+
+	generation := bd.setConnectionState(provider.CONNECTING)
+	subscription.notify(subscribeStateRecovering, generation)
+	state, err = subscription.running()
+
+	assert.Nil(t, err)
+	assert.Equal(t, subscribeStateRecovering, state)
+	connection.AssertNotCalled(t, "NewConsumer", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func Test_SubscriptionRecoveryRechecksConnectedSnapshot(t *testing.T) {
+	bd := &BrokerDetails{}
+	bd.setConnectionState(provider.CONNECTED)
+	calls := 0
+	bd.provider = waitForConnectProviderStub{wait: func(context.Context) bool {
+		calls++
+		if calls == 1 {
+			bd.setConnectionState(provider.CONNECTING)
+		} else {
+			bd.setConnectionState(provider.CONNECTED)
+		}
+		return true
+	}}
+	subscription := &Subscription{ctx: context.Background(), source: &pb.Source{Name: "orders"}, bd: bd}
+
+	state, err := subscription.recovering()
+
+	assert.Nil(t, err)
+	assert.Equal(t, subscribeStateRunning, state)
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, uint64(1), subscription.consumerGeneration)
+}
+
+func Test_SubscriptionStartingDuringReconnect(t *testing.T) {
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	bd := &BrokerDetails{Connection: connection, subscriptions: util.NewConcurrentMap()}
+	bd.setConnectionState(provider.CONNECTING)
+	source := &pb.Source{Name: "orders", Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
+	subscription := &Subscription{ctx: context.Background(), source: source, bd: bd}
+
+	state, err := subscription.starting()
+	require.Nil(t, err)
+	require.Equal(t, subscribeStateRunning, state)
+	state, err = subscription.running()
+
+	assert.Nil(t, err)
+	assert.Equal(t, subscribeStateRecovering, state)
+	connection.AssertNotCalled(t, "NewConsumer", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func Test_SubscriptionNotifyRetainsNewestGeneration(t *testing.T) {
+	subscription := &Subscription{}
+	subscription.notify(subscribeStateRecovering, 3)
+	subscription.notify(subscribeStateRecovering, 2)
+
+	assert.Equal(t, subscribeStateRecovering, subscription.takeEventAfter(2))
+	subscription.notify(subscribeStateRecovering, 2)
+	assert.Equal(t, subscribeStateNone, subscription.takeEventAfter(2))
+}
+
+func Test_SubscriptionReconnectDuringConsumerCreation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	creating := make(chan struct{})
+	release := make(chan struct{})
+	consumer := &subscriptionConsumerStub{
+		closeCalled: make(chan struct{}),
+		receive: func(ctx context.Context) (ramqp10.IDeliveryContext, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	connection.On("NewConsumer", ctx, mock.Anything, mock.Anything).Run(func(mock.Arguments) {
+		close(creating)
+		<-release
+	}).Return(consumer, nil).Once()
+	bd := &BrokerDetails{Connection: connection, ActiveMessages: util.NewConcurrentMap()}
+	bd.setConnectionState(provider.CONNECTED)
+	subscription := &Subscription{ctx: ctx, source: &pb.Source{Name: "orders"}, bd: bd}
+	result := make(chan subscribeState, 1)
+	go func() {
+		state, _ := subscription.running()
+		result <- state
+	}()
+	select {
+	case <-creating:
+	case <-time.After(time.Second):
+		t.Fatal("consumer creation did not start")
+	}
+	generation := bd.setConnectionState(provider.CONNECTING)
+	bd.setConnectionState(provider.CONNECTED)
+	subscription.notify(subscribeStateRecovering, generation)
+	close(release)
+
+	select {
+	case state := <-result:
+		assert.Equal(t, subscribeStateRecovering, state)
+	case <-time.After(time.Second):
+		t.Fatal("running did not handle reconnect during consumer creation")
+	}
+	select {
+	case <-consumer.closeCalled:
+	default:
+		t.Fatal("consumer was not closed")
+	}
+	connection.AssertExpectations(t)
 }
 
 func Test_ConnectionEventsDriveSubscriptionLifecycle(t *testing.T) {
@@ -544,6 +685,7 @@ func Test_ConnectionEventsDriveSubscriptionLifecycle(t *testing.T) {
 		shutdownChan:     make(chan struct{}),
 		provider:         waitForConnectProviderStub{wait: func(context.Context) bool { return true }},
 	}
+	bd.setConnectionState(provider.CONNECTED)
 	go bd.watchConnection()
 	source := &pb.Source{Name: "orders", Type: pb.Source_QUEUE, Address: &pb.Address{Name: "orders", Type: pb.Address_TOPIC}}
 	result := make(chan error, 1)
@@ -564,6 +706,7 @@ func Test_ConnectionEventsDriveSubscriptionLifecycle(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("first consumer was not closed on reconnect")
 	}
+	bd.stateChannel <- &ramqp10.StateChanged{From: &ramqp10.StateReconnecting{}, To: &ramqp10.StateOpen{}}
 	waitStarted("replacement consumer")
 
 	bd.stateChannel <- &ramqp10.StateChanged{From: &ramqp10.StateOpen{}, To: &ramqp10.StateClosed{}}
@@ -637,7 +780,7 @@ func Test_SubscriptionRecoveryAttemptsReset(t *testing.T) {
 		}()
 		time.Sleep(20 * time.Millisecond)
 
-		subscription.notify(subscribeStateRecovering)
+		subscription.notify(subscribeStateRecovering, 1)
 
 		assert.Equal(t, subscribeStateRecovering, <-result)
 		assert.Equal(t, 0, subscription.recoveryAttempts)

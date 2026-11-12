@@ -286,7 +286,7 @@ func Test_BrokerDetails_notifySubscriptions(t *testing.T) {
 	subscriptions.Add("nil", nil)
 	bd := &BrokerDetails{subscriptions: subscriptions}
 
-	bd.notifySubscriptions(subscribeStateStopping)
+	bd.notifySubscriptions(subscribeStateStopping, 0)
 
 	assert.Equal(t, subscribeStateStopping, first.takeEvent())
 	assert.Equal(t, subscribeStateStopping, second.takeEvent())
