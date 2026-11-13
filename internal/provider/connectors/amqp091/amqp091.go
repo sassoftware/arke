@@ -1280,7 +1280,6 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 
 		addTimeStampHeader(hdrs)
 
-		// Attempt to decompress stream messages if they are marked/compressed.
 		data := delivery.Message.Body
 
 		m := &pb.Message{Uuid: messageUUID, Body: data,

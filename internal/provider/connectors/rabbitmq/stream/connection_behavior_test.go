@@ -5,6 +5,7 @@ package stream
 
 import (
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -282,6 +283,56 @@ func TestConnectionConsumerPromotionFallsBackToFirst(t *testing.T) {
 	assert.Equal(t, streamclient.OffsetSpecification{}.First(), options.SingleActiveConsumer.ConsumerUpdate("events", true))
 }
 
+func TestConnectionConsumerPromotionUsesCapturedEnvironment(t *testing.T) {
+	oldEnvironment := newConcurrentOffsetEnvironment()
+	oldEnvironment.setOffset("workers", "events", 20)
+	newEnvironment := newConcurrentOffsetEnvironment()
+	newEnvironment.setOffset("workers", "events", 99)
+	environments := []streamEnvironment{oldEnvironment, newEnvironment}
+	var environmentIndex atomic.Int32
+	replaceEnvironmentFactory(t, func(environmentConfig) (streamEnvironment, error) {
+		return environments[environmentIndex.Add(1)-1], nil
+	})
+
+	conn := NewConnection("rabbitmq-stream://localhost:5552/%2F", "test-client", nil).(*connection)
+	require.NoError(t, conn.Connect())
+	t.Cleanup(func() { _ = conn.Close() })
+	var options *streamclient.ConsumerOptions
+	replaceConsumerFactory(t, func(_ *streamclient.Environment, _ string, opts *streamclient.ConsumerOptions, _ streamclient.MessagesHandler) (reliableConsumer, error) {
+		options = opts
+		return &consumerStub{}, nil
+	})
+	_, err := conn.NewConsumer("events", "workers", "next", func(Delivery) {}, true)
+	require.NoError(t, err)
+	require.NotNil(t, options)
+	oldQueryCount := oldEnvironment.queryCount("workers", "events")
+	oldEnvironment.blockNextQuery("workers", "events")
+	oldEnvironment.closed.Store(true)
+
+	promotionResult := make(chan streamclient.OffsetSpecification, 1)
+	go func() {
+		promotionResult <- options.SingleActiveConsumer.ConsumerUpdate("events", true)
+	}()
+	select {
+	case <-oldEnvironment.queryStarted:
+	case <-time.After(time.Second):
+		t.Fatal("promotion callback did not query its environment")
+	}
+
+	// Reconnect while the callback is using the original environment. The
+	// callback must not race with or switch to the replacement environment.
+	require.NoError(t, conn.Connect())
+	close(oldEnvironment.releaseQuery)
+	select {
+	case offset := <-promotionResult:
+		assert.Equal(t, streamclient.OffsetSpecification{}.First(), offset)
+	case <-time.After(time.Second):
+		t.Fatal("promotion callback did not finish")
+	}
+	assert.Equal(t, oldQueryCount+1, oldEnvironment.queryCount("workers", "events"))
+	assert.Zero(t, newEnvironment.queryCount("workers", "events"))
+}
+
 func TestConnectionConsumerCreationError(t *testing.T) {
 	conn, _ := newConnectedBehaviorConnection(t)
 	wantErr := errors.New("consumer creation failed")
@@ -354,4 +405,173 @@ func TestConnectionStoreOffsetDoesNotMoveBackwards(t *testing.T) {
 	require.NoError(t, conn.StoreOffset("events", "workers", 12))
 	assert.Equal(t, [][3]any{{"workers", "events", int64(12)}}, environment.storeArgs)
 	assert.Equal(t, int64(12), environment.queryOffset)
+}
+
+func TestConnectionOffsetLocksArePerConsumer(t *testing.T) {
+	t.Run("same consumer offsets remain monotonic", func(t *testing.T) {
+		environment := newConcurrentOffsetEnvironment()
+		environment.setOffset("workers", "events", 0)
+		environment.blockNextQuery("workers", "events")
+		conn := newConnectionWithOffsetEnvironment(t, environment)
+
+		firstResult := make(chan error, 1)
+		go func() { firstResult <- conn.StoreOffset("events", "workers", 20) }()
+		select {
+		case <-environment.queryStarted:
+		case <-time.After(time.Second):
+			t.Fatal("first offset update did not query the current offset")
+		}
+		<-environment.queryEvents
+
+		secondStarted := make(chan struct{})
+		secondResult := make(chan error, 1)
+		go func() {
+			close(secondStarted)
+			secondResult <- conn.StoreOffset("events", "workers", 10)
+		}()
+		<-secondStarted
+		select {
+		case key := <-environment.queryEvents:
+			t.Fatalf("same-consumer query %v ran while the prior update was in progress", key)
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		close(environment.releaseQuery)
+		require.NoError(t, <-firstResult)
+		require.NoError(t, <-secondResult)
+		assert.Equal(t, int64(20), environment.offset("workers", "events"))
+	})
+
+	t.Run("different consumers can update concurrently", func(t *testing.T) {
+		environment := newConcurrentOffsetEnvironment()
+		environment.setOffset("workers-a", "events", 0)
+		environment.setOffset("workers-b", "events", 0)
+		environment.blockNextQuery("workers-a", "events")
+		conn := newConnectionWithOffsetEnvironment(t, environment)
+
+		firstResult := make(chan error, 1)
+		go func() { firstResult <- conn.StoreOffset("events", "workers-a", 20) }()
+		select {
+		case <-environment.queryStarted:
+		case <-time.After(time.Second):
+			t.Fatal("first consumer update did not query the current offset")
+		}
+
+		secondResult := make(chan error, 1)
+		go func() { secondResult <- conn.StoreOffset("events", "workers-b", 10) }()
+		select {
+		case err := <-secondResult:
+			require.NoError(t, err)
+		case <-time.After(time.Second):
+			t.Fatal("an update for another consumer was blocked")
+		}
+
+		close(environment.releaseQuery)
+		require.NoError(t, <-firstResult)
+		assert.Equal(t, int64(20), environment.offset("workers-a", "events"))
+		assert.Equal(t, int64(10), environment.offset("workers-b", "events"))
+	})
+}
+
+type concurrentOffsetEnvironment struct {
+	mu             sync.Mutex
+	closed         atomic.Bool
+	offsets        map[[2]string]int64
+	queryCounts    map[[2]string]int
+	queryEvents    chan [2]string
+	blockedQueries map[[2]string]bool
+	blockNext      map[[2]string]bool
+	queryStarted   chan struct{}
+	releaseQuery   chan struct{}
+}
+
+func newConcurrentOffsetEnvironment() *concurrentOffsetEnvironment {
+	return &concurrentOffsetEnvironment{
+		offsets:        make(map[[2]string]int64),
+		queryCounts:    make(map[[2]string]int),
+		queryEvents:    make(chan [2]string, 32),
+		blockedQueries: make(map[[2]string]bool),
+		blockNext:      make(map[[2]string]bool),
+		queryStarted:   make(chan struct{}),
+		releaseQuery:   make(chan struct{}),
+	}
+}
+
+func (e *concurrentOffsetEnvironment) Close() error {
+	e.closed.Store(true)
+	return nil
+}
+
+func (e *concurrentOffsetEnvironment) IsClosed() bool { return e.closed.Load() }
+
+func (*concurrentOffsetEnvironment) DeclareStream(string, *streamclient.StreamOptions) error {
+	return nil
+}
+
+func (e *concurrentOffsetEnvironment) QueryOffset(consumerName, streamName string) (int64, error) {
+	key := [2]string{consumerName, streamName}
+	e.mu.Lock()
+	e.queryCounts[key]++
+	offset, ok := e.offsets[key]
+	block := e.blockNext[key] && !e.blockedQueries[key]
+	if block {
+		e.blockedQueries[key] = true
+	}
+	e.mu.Unlock()
+	e.queryEvents <- key
+	if block {
+		close(e.queryStarted)
+		<-e.releaseQuery
+	}
+	if e.closed.Load() {
+		return 0, errConnectionClosed
+	}
+	if !ok {
+		return 0, streamclient.OffsetNotFoundError
+	}
+	return offset, nil
+}
+
+func (e *concurrentOffsetEnvironment) StoreOffset(consumerName, streamName string, offset int64) error {
+	e.mu.Lock()
+	e.offsets[[2]string{consumerName, streamName}] = offset
+	e.mu.Unlock()
+	return nil
+}
+
+func (*concurrentOffsetEnvironment) client() *streamclient.Environment { return nil }
+
+func (e *concurrentOffsetEnvironment) setOffset(consumerName, streamName string, offset int64) {
+	e.mu.Lock()
+	e.offsets[[2]string{consumerName, streamName}] = offset
+	e.mu.Unlock()
+}
+
+func (e *concurrentOffsetEnvironment) offset(consumerName, streamName string) int64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.offsets[[2]string{consumerName, streamName}]
+}
+
+func (e *concurrentOffsetEnvironment) queryCount(consumerName, streamName string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.queryCounts[[2]string{consumerName, streamName}]
+}
+
+func (e *concurrentOffsetEnvironment) blockNextQuery(consumerName, streamName string) {
+	e.mu.Lock()
+	e.blockNext[[2]string{consumerName, streamName}] = true
+	e.mu.Unlock()
+}
+
+func newConnectionWithOffsetEnvironment(t *testing.T, environment *concurrentOffsetEnvironment) *connection {
+	t.Helper()
+	replaceEnvironmentFactory(t, func(environmentConfig) (streamEnvironment, error) {
+		return environment, nil
+	})
+	conn := NewConnection("rabbitmq-stream://localhost:5552/%2F", "test-client", nil).(*connection)
+	require.NoError(t, conn.Connect())
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
 }

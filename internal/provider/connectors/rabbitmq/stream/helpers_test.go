@@ -68,6 +68,17 @@ func Test_fromStreamMessageDecompressesMarkedBody(t *testing.T) {
 	assert.Equal(t, map[string]string{"custom": "value"}, result.Headers)
 }
 
+func Test_fromStreamMessageConvertsNonStringApplicationProperties(t *testing.T) {
+	clientMessage := makeClientMessage(t, []byte("message"), map[string]interface{}{
+		"enabled": true,
+		"retries": int32(3),
+	})
+
+	result := fromStreamMessage(clientMessage)
+
+	assert.Equal(t, map[string]string{"enabled": "true", "retries": "3"}, result.Headers)
+}
+
 func makeClientMessage(t *testing.T, body []byte, headers map[string]interface{}) *amqp.Message {
 	t.Helper()
 

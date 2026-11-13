@@ -93,7 +93,8 @@ func NewConnection(uri, clientIdentifier string, tlsConfig *tls.Config) Connecti
 }
 
 type connection struct {
-	mu               sync.Mutex
+	mu               sync.RWMutex
+	offsetLocks      sync.Map
 	env              streamEnvironment
 	uri              string
 	tlsConfig        *tls.Config
@@ -102,6 +103,11 @@ type connection struct {
 	publishers       *util.ConcurrentMap
 	ctx              context.Context
 	cancel           context.CancelFunc
+}
+
+type consumerOffsetKey struct {
+	streamName   string
+	consumerName string
 }
 
 type publisher struct {
@@ -280,7 +286,8 @@ func (c *connection) NewConsumer(streamName, consumerName, offset string, handle
 	if c.clientDisconnect.Load() || c.env == nil || c.env.IsClosed() {
 		return nil, errConnectionClosed
 	}
-	lastOffset, err := c.env.QueryOffset(consumerName, streamName)
+	env := c.env
+	lastOffset, err := env.QueryOffset(consumerName, streamName)
 	if err != nil {
 		lastOffset = -1
 	}
@@ -293,7 +300,7 @@ func (c *connection) NewConsumer(streamName, consumerName, offset string, handle
 		singleActiveConsumer.SetEnabled(true)
 		singleActiveConsumer.ConsumerUpdate = func(name string, _ bool) streamclient.OffsetSpecification {
 			util.Logger.Debugf("client %s with consumer %s on stream %s promoted to active consumer", c.clientIdentifier, consumerName, name)
-			consumerOffset, queryErr := c.env.QueryOffset(consumerName, name)
+			consumerOffset, queryErr := env.QueryOffset(consumerName, name)
 			if queryErr != nil {
 				return streamclient.OffsetSpecification{}.First()
 			}
@@ -315,7 +322,7 @@ func (c *connection) NewConsumer(streamName, consumerName, offset string, handle
 		}
 		handler(delivery)
 	}
-	consumerClient, err := newReliableConsumer(c.env.client(), streamName,
+	consumerClient, err := newReliableConsumer(env.client(), streamName,
 		streamclient.NewConsumerOptions().SetManualCommit().
 			SetClientProvidedName(c.clientIdentifier).
 			SetConsumerName(consumerName).
@@ -341,8 +348,11 @@ func (c *connection) DeclareStream(streamName string, ttl int64) error {
 }
 
 func (c *connection) GetConsumerOffset(streamName, consumerName string) (int64, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	offsetLock := c.consumerOffsetLock(streamName, consumerName)
+	offsetLock.Lock()
+	defer offsetLock.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if c.clientDisconnect.Load() || c.env == nil || c.env.IsClosed() {
 		return 0, errConnectionClosed
 	}
@@ -352,14 +362,17 @@ func (c *connection) GetConsumerOffset(streamName, consumerName string) (int64, 
 }
 
 func (c *connection) StoreOffset(streamName, consumerName string, offset int64) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	offsetLock := c.consumerOffsetLock(streamName, consumerName)
+	offsetLock.Lock()
+	defer offsetLock.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if c.clientDisconnect.Load() || c.env == nil || c.env.IsClosed() {
 		return errConnectionClosed
 	}
-	// Multiple messages can be acknowledged concurrently. Query while holding
-	// the connection lock so a late acknowledgement for an earlier offset does
-	// not overwrite a newer offset already stored for this consumer.
+	// Multiple messages can be acknowledged concurrently. Query and store under
+	// the consumer lock so a late acknowledgement cannot overwrite a newer
+	// offset, without blocking updates for other consumers on this connection.
 	currentOffset, err := c.env.QueryOffset(consumerName, streamName)
 	if err == nil && currentOffset >= offset {
 		util.Logger.Tracef("Skipping stale stream offset (%s)(%s)(%d); current offset is %d", consumerName, streamName, offset, currentOffset)
@@ -370,6 +383,12 @@ func (c *connection) StoreOffset(streamName, consumerName string, offset int64) 
 	}
 	util.Logger.Tracef("StoreOffset (%s)(%s)(%d)", consumerName, streamName, offset)
 	return c.env.StoreOffset(consumerName, streamName, offset)
+}
+
+func (c *connection) consumerOffsetLock(streamName, consumerName string) *sync.Mutex {
+	key := consumerOffsetKey{streamName: streamName, consumerName: consumerName}
+	lock, _ := c.offsetLocks.LoadOrStore(key, &sync.Mutex{})
+	return lock.(*sync.Mutex)
 }
 
 func (c *connection) GetStreamOffset(streamName string) (int64, error) {
@@ -435,7 +454,9 @@ func toStreamMessage(msg Message) message.StreamMessage {
 func headersFromStream(orig map[string]interface{}) map[string]string {
 	headers := make(map[string]string, len(orig))
 	for key, value := range orig {
-		headers[key] = value.(string)
+		// Application properties can contain non-string AMQP scalars; normalize
+		// them for the string-based message header API.
+		headers[key] = fmt.Sprint(value)
 	}
 	return headers
 }
