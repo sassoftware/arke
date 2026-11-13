@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	pb "github.com/sassoftware/arke/api"
+	iamqp "github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,12 +26,14 @@ func newManagementTestBrokerDetails(t *testing.T, endpoint string) *BrokerDetail
 	require.NoError(t, err)
 
 	return &BrokerDetails{
-		ConnectionConfig: &pb.ConnectionConfiguration{
-			Host:      parsedEndpoint.Hostname(),
-			AdminPort: int32(adminPort), //nolint:gosec
-			Credentials: &pb.Credentials{
-				Username: "user",
-				Password: "password",
+		CommonBrokerDetails: iamqp.CommonBrokerDetails{
+			ConnectionConfig: &pb.ConnectionConfiguration{
+				Host:      parsedEndpoint.Hostname(),
+				AdminPort: int32(adminPort), //nolint:gosec
+				Credentials: &pb.Credentials{
+					Username: "user",
+					Password: "password",
+				},
 			},
 		},
 	}

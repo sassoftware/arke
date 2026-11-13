@@ -129,17 +129,19 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 	}
 
 	bd = &BrokerDetails{
-		ctx:              ctx,
-		provider:         prov,
-		mgmtClient:       mgmtClient,
-		Env:              env,
-		ClientIdentifier: clientIdentifier,
-		ActiveMessages:   util.NewConcurrentMap(),
-		ConnectionConfig: cf,
-		LastPubSubEvent:  time.Now(),
-		tlsConfig:        tlsConfig,
-		tlsSkipVerify:    tlsSkipVerify,
-		shutdownChan:     make(chan struct{}),
+		ctx:        ctx,
+		provider:   prov,
+		mgmtClient: mgmtClient,
+		Env:        env,
+		CommonBrokerDetails: amqp.CommonBrokerDetails{
+			ClientIdentifier: clientIdentifier,
+			ActiveMessages:   util.NewConcurrentMap(),
+			ConnectionConfig: cf,
+			LastPubSubEvent:  time.Now(),
+		},
+		tlsConfig:     tlsConfig,
+		tlsSkipVerify: tlsSkipVerify,
+		shutdownChan:  make(chan struct{}),
 	}
 	ok, err := bd.connect()
 	if !ok {

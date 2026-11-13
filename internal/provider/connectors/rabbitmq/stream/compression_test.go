@@ -1,7 +1,7 @@
 // Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-package amqp091
+package stream
 
 import (
 	"bytes"
@@ -42,11 +42,11 @@ func Test_compressBody(t *testing.T) {
 
 func Test_compressMessage(t *testing.T) {
 	orig := bytes.Repeat([]byte("x"), compressionSizeLimit+512)
-	msg := streamMessage{Body: orig}
+	msg := Message{Body: orig}
 
 	cm, err := compressMessage(msg)
 	assert.NoError(t, err)
-	assert.Equal(t, "gzip", cm.Headers[transferEncodingHeaderName])
+	assert.Equal(t, "gzip", cm.Headers[transferEncodingHeader])
 	assert.NotEqual(t, orig, cm.Body)
 	assert.NotNil(t, cm.Headers)
 
@@ -61,7 +61,7 @@ func Test_compressMessageSkipped(t *testing.T) {
 	_, err := rand.Read(orig)
 	assert.NoError(t, err)
 
-	msg := streamMessage{Body: orig}
+	msg := Message{Body: orig}
 
 	cm, cerr := compressMessage(msg)
 	// compressMessage should attempt compression (body > limit) and then
@@ -164,7 +164,7 @@ func Test_bodyOverLimit(t *testing.T) {
 func Test_compressMessage_BelowLimit(t *testing.T) {
 	// Messages below the compression limit should not be compressed
 	small := bytes.Repeat([]byte("x"), compressionSizeLimit-100)
-	msg := streamMessage{Body: small}
+	msg := Message{Body: small}
 
 	result, err := compressMessage(msg)
 	assert.NoError(t, err)
@@ -175,7 +175,7 @@ func Test_compressMessage_BelowLimit(t *testing.T) {
 func Test_compressMessage_AtLimit(t *testing.T) {
 	// Messages at exactly the compression limit should not be compressed
 	atLimit := bytes.Repeat([]byte("x"), compressionSizeLimit)
-	msg := streamMessage{Body: atLimit}
+	msg := Message{Body: atLimit}
 
 	result, err := compressMessage(msg)
 	assert.NoError(t, err)
@@ -189,11 +189,11 @@ func Test_compressMessage_PreservesExistingHeaders(t *testing.T) {
 		"custom-header": "custom-value",
 		"another":       "value",
 	}
-	msg := streamMessage{Body: orig, Headers: existingHeaders}
+	msg := Message{Body: orig, Headers: existingHeaders}
 
 	result, err := compressMessage(msg)
 	assert.NoError(t, err)
-	assert.Equal(t, "gzip", result.Headers[transferEncodingHeaderName])
+	assert.Equal(t, "gzip", result.Headers[transferEncodingHeader])
 	assert.Equal(t, "custom-value", result.Headers["custom-header"], "Existing headers should be preserved")
 	assert.Equal(t, "value", result.Headers["another"], "Existing headers should be preserved")
 }

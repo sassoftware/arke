@@ -22,6 +22,7 @@ import (
 	"github.com/sassoftware/arke/internal/provider"
 	iamqp "github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/sassoftware/arke/internal/provider/connectors/amqp/track"
+	rabbitstream "github.com/sassoftware/arke/internal/provider/connectors/rabbitmq/stream"
 	"github.com/sassoftware/arke/internal/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -390,8 +391,10 @@ func Test_amqp091provider_Stats(t *testing.T) {
 	t.Run("returns every client with existing metric fields", func(t *testing.T) {
 		prov := NewAMQP091Provider().(*amqp091provider)
 		first := &BrokerDetails{
-			ClientIdentifier: "client-one",
-			ActiveMessages:   util.NewConcurrentMap(),
+			CommonBrokerDetails: iamqp.CommonBrokerDetails{
+				ClientIdentifier: "client-one",
+				ActiveMessages:   util.NewConcurrentMap(),
+			},
 		}
 		first.ActiveStreams.Store(2)
 		first.produced.Store(3)
@@ -399,8 +402,10 @@ func Test_amqp091provider_Stats(t *testing.T) {
 		first.ActiveMessages.Add("message-one", struct{}{})
 		first.ActiveMessages.Add("message-two", struct{}{})
 		second := &BrokerDetails{
-			ClientIdentifier: "client-two",
-			ActiveMessages:   util.NewConcurrentMap(),
+			CommonBrokerDetails: iamqp.CommonBrokerDetails{
+				ClientIdentifier: "client-two",
+				ActiveMessages:   util.NewConcurrentMap(),
+			},
 		}
 		second.ActiveStreams.Store(6)
 		second.produced.Store(7)
@@ -1053,12 +1058,14 @@ func Test_loadExchangesTracksPreloadedNames(t *testing.T) {
 	assert.NoError(t, err)
 
 	bd := &BrokerDetails{
-		ConnectionConfig: &pb.ConnectionConfiguration{
-			Host:      managementURL.Hostname(),
-			AdminPort: int32(managementPort), //nolint:gosec
-			Tenant:    testTenant,
+		CommonBrokerDetails: iamqp.CommonBrokerDetails{
+			ConnectionConfig: &pb.ConnectionConfiguration{
+				Host:      managementURL.Hostname(),
+				AdminPort: int32(managementPort), //nolint:gosec
+				Tenant:    testTenant,
+			},
+			KnownEntities: track.New(),
 		},
-		KnownEntities: track.New(),
 	}
 
 	bd.loadExchanges()
@@ -1098,12 +1105,14 @@ func Test_RetryAfterReconnectUsesNewConnection(t *testing.T) {
 	newMessage.SetDelivery(newDelivery)
 
 	bd := &BrokerDetails{
-		Connection:       oldConnection,
-		knownBindings:    util.NewConcurrentMap(),
-		ClientIdentifier: "1234",
-		ActiveMessages:   util.NewConcurrentMap(),
-		KnownEntities:    track.New(),
-		ConnectionConfig: &pb.ConnectionConfiguration{},
+		Connection:    oldConnection,
+		knownBindings: util.NewConcurrentMap(),
+		CommonBrokerDetails: iamqp.CommonBrokerDetails{
+			ClientIdentifier: "1234",
+			ActiveMessages:   util.NewConcurrentMap(),
+			KnownEntities:    track.New(),
+			ConnectionConfig: &pb.ConnectionConfiguration{},
+		},
 	}
 	bd.ActiveMessages.Add("old-message", oldMessage)
 
@@ -2941,7 +2950,7 @@ func Test_declareQueueAutoDelete(t *testing.T) {
 		t.Run(fmt.Sprintf("AutoDeleteTest autoDelete:%t, exclusive: %t, expires:%d",
 			adt.autoDelete, adt.exclusive, adt.expires), func(t *testing.T) {
 			bd := &BrokerDetails{
-				KnownEntities: track.New(),
+				CommonBrokerDetails: iamqp.CommonBrokerDetails{KnownEntities: track.New()},
 			}
 			addr := &pb.Address{Subjects: []string{"routingkey"}, Name: "address"}
 			src := &pb.Source{Address: addr, Name: "queue", AutoDelete: adt.autoDelete, Exclusive: adt.exclusive}
@@ -2980,7 +2989,7 @@ func Test_declareExchangeSkipsKnownAndDoesNotCacheFailure(t *testing.T) {
 	channel.On("ExchangeDeclare", address.GetName(), "topic", false).Return(nil).Once()
 	connection := &amqpConnectionMock{}
 	connection.On("StandbyChannel").Return(channel, nil).Once()
-	bd := &BrokerDetails{Connection: connection, KnownEntities: track.New()}
+	bd := &BrokerDetails{Connection: connection, CommonBrokerDetails: iamqp.CommonBrokerDetails{KnownEntities: track.New()}}
 	prov := NewAMQP091Provider().(*amqp091provider)
 
 	assert.NoError(t, prov.declareExchange(address, bd))
@@ -2991,7 +3000,7 @@ func Test_declareExchangeSkipsKnownAndDoesNotCacheFailure(t *testing.T) {
 	failingChannel.On("ExchangeDeclare", "failed", "topic", false).Return(errors.New("exchange failed")).Twice()
 	failingConnection := &amqpConnectionMock{}
 	failingConnection.On("StandbyChannel").Return(failingChannel, nil).Twice()
-	failingBD := &BrokerDetails{Connection: failingConnection, KnownEntities: track.New()}
+	failingBD := &BrokerDetails{Connection: failingConnection, CommonBrokerDetails: iamqp.CommonBrokerDetails{KnownEntities: track.New()}}
 	failingAddress := &pb.Address{Name: "failed", Type: pb.Address_TOPIC}
 
 	assert.EqualError(t, prov.declareExchange(failingAddress, failingBD), "exchange failed")
@@ -3005,7 +3014,7 @@ func Test_declareQueueSkipsKnownAndCachesFailure(t *testing.T) {
 	channel.On("QueueDeclare", source.GetName(), false, false, mock.Anything).Return(nil).Once()
 	connection := &amqpConnectionMock{}
 	connection.On("StandbyChannel").Return(channel, nil).Twice()
-	bd := &BrokerDetails{Connection: connection, KnownEntities: track.New()}
+	bd := &BrokerDetails{Connection: connection, CommonBrokerDetails: iamqp.CommonBrokerDetails{KnownEntities: track.New()}}
 	prov := NewAMQP091Provider().(*amqp091provider)
 
 	assert.NoError(t, prov.declareQueue(source, bd, false))
@@ -3016,7 +3025,7 @@ func Test_declareQueueSkipsKnownAndCachesFailure(t *testing.T) {
 	failingChannel.On("QueueDeclare", "failed", false, false, mock.Anything).Return(errors.New("queue failed")).Once()
 	failingConnection := &amqpConnectionMock{}
 	failingConnection.On("StandbyChannel").Return(failingChannel, nil).Once()
-	failingBD := &BrokerDetails{Connection: failingConnection, KnownEntities: track.New()}
+	failingBD := &BrokerDetails{Connection: failingConnection, CommonBrokerDetails: iamqp.CommonBrokerDetails{KnownEntities: track.New()}}
 	failingSource := &pb.Source{Name: "failed", Type: pb.Source_QUEUE}
 
 	assert.NoError(t, prov.declareQueue(failingSource, failingBD, false))
@@ -3030,7 +3039,7 @@ func Test_declareQueueForceRedeclaresKnownQueue(t *testing.T) {
 	channel.On("QueueDeclare", source.GetName(), false, false, mock.Anything).Return(nil).Twice()
 	connection := &amqpConnectionMock{}
 	connection.On("StandbyChannel").Return(channel, nil).Twice()
-	bd := &BrokerDetails{Connection: connection, KnownEntities: track.New()}
+	bd := &BrokerDetails{Connection: connection, CommonBrokerDetails: iamqp.CommonBrokerDetails{KnownEntities: track.New()}}
 	prov := NewAMQP091Provider().(*amqp091provider)
 
 	assert.NoError(t, prov.declareQueue(source, bd, false))
@@ -3051,7 +3060,7 @@ func Test_singleActiveConsumer(t *testing.T) {
 		t.Run(fmt.Sprintf("SingleActiveConsumerTest singleActiveConsumer:%t",
 			sac.singleActiveConsumer), func(t *testing.T) {
 			bd := &BrokerDetails{
-				KnownEntities: track.New(),
+				CommonBrokerDetails: iamqp.CommonBrokerDetails{KnownEntities: track.New()},
 			}
 			addr := &pb.Address{Subjects: []string{"routingkey"}, Name: "address"}
 			src := &pb.Source{Address: addr, Name: "queue", SingleActiveConsumer: sac.singleActiveConsumer}
@@ -3282,7 +3291,7 @@ func Test_SourceStats(t *testing.T) {
 					smock.On("GetConsumerOffset", src.GetName(), test.sourceName).Return(int(test.consumerOffset), nil).Once()
 				}
 
-				NewStreamConn = func(string, string, *tls.Config) streamConnectionShim {
+				NewStreamConn = func(string, string, *tls.Config) rabbitstream.Connection {
 					return smock
 				}
 			}

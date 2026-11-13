@@ -47,9 +47,12 @@ func Test_ProviderConnectsToBroker(t *testing.T) {
 	defer util.RemoveClientIdentifier(ctx)
 
 	connConfig := cfg.ConnectionConfigurationFromEnv()
+	// This test exercises the AMQP 1.0 connector, regardless of the default
+	// broker provider selected for the rest of the integration suite.
+	connConfig.Provider = "rabbitmq-amqp10"
 	t.Logf("cf: %+v", connConfig)
 	connConfig.ClientName = clientIdentifier
-	prov, err := provider.NewProvider(cfg.ConnectionConfigurationFromEnv().Provider)
+	prov, err := provider.NewProvider(connConfig.Provider)
 	require.NoError(t, err)
 
 	connectErr := prov.Connect(ctx, &connConfig, false)
