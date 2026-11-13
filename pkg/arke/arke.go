@@ -250,7 +250,7 @@ func DefaultArkeServer() *Arke {
 }
 
 func setGoMemLimit() {
-	_, _ = memlimit.SetGoMemLimitWithOpts(
+	_, _ = memlimit.Set(
 		memlimit.WithRatio(0.9),
 		memlimit.WithProvider(
 			memlimit.ApplyFallback(
