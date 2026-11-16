@@ -148,6 +148,8 @@ func (c *connection) Connect() error {
 	if env == nil {
 		return errors.New("stream environment factory returned a nil environment")
 	}
+	// Publishers created from the previous environment must not be reused.
+	c.publishers = util.NewConcurrentMap()
 	c.env = env
 	return nil
 }
@@ -356,12 +358,11 @@ func (c *connection) GetConsumerOffset(streamName, consumerName string) (int64, 
 	offsetLock := c.consumerOffsetLock(streamName, consumerName)
 	offsetLock.Lock()
 	defer offsetLock.Unlock()
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.clientDisconnect.Load() || c.env == nil || c.env.IsClosed() {
-		return 0, errConnectionClosed
+	env, err := c.openEnvironment()
+	if err != nil {
+		return 0, err
 	}
-	offset, err := c.env.QueryOffset(consumerName, streamName)
+	offset, err := env.QueryOffset(consumerName, streamName)
 	util.Logger.Debugf("GetConsumerOffset (%s)(%s)(%d) [%v]", consumerName, streamName, offset, err)
 	return offset, err
 }
@@ -370,15 +371,14 @@ func (c *connection) StoreOffset(streamName, consumerName string, offset int64) 
 	offsetLock := c.consumerOffsetLock(streamName, consumerName)
 	offsetLock.Lock()
 	defer offsetLock.Unlock()
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.clientDisconnect.Load() || c.env == nil || c.env.IsClosed() {
-		return errConnectionClosed
+	env, err := c.openEnvironment()
+	if err != nil {
+		return err
 	}
 	// Multiple messages can be acknowledged concurrently. Query and store under
 	// the consumer lock so a late acknowledgement cannot overwrite a newer
 	// offset, without blocking updates for other consumers on this connection.
-	currentOffset, err := c.env.QueryOffset(consumerName, streamName)
+	currentOffset, err := env.QueryOffset(consumerName, streamName)
 	if err == nil && currentOffset >= offset {
 		util.Logger.Tracef("Skipping stale stream offset (%s)(%s)(%d); current offset is %d", consumerName, streamName, offset, currentOffset)
 		return nil
@@ -387,7 +387,16 @@ func (c *connection) StoreOffset(streamName, consumerName string, offset int64) 
 		return err
 	}
 	util.Logger.Tracef("StoreOffset (%s)(%s)(%d)", consumerName, streamName, offset)
-	return c.env.StoreOffset(consumerName, streamName, offset)
+	return env.StoreOffset(consumerName, streamName, offset)
+}
+
+func (c *connection) openEnvironment() (streamEnvironment, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.clientDisconnect.Load() || c.env == nil || c.env.IsClosed() {
+		return nil, errConnectionClosed
+	}
+	return c.env, nil
 }
 
 func (c *connection) consumerOffsetLock(streamName, consumerName string) *sync.Mutex {

@@ -158,6 +158,39 @@ func TestPublisherPoolAndConfirmations(t *testing.T) {
 	conn.PutPublisher(true, reused)
 }
 
+func TestConnectionReconnectClearsPublisherPools(t *testing.T) {
+	environments := []*behaviorEnvironmentStub{{}, {}}
+	environmentIndex := 0
+	replaceEnvironmentFactory(t, func(environmentConfig) (streamEnvironment, error) {
+		environment := environments[environmentIndex]
+		environmentIndex++
+		return environment, nil
+	})
+	conn := NewConnection("rabbitmq-stream://localhost:5552/%2F", "test-client", nil).(*connection)
+	require.NoError(t, conn.Connect())
+	t.Cleanup(func() { _ = conn.Close() })
+
+	var created []*producerStub
+	replaceProducerFactory(t, func(_ *streamclient.Environment, _ string, _ *streamclient.ProducerOptions, _ ha.ConfirmMessageHandler) (reliableProducer, error) {
+		producer := &producerStub{}
+		created = append(created, producer)
+		return producer, nil
+	})
+	oldPublisher := conn.GetPublisher("events", "", false)
+	require.NotNil(t, oldPublisher)
+	conn.PutPublisher(false, oldPublisher)
+	require.Equal(t, 1, conn.publishers.Length())
+
+	environments[0].closed = true
+	require.NoError(t, conn.Connect())
+	assert.Zero(t, conn.publishers.Length())
+
+	newPublisher := conn.GetPublisher("events", "", false)
+	require.NotNil(t, newPublisher)
+	assert.NotSame(t, oldPublisher, newPublisher)
+	assert.Len(t, created, 2)
+}
+
 func TestGetPublisherEnforcesPoolLimits(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -534,6 +567,55 @@ func TestConnectionOffsetLocksArePerConsumer(t *testing.T) {
 		assert.Equal(t, int64(20), environment.offset("workers-a", "events"))
 		assert.Equal(t, int64(10), environment.offset("workers-b", "events"))
 	})
+}
+
+func TestConnectionOffsetCallsDoNotHoldConnectionLock(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*connection) error
+	}{
+		{
+			name: "get consumer offset",
+			call: func(conn *connection) error {
+				_, err := conn.GetConsumerOffset("events", "workers")
+				return err
+			},
+		},
+		{
+			name: "store consumer offset",
+			call: func(conn *connection) error {
+				return conn.StoreOffset("events", "workers", 1)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			environment := newConcurrentOffsetEnvironment()
+			environment.setOffset("workers", "events", 0)
+			environment.blockNextQuery("workers", "events")
+			conn := newConnectionWithOffsetEnvironment(t, environment)
+
+			operationResult := make(chan error, 1)
+			go func() { operationResult <- test.call(conn) }()
+			select {
+			case <-environment.queryStarted:
+			case <-time.After(time.Second):
+				t.Fatal("offset operation did not start its query")
+			}
+
+			closeResult := make(chan error, 1)
+			go func() { closeResult <- conn.Close() }()
+			select {
+			case err := <-closeResult:
+				require.NoError(t, err)
+			case <-time.After(time.Second):
+				close(environment.releaseQuery)
+				t.Fatal("connection close waited for the blocked offset query")
+			}
+			close(environment.releaseQuery)
+			assert.ErrorIs(t, <-operationResult, errConnectionClosed)
+		})
+	}
 }
 
 type concurrentOffsetEnvironment struct {
