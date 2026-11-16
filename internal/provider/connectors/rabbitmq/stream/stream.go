@@ -172,8 +172,8 @@ func (c *connection) Close() error {
 }
 
 func (c *connection) IsClosed() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.clientDisconnect.Load() || c.env == nil || c.env.IsClosed()
 }
 
