@@ -86,6 +86,7 @@ func NewConnection(uri, clientIdentifier string, tlsConfig *tls.Config) Connecti
 		uri:              uri,
 		tlsConfig:        tlsConfig,
 		clientIdentifier: clientIdentifier,
+		offsetLocks:      util.NewConcurrentMap(),
 		publishers:       util.NewConcurrentMap(),
 		ctx:              ctx,
 		cancel:           cancel,
@@ -94,7 +95,8 @@ func NewConnection(uri, clientIdentifier string, tlsConfig *tls.Config) Connecti
 
 type connection struct {
 	mu               sync.RWMutex
-	offsetLocks      sync.Map
+	offsetLocksMu    sync.Mutex
+	offsetLocks      *util.ConcurrentMap
 	env              streamEnvironment
 	uri              string
 	tlsConfig        *tls.Config
@@ -103,11 +105,6 @@ type connection struct {
 	publishers       *util.ConcurrentMap
 	ctx              context.Context
 	cancel           context.CancelFunc
-}
-
-type consumerOffsetKey struct {
-	streamName   string
-	consumerName string
 }
 
 type publisher struct {
@@ -138,7 +135,10 @@ func (c *connection) Connect() error {
 		maxConsumersPerClient: maxConsumersPerClient,
 	})
 	if err != nil {
-		if env != nil && !env.IsClosed() {
+		if env == nil {
+			return err
+		}
+		if !env.IsClosed() {
 			if closeErr := env.Close(); closeErr != nil {
 				return fmt.Errorf("%w (closing partially created stream environment: %v)", err, closeErr)
 			}
@@ -286,8 +286,8 @@ func (c *connection) NewConsumer(streamName, consumerName, offset string, handle
 	if handler == nil {
 		return nil, errors.New("stream message handler is required")
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if c.clientDisconnect.Load() || c.env == nil || c.env.IsClosed() {
 		return nil, errConnectionClosed
 	}
@@ -391,9 +391,18 @@ func (c *connection) StoreOffset(streamName, consumerName string, offset int64) 
 }
 
 func (c *connection) consumerOffsetLock(streamName, consumerName string) *sync.Mutex {
-	key := consumerOffsetKey{streamName: streamName, consumerName: consumerName}
-	lock, _ := c.offsetLocks.LoadOrStore(key, &sync.Mutex{})
-	return lock.(*sync.Mutex)
+	key := fmt.Sprintf("%d:%s:%d:%s", len(streamName), streamName, len(consumerName), consumerName)
+	if lock, ok := c.offsetLocks.Get(key); ok {
+		return lock.(*sync.Mutex)
+	}
+	c.offsetLocksMu.Lock()
+	defer c.offsetLocksMu.Unlock()
+	if lock, ok := c.offsetLocks.Get(key); ok {
+		return lock.(*sync.Mutex)
+	}
+	lock := &sync.Mutex{}
+	c.offsetLocks.Add(key, lock)
+	return lock
 }
 
 func (c *connection) GetStreamOffset(streamName string) (int64, error) {

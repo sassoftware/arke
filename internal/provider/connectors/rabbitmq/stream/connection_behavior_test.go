@@ -282,7 +282,68 @@ func TestConnectionConsumerPromotionFallsBackToFirst(t *testing.T) {
 	_, err := conn.NewConsumer("events", "workers", "continue", func(Delivery) {}, true)
 	require.NoError(t, err)
 	require.NotNil(t, options)
+	assert.Equal(t, streamclient.OffsetSpecification{}.Offset(0), options.Offset)
 	assert.Equal(t, streamclient.OffsetSpecification{}.First(), options.SingleActiveConsumer.ConsumerUpdate("events", true))
+}
+
+func TestConnectionNewConsumerPreconditions(t *testing.T) {
+	t.Run("requires a connected connection", func(t *testing.T) {
+		conn := NewConnection("rabbitmq-stream://localhost:5552/%2F", "test-client", nil).(*connection)
+		factoryCalled := false
+		replaceConsumerFactory(t, func(_ *streamclient.Environment, _ string, _ *streamclient.ConsumerOptions, _ streamclient.MessagesHandler) (reliableConsumer, error) {
+			factoryCalled = true
+			return &consumerStub{}, nil
+		})
+
+		consumerClient, err := conn.NewConsumer("events", "workers", "next", func(Delivery) {}, false)
+		assert.Nil(t, consumerClient)
+		assert.ErrorIs(t, err, errConnectionClosed)
+		assert.False(t, factoryCalled)
+	})
+
+	t.Run("rejects a closed connection", func(t *testing.T) {
+		conn, _ := newConnectedBehaviorConnection(t)
+		require.NoError(t, conn.Close())
+		factoryCalled := false
+		replaceConsumerFactory(t, func(_ *streamclient.Environment, _ string, _ *streamclient.ConsumerOptions, _ streamclient.MessagesHandler) (reliableConsumer, error) {
+			factoryCalled = true
+			return &consumerStub{}, nil
+		})
+
+		consumerClient, err := conn.NewConsumer("events", "workers", "next", func(Delivery) {}, false)
+		assert.Nil(t, consumerClient)
+		assert.ErrorIs(t, err, errConnectionClosed)
+		assert.False(t, factoryCalled)
+	})
+
+	t.Run("rejects a missing handler", func(t *testing.T) {
+		conn, _ := newConnectedBehaviorConnection(t)
+		factoryCalled := false
+		replaceConsumerFactory(t, func(_ *streamclient.Environment, _ string, _ *streamclient.ConsumerOptions, _ streamclient.MessagesHandler) (reliableConsumer, error) {
+			factoryCalled = true
+			return &consumerStub{}, nil
+		})
+
+		consumerClient, err := conn.NewConsumer("events", "workers", "next", nil, false)
+		assert.Nil(t, consumerClient)
+		assert.EqualError(t, err, "stream message handler is required")
+		assert.False(t, factoryCalled)
+	})
+
+	t.Run("rejects an invalid offset before creating a consumer", func(t *testing.T) {
+		conn, environment := newConnectedBehaviorConnection(t)
+		factoryCalled := false
+		replaceConsumerFactory(t, func(_ *streamclient.Environment, _ string, _ *streamclient.ConsumerOptions, _ streamclient.MessagesHandler) (reliableConsumer, error) {
+			factoryCalled = true
+			return &consumerStub{}, nil
+		})
+
+		consumerClient, err := conn.NewConsumer("events", "workers", "invalid", func(Delivery) {}, false)
+		assert.Nil(t, consumerClient)
+		assert.EqualError(t, err, "invalid offset: invalid")
+		assert.Equal(t, [][2]string{{"workers", "events"}}, environment.queryCalls)
+		assert.False(t, factoryCalled)
+	})
 }
 
 func TestConnectionConsumerPromotionUsesCapturedEnvironment(t *testing.T) {
