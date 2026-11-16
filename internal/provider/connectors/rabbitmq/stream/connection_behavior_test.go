@@ -224,7 +224,9 @@ func TestPublisherDisconnectBehavior(t *testing.T) {
 	pub := conn.GetPublisher("events", "", false)
 	require.NotNil(t, pub)
 	require.NoError(t, conn.Close())
+	assert.Zero(t, conn.publishers.Length(), "connection close should clear publisher pools")
 	assert.Nil(t, conn.GetPublisher("events", "", false))
+	assert.Zero(t, conn.publishers.Length(), "publisher lookup after close should not recreate a pool")
 	conn.PutPublisher(false, pub)
 	assert.Equal(t, 1, producer.closeCalls, "publisher returned after disconnect should be closed")
 }

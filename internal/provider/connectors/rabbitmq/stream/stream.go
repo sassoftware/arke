@@ -160,6 +160,8 @@ func (c *connection) Close() error {
 	}
 	c.cancel()
 	env := c.env
+	// Drop pool references; the environment closes the underlying producers.
+	c.publishers = util.NewConcurrentMap()
 	c.mu.Unlock()
 	if env == nil || env.IsClosed() {
 		return nil
@@ -199,7 +201,9 @@ func (c *connection) PutPublisher(confirm bool, pub Publisher) {
 }
 
 func (c *connection) GetPublisher(streamName, publisherName string, confirm bool) Publisher {
-	if c.IsClosed() {
+	c.mu.Lock()
+	if c.clientDisconnect.Load() || c.env == nil || c.env.IsClosed() {
+		c.mu.Unlock()
 		return nil
 	}
 	key := publisherKey(streamName, publisherName, confirm)
@@ -215,6 +219,7 @@ func (c *connection) GetPublisher(streamName, publisherName string, confirm bool
 		c.publishers.Add(key, poolValue)
 	}
 	pool := poolValue.(*util.BlockingPool)
+	c.mu.Unlock()
 	var pub any
 	for i := 0; pub == nil && i < 10; i++ {
 		pub = pool.Get()
