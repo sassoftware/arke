@@ -1319,8 +1319,12 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 	}
 
 	consumer, consumerErr := bd.StreamConnection.NewConsumer(source.GetName(), consumerName, offset, handleMessages, source.GetSingleActiveConsumer())
-	if consumerErr != nil {
-		return &pb.Error{Message: consumerErr.Error()}
+	if consumer == nil {
+		message := "failed to create stream consumer"
+		if consumerErr != nil {
+			message = consumerErr.Error()
+		}
+		return &pb.Error{Message: message}
 	}
 	bd.IncrementStreamCount()
 	defer bd.DecrementStreamCount()
