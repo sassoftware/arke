@@ -73,13 +73,15 @@ func BenchmarkGetManagementClient_Old(b *testing.B) {
 
 func BenchmarkGetManagementClient_New(b *testing.B) {
 	bd := &BrokerDetails{
-		ConnectionConfig: &pb.ConnectionConfiguration{
-			Host:      "localhost",
-			Port:      5672,
-			AdminPort: 15672,
-			Credentials: &pb.Credentials{
-				Username: "guest",
-				Password: "guest",
+		CommonBrokerDetails: iamqp.CommonBrokerDetails{
+			ConnectionConfig: &pb.ConnectionConfiguration{
+				Host:      "localhost",
+				Port:      5672,
+				AdminPort: 15672,
+				Credentials: &pb.Credentials{
+					Username: "guest",
+					Password: "guest",
+				},
 			},
 		},
 	}
@@ -100,10 +102,12 @@ func BenchmarkBrokerDetailsValue(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		bd := BrokerDetails{ //nolint:exhaustruct
-			ClientIdentifier: "bench-client",
-			LastPubSubEvent:  time.Now(),
-			ErrorChannel:     make(chan amqp091Error, 1),
-			shutdownChan:     make(chan bool, 1),
+			CommonBrokerDetails: iamqp.CommonBrokerDetails{
+				ClientIdentifier: "bench-client",
+				LastPubSubEvent:  time.Now(),
+			},
+			ErrorChannel: make(chan amqp091Error, 1),
+			shutdownChan: make(chan bool, 1),
 		}
 		sinkBD = &bd // triggers the escape
 	}
@@ -113,10 +117,12 @@ func BenchmarkBrokerDetailsPointer(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		sinkBD = &BrokerDetails{ //nolint:exhaustruct
-			ClientIdentifier: "bench-client",
-			LastPubSubEvent:  time.Now(),
-			ErrorChannel:     make(chan amqp091Error, 1),
-			shutdownChan:     make(chan bool, 1),
+			CommonBrokerDetails: iamqp.CommonBrokerDetails{
+				ClientIdentifier: "bench-client",
+				LastPubSubEvent:  time.Now(),
+			},
+			ErrorChannel: make(chan amqp091Error, 1),
+			shutdownChan: make(chan bool, 1),
 		}
 	}
 }

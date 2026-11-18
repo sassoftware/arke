@@ -13,6 +13,7 @@ import (
 	rabbitmqamqp "github.com/rabbitmq/rabbitmq-amqp-go-client/pkg/rabbitmqamqp"
 	pb "github.com/sassoftware/arke/api"
 	"github.com/sassoftware/arke/internal/provider"
+	"github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -47,15 +48,17 @@ func (m *managementClientStub) SourceStats(vhost, queueName string) *pb.SourceSt
 
 func newTestBrokerDetails() *BrokerDetails {
 	return &BrokerDetails{
-		ctx:              context.Background(),
-		ClientIdentifier: "test-client",
-		ConnectionConfig: &pb.ConnectionConfiguration{
-			Host:       "localhost",
-			Port:       5672,
-			ClientName: "test-client",
-			Credentials: &pb.Credentials{
-				Username: "guest",
-				Password: "guest",
+		ctx: context.Background(),
+		CommonBrokerDetails: amqp.CommonBrokerDetails{
+			ClientIdentifier: "test-client",
+			ConnectionConfig: &pb.ConnectionConfiguration{
+				Host:       "localhost",
+				Port:       5672,
+				ClientName: "test-client",
+				Credentials: &pb.Credentials{
+					Username: "guest",
+					Password: "guest",
+				},
 			},
 		},
 	}

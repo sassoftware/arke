@@ -6,87 +6,10 @@ package amqp091
 import (
 	"testing"
 
-	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/amqp"
-	"github.com/rabbitmq/rabbitmq-stream-go-client/pkg/stream"
 	pb "github.com/sassoftware/arke/api"
+	iamqp "github.com/sassoftware/arke/internal/provider/connectors/amqp"
 	"github.com/stretchr/testify/assert"
 )
-
-func Test_toStreamOffset(t *testing.T) {
-	off, err := toStreamOffset("first", 0)
-	assert.Equal(t, stream.OffsetSpecification{}.First(), off)
-	assert.Nil(t, err)
-
-	off, err = toStreamOffset("FIRST", 0)
-	assert.Equal(t, stream.OffsetSpecification{}.First(), off)
-	assert.Nil(t, err)
-
-	off, err = toStreamOffset("continue", 100)
-	assert.Equal(t, stream.OffsetSpecification{}.Offset(101), off)
-	assert.Nil(t, err)
-
-	off, err = toStreamOffset("continue", 0)
-	assert.Equal(t, stream.OffsetSpecification{}.Offset(1), off)
-	assert.Nil(t, err)
-
-	off, err = toStreamOffset("continue", -1)
-	assert.Equal(t, stream.OffsetSpecification{}.Offset(0), off)
-	assert.Nil(t, err)
-
-	off, err = toStreamOffset("0", 100)
-	assert.Equal(t, stream.OffsetSpecification{}.Offset(0), off)
-	assert.Nil(t, err)
-
-	off, err = toStreamOffset("next", 100)
-	assert.Equal(t, stream.OffsetSpecification{}.Next(), off)
-	assert.Nil(t, err)
-
-	off, err = toStreamOffset("", 100)
-	assert.Equal(t, stream.OffsetSpecification{}.Next(), off)
-	assert.Nil(t, err)
-
-	_, err = toStreamOffset("invalid", 100)
-	assert.NotNil(t, err)
-}
-
-func Test_toStreamMessage(t *testing.T) {
-	origMsg := streamMessage{
-		Body:            []byte("test body"),
-		Headers:         map[string]string{"header1": "value1", "header2": "value2"},
-		ContentEncoding: "utf-8",
-		ContentType:     "text/plain",
-	}
-
-	expectedMsg := amqp.NewMessage(origMsg.Body)
-	expectedMsg.ApplicationProperties = map[string]interface{}{"header1": "value1", "header2": "value2"}
-	expectedMsg.Properties = &amqp.MessageProperties{
-		ContentEncoding: "utf-8",
-		ContentType:     "text/plain",
-	}
-
-	resultMsg := toStreamMessage(origMsg)
-
-	assert.Equal(t, expectedMsg.ApplicationProperties, resultMsg.GetApplicationProperties())
-	assert.Equal(t, expectedMsg.Properties.ContentEncoding, resultMsg.GetMessageProperties().ContentEncoding)
-	assert.Equal(t, expectedMsg.Properties.ContentType, resultMsg.GetMessageProperties().ContentType)
-}
-
-func Test_toStreamHeaders(t *testing.T) {
-	origHeaders := map[string]string{
-		"header1": "value1",
-		"header2": "value2",
-		"header3": "value3",
-	}
-
-	expectedHeaders := map[string]interface{}{
-		"header1": "value1",
-		"header2": "value2",
-		"header3": "value3",
-	}
-
-	resultHeaders := toStreamHeaders(origHeaders)
-	assert.Equal(t, expectedHeaders, resultHeaders)
-}
 
 func Test_getStreamConnectionString(t *testing.T) {
 	tests := []struct {
@@ -97,12 +20,14 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "without tenant and TLS",
 			bd: &BrokerDetails{
-				ConnectionConfig: &pb.ConnectionConfiguration{
-					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+				CommonBrokerDetails: iamqp.CommonBrokerDetails{
+					ConnectionConfig: &pb.ConnectionConfiguration{
+						Credentials: &pb.Credentials{
+							Username: "user",
+							Password: "pass",
+						},
+						Host: "localhost",
 					},
-					Host: "localhost",
 				},
 				tlsEnabled: false,
 			},
@@ -111,13 +36,15 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "with tenant and without TLS",
 			bd: &BrokerDetails{
-				ConnectionConfig: &pb.ConnectionConfiguration{
-					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+				CommonBrokerDetails: iamqp.CommonBrokerDetails{
+					ConnectionConfig: &pb.ConnectionConfiguration{
+						Credentials: &pb.Credentials{
+							Username: "user",
+							Password: "pass",
+						},
+						Host:   "localhost",
+						Tenant: "tenant1",
 					},
-					Host:   "localhost",
-					Tenant: "tenant1",
 				},
 				tlsEnabled: false,
 			},
@@ -126,12 +53,14 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "without tenant and with TLS",
 			bd: &BrokerDetails{
-				ConnectionConfig: &pb.ConnectionConfiguration{
-					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+				CommonBrokerDetails: iamqp.CommonBrokerDetails{
+					ConnectionConfig: &pb.ConnectionConfiguration{
+						Credentials: &pb.Credentials{
+							Username: "user",
+							Password: "pass",
+						},
+						Host: "localhost",
 					},
-					Host: "localhost",
 				},
 				tlsEnabled: true,
 			},
@@ -140,13 +69,15 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "with tenant and TLS",
 			bd: &BrokerDetails{
-				ConnectionConfig: &pb.ConnectionConfiguration{
-					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+				CommonBrokerDetails: iamqp.CommonBrokerDetails{
+					ConnectionConfig: &pb.ConnectionConfiguration{
+						Credentials: &pb.Credentials{
+							Username: "user",
+							Password: "pass",
+						},
+						Host:   "localhost",
+						Tenant: "tenant1",
 					},
-					Host:   "localhost",
-					Tenant: "tenant1",
 				},
 				tlsEnabled: true,
 			},
@@ -155,13 +86,15 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "escapechar tenant and TLS",
 			bd: &BrokerDetails{
-				ConnectionConfig: &pb.ConnectionConfiguration{
-					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+				CommonBrokerDetails: iamqp.CommonBrokerDetails{
+					ConnectionConfig: &pb.ConnectionConfiguration{
+						Credentials: &pb.Credentials{
+							Username: "user",
+							Password: "pass",
+						},
+						Host:   "localhost",
+						Tenant: "/",
 					},
-					Host:   "localhost",
-					Tenant: "/",
 				},
 				tlsEnabled: false,
 			},
@@ -170,13 +103,15 @@ func Test_getStreamConnectionString(t *testing.T) {
 		{
 			name: "escapechar tenant and TLS",
 			bd: &BrokerDetails{
-				ConnectionConfig: &pb.ConnectionConfiguration{
-					Credentials: &pb.Credentials{
-						Username: "user",
-						Password: "pass",
+				CommonBrokerDetails: iamqp.CommonBrokerDetails{
+					ConnectionConfig: &pb.ConnectionConfiguration{
+						Credentials: &pb.Credentials{
+							Username: "user",
+							Password: "pass",
+						},
+						Host:   "localhost",
+						Tenant: "/",
 					},
-					Host:   "localhost",
-					Tenant: "/",
 				},
 				tlsEnabled: true,
 			},
