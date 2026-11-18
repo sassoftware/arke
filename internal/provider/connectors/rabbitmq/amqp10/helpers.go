@@ -44,7 +44,6 @@ func delCtxToMessage(delCtx ramqp.IDeliveryContext, source *pb.Source) *pb.Messa
 
 	// later, annotations[x-stream-offset] to x-current-offset
 
-	// TODO: should these properties take precedence over (user) ApplicationProperties?
 	props := message.Properties
 	if props == nil {
 		props = &amqp.MessageProperties{}

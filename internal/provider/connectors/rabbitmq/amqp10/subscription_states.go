@@ -128,7 +128,6 @@ func (s *Subscription) createConsumer(queueName string) (rabbitMQAMQP10ConsumerS
 			queue:            queueName,
 			clientIdentifier: s.bd.ClientIdentifier,
 		}
-		// TODO: how to handle error => link with name 'xxx' already exists
 		return nil, subscribeStateRecovering, nil
 	}
 	if consumer == nil {
