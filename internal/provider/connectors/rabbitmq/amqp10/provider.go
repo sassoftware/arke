@@ -82,7 +82,11 @@ func (prov *rabbitMQAMQP10Provider) getBrokerDetailsByIdentifier(clientIdentifie
 }
 
 func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.ConnectionConfiguration, tlsSkipVerify bool) *pb.Error {
-	util.Logger.Info("Connecting to broker")
+	clientIdentifier, err := util.GetClientIdentifier(ctx)
+	if err != nil {
+		util.Logger.Warn(i18n.NoClientUUIDError, err.Error())
+		return &pb.Error{Message: err.Error()}
+	}
 	if cf == nil {
 		return &pb.Error{Message: "connection configuration is required"}
 	}
@@ -91,11 +95,7 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 		return &pb.Error{Message: "missing broker credentials"}
 	}
 
-	clientIdentifier, err := util.GetClientIdentifier(ctx)
-	if err != nil {
-		util.Logger.Warn(i18n.NoClientUUIDError, err.Error())
-		return &pb.Error{Message: err.Error()}
-	}
+	util.Logger.Info(i18n.ClientConnect, clientIdentifier, cf.GetHost())
 
 	// Check if we already have an active connection for this client
 	bd := prov.getBrokerDetailsByIdentifier(clientIdentifier)
