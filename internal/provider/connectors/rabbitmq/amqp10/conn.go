@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"sync/atomic"
 	"time"
 
 	goamqp "github.com/Azure/go-amqp"
@@ -44,7 +43,6 @@ type rabbitMQAMQP10Connection struct {
 	tlsCfg                       *tls.Config
 	state                        int
 	stateChannel                 chan *ramqp.StateChanged
-	closed                       atomic.Bool
 }
 
 func getRabbitMQAMQP10ConnOptions(ctx context.Context, cf *pb.ConnectionConfiguration, tlsCfg *tls.Config) (*ramqp.AmqpConnOptions, error) {
@@ -78,9 +76,6 @@ func (a *rabbitMQAMQP10Connection) WatchConnection(ch chan *ramqp.StateChanged) 
 // IsClosed reports whether the connection is unusable. A reconnecting
 // connection is not closed because the client library is recovering it.
 func (a *rabbitMQAMQP10Connection) IsClosed() bool {
-	if a.closed.Load() {
-		return true
-	}
 	switch a.State() {
 	case provider.CLOSED, provider.DISCONNECTED:
 		return true
@@ -125,7 +120,6 @@ func (a *rabbitMQAMQP10Connection) DeclareBind(ctx context.Context, specificatio
 // TODO: Issue 204 - cancel context used by state channel (i.e., make sure connection watcher channel shuts down) and close state channel
 func (a *rabbitMQAMQP10Connection) Close(_ context.Context) error {
 	// The client library does not move to Closed on a client-initiated Close.
-	a.closed.Store(true)
 	defer a.connectionCancel()
 	return a.connection.Close(a.connectionCtx)
 }
