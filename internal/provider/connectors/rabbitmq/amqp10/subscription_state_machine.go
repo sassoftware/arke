@@ -227,12 +227,3 @@ func (sm *subscribeStateMachine) callTransitionFunc(state subscribeState) (subsc
 	return sm.getState(), nil
 }
 
-func (sm *subscribeStateMachine) waitUntilStopped() {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	logger.Debugf("waiting until subscribe state machine stops")
-	for sm.state != subscribeStateStopped {
-		// Recheck after each wakeup; only the terminal state completes shutdown.
-		sm.cond.Wait()
-	}
-}

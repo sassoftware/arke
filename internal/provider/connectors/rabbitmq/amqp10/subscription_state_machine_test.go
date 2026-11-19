@@ -329,6 +329,16 @@ func Test_subscribeStateMachineWaitForStateBroadcastsOnStop(t *testing.T) {
 	}
 }
 
+func waitUntilStopped(t *testing.T, sm *subscribeStateMachine) {
+	t.Helper()
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	for sm.state != subscribeStateStopped {
+		// Recheck after each wakeup; only the terminal state completes shutdown.
+		sm.cond.Wait()
+	}
+}
+
 func Test_subscribeStateMachineWaitUntilStopped(t *testing.T) {
 	sm := newSubscribeStateMachine()
 	sm.mu.Lock()
@@ -336,7 +346,7 @@ func Test_subscribeStateMachineWaitUntilStopped(t *testing.T) {
 	sm.mu.Unlock()
 	done := make(chan struct{})
 	go func() {
-		sm.waitUntilStopped()
+		waitUntilStopped(t, sm)
 		close(done)
 	}()
 
