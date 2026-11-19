@@ -251,9 +251,10 @@ func newTestCABundle(t *testing.T) (string, *x509.Certificate) {
 
 func Test_amqp10provider_Connect(t *testing.T) {
 	t.Run("rejects nil connection configuration", func(t *testing.T) {
+		ctx, _ := newTestProviderContext(t, "connect-nil-configuration")
 		prov := newTestRabbitMQAMQP10Provider()
 
-		err := prov.Connect(context.Background(), nil, false)
+		err := prov.Connect(ctx, nil, false)
 
 		require.NotNil(t, err)
 		assert.Equal(t, "connection configuration is required", err.GetMessage())

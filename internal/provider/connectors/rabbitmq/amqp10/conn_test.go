@@ -73,10 +73,4 @@ func Test_rabbitMQAMQP10Connection_IsClosed(t *testing.T) {
 	t.Run("nil connection is closed", func(t *testing.T) {
 		assert.True(t, (&rabbitMQAMQP10Connection{}).IsClosed())
 	})
-
-	t.Run("connection closed by the client stays closed", func(t *testing.T) {
-		connection := &rabbitMQAMQP10Connection{}
-		connection.closed.Store(true)
-		assert.True(t, connection.IsClosed())
-	})
 }

@@ -50,9 +50,9 @@ func (s *subscribeState) String() string {
 
 var subscribeStateTransitions = map[subscribeState]subscribeState{
 	subscribeStateIdle:       subscribeStateStarting | subscribeStateStopped,
-	subscribeStateStarting:   subscribeStateRunning | subscribeStateStopped,
+	subscribeStateStarting:   subscribeStateRunning | subscribeStateRecovering | subscribeStateStopping | subscribeStateStopped,
 	subscribeStateRunning:    subscribeStateRecovering | subscribeStateStopping | subscribeStateStopped,
-	subscribeStateRecovering: subscribeStateRunning | subscribeStateStopped | subscribeStateStopping,
+	subscribeStateRecovering: subscribeStateStarting | subscribeStateStopped | subscribeStateStopping,
 	subscribeStateStopping:   subscribeStateStopped,
 	subscribeStateStopped:    subscribeStateNone,
 }

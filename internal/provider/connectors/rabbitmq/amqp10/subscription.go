@@ -21,6 +21,7 @@ type Subscription struct {
 	recoveryAttempts   int
 	lastRecoveryError  *subscribeStateTransitionError
 	consumerGeneration uint64
+	session            *consumerSession
 
 	eventMu           sync.Mutex
 	pendingEvent      subscribeState

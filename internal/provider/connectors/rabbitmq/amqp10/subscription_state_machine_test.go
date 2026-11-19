@@ -66,11 +66,13 @@ func Test_subscribeStateMachineTransitionState(t *testing.T) {
 			{from: subscribeStateIdle, to: subscribeStateStarting},
 			{from: subscribeStateIdle, to: subscribeStateStopped},
 			{from: subscribeStateStarting, to: subscribeStateRunning},
+			{from: subscribeStateStarting, to: subscribeStateRecovering},
+			{from: subscribeStateStarting, to: subscribeStateStopping},
 			{from: subscribeStateStarting, to: subscribeStateStopped},
 			{from: subscribeStateRunning, to: subscribeStateRecovering},
 			{from: subscribeStateRunning, to: subscribeStateStopping},
 			{from: subscribeStateRunning, to: subscribeStateStopped},
-			{from: subscribeStateRecovering, to: subscribeStateRunning},
+			{from: subscribeStateRecovering, to: subscribeStateStarting},
 			{from: subscribeStateRecovering, to: subscribeStateStopped},
 			{from: subscribeStateRecovering, to: subscribeStateStopping},
 			{from: subscribeStateStopping, to: subscribeStateStopped},
@@ -91,9 +93,8 @@ func Test_subscribeStateMachineTransitionState(t *testing.T) {
 			to   subscribeState
 		}{
 			{from: subscribeStateIdle, to: subscribeStateRunning},
-			{from: subscribeStateStarting, to: subscribeStateRecovering},
 			{from: subscribeStateRunning, to: subscribeStateStarting},
-			{from: subscribeStateRecovering, to: subscribeStateStarting},
+			{from: subscribeStateRecovering, to: subscribeStateRunning},
 			{from: subscribeStateStopping, to: subscribeStateRunning},
 			{from: subscribeStateStopped, to: subscribeStateRunning},
 			{from: subscribeStateNone, to: subscribeStateRunning},
@@ -376,6 +377,9 @@ func Test_subscribeStateMachineCyclesWithoutRecursion(t *testing.T) {
 		return subscribeStateRecovering, nil
 	})
 	sm.registerTransitionFunc(subscribeStateRecovering, func() (subscribeState, *subscribeStateTransitionError) {
+		return subscribeStateStarting, nil
+	})
+	sm.registerTransitionFunc(subscribeStateStarting, func() (subscribeState, *subscribeStateTransitionError) {
 		return subscribeStateRunning, nil
 	})
 	sm.registerTransitionFunc(subscribeStateStopping, func() (subscribeState, *subscribeStateTransitionError) {

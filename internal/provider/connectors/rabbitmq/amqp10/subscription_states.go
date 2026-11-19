@@ -65,20 +65,16 @@ func (s *Subscription) starting() (subscribeState, *subscribeStateTransitionErro
 	}
 	// validate subscription configuration
 	s.bd.subscriptions.Add(subscriptionKey(s.source), s)
-	_, s.consumerGeneration = s.bd.connectionSnapshot()
-	return subscribeStateRunning, nil
-}
-
-func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError) {
-	if next := s.takeEventAfter(s.consumerGeneration); next != subscribeStateNone {
+	state, generation := s.bd.connectionSnapshot()
+	s.consumerGeneration = generation
+	if next := s.takeEventAfter(generation); next != subscribeStateNone {
 		s.resetRecoveryIfRecovering(next)
 		return next, nil
 	}
-	state, generation := s.bd.connectionSnapshot()
 	if state == provider.CLOSED || state == provider.DISCONNECTED {
 		return subscribeStateStopping, nil
 	}
-	if state != provider.CONNECTED || generation > s.consumerGeneration {
+	if state != provider.CONNECTED {
 		s.resetRecovery()
 		return subscribeStateRecovering, nil
 	}
@@ -88,9 +84,26 @@ func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError
 	if consumer == nil {
 		return next, transitionErr
 	}
-	session := s.startReceiving(consumer, queueName)
-	defer s.closeConsumer(session)
-	return s.consume(session)
+	s.session = s.startReceiving(consumer, queueName)
+	return subscribeStateRunning, nil
+}
+
+func (s *Subscription) running() (subscribeState, *subscribeStateTransitionError) {
+	if s.session == nil {
+		return subscribeStateRecovering, nil
+	}
+	return s.consume(s.session)
+}
+
+// releaseSession tears down the current consumer session, if any. It is safe to
+// call repeatedly.
+func (s *Subscription) releaseSession() {
+	session := s.session
+	if session == nil {
+		return
+	}
+	s.session = nil
+	s.closeConsumer(session)
 }
 
 // createConsumer returns a nil consumer together with the next state when one
@@ -290,6 +303,7 @@ func (s *Subscription) cleanupActiveDeliveries() {
 }
 
 func (s *Subscription) recovering() (subscribeState, *subscribeStateTransitionError) {
+	s.releaseSession()
 	if s.ctx.Err() != nil || s.bd.ClientDisconnect.Load() {
 		return subscribeStateStopping, nil
 	}
@@ -334,7 +348,7 @@ wait:
 		state, generation := s.bd.connectionSnapshot()
 		if state == provider.CONNECTED {
 			s.consumerGeneration = generation
-			return subscribeStateRunning, nil
+			return subscribeStateStarting, nil
 		}
 		if state == provider.CLOSED || state == provider.DISCONNECTED {
 			break
@@ -358,6 +372,7 @@ wait:
 }
 
 func (s *Subscription) stopping() (subscribeState, *subscribeStateTransitionError) {
+	s.releaseSession()
 	// Only remove our own entry; a newer subscription may now own this key.
 	s.bd.subscriptions.DeleteIfEqual(subscriptionKey(s.source), s)
 	return subscribeStateStopped, nil
