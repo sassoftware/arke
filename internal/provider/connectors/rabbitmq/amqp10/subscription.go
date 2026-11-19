@@ -49,9 +49,12 @@ func (s *Subscription) notify(state subscribeState, generation uint64) {
 	s.events()
 	s.eventMu.Lock()
 	defer s.eventMu.Unlock()
-	if s.pendingEvent != subscribeStateStopping && (state == subscribeStateStopping ||
-		s.pendingEvent != subscribeStateRecovering ||
-		generation > s.pendingGeneration) {
+
+	// Decide whether the new request replaces the pending one.
+	if s.pendingEvent != subscribeStateStopping && // never replace stopping (terminal state)
+		(state == subscribeStateStopping || // always accept stopping
+			s.pendingEvent != subscribeStateRecovering || // skip redundant replacement
+			generation > s.pendingGeneration) { // unless its a newer generation
 		s.pendingEvent = state
 		s.pendingGeneration = generation
 	}
