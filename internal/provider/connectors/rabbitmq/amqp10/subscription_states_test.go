@@ -438,8 +438,10 @@ func Test_SubscriptionNotifyKeepsStopping(t *testing.T) {
 	subscription.notify(subscribeStateRecovering, 2)
 	subscription.notify(subscribeStateRunning, 0) // not a connection-driven state
 
-	assert.Equal(t, subscribeStateStopping, subscription.takeEvent())
-	assert.Equal(t, subscribeStateNone, subscription.takeEvent())
+	event, _ := subscription.takePendingEvent()
+	assert.Equal(t, subscribeStateStopping, event)
+	event, _ = subscription.takePendingEvent()
+	assert.Equal(t, subscribeStateNone, event)
 }
 
 func Test_SubscriptionRunningReturnsStateRequestedByEvent(t *testing.T) {

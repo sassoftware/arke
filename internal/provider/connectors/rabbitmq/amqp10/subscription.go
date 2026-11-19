@@ -64,13 +64,6 @@ func (s *Subscription) notify(state subscribeState, generation uint64) {
 	}
 }
 
-// takeEvent consumes the pending event without filtering by generation. Recovery
-// uses it to honor Stopping while discarding redundant Recovering requests.
-func (s *Subscription) takeEvent() subscribeState {
-	state, _ := s.takePendingEvent()
-	return state
-}
-
 // takeEventAfter consumes an event, ignoring Recovering requests covered by the
 // consumer's generation. Newer reconnects and all Stopping requests must be handled.
 func (s *Subscription) takeEventAfter(generation uint64) subscribeState {

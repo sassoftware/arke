@@ -309,7 +309,8 @@ func Test_BrokerDetails_watchConnection(t *testing.T) {
 			state, generation := bd.connectionSnapshot()
 			return state == provider.CONNECTED && generation == 1
 		}, time.Second, 10*time.Millisecond)
-		assert.Equal(t, subscribeStateRecovering, sub.takeEvent())
+		event, _ := sub.takePendingEvent()
+		assert.Equal(t, subscribeStateRecovering, event)
 		select {
 		case <-done:
 			t.Fatal("watcher exited on a recoverable close")
@@ -333,7 +334,8 @@ func Test_BrokerDetails_watchConnection(t *testing.T) {
 				bd.watchConnection()
 
 				assert.Equal(t, uint32(provider.CLOSED), bd.State.Load())
-				assert.Equal(t, subscribeStateStopping, sub.takeEvent())
+				event, _ := sub.takePendingEvent()
+				assert.Equal(t, subscribeStateStopping, event)
 			})
 		}
 	})
@@ -379,6 +381,8 @@ func Test_BrokerDetails_notifySubscriptions(t *testing.T) {
 
 	bd.notifySubscriptions(subscribeStateStopping, 0)
 
-	assert.Equal(t, subscribeStateStopping, first.takeEvent())
-	assert.Equal(t, subscribeStateStopping, second.takeEvent())
+	firstEvent, _ := first.takePendingEvent()
+	secondEvent, _ := second.takePendingEvent()
+	assert.Equal(t, subscribeStateStopping, firstEvent)
+	assert.Equal(t, subscribeStateStopping, secondEvent)
 }

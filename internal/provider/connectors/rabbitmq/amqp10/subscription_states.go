@@ -294,7 +294,7 @@ func (s *Subscription) recovering() (subscribeState, *subscribeStateTransitionEr
 		return subscribeStateStopping, nil
 	}
 	// A Recovering event is moot while already recovering; only Stopping matters.
-	if s.takeEvent() == subscribeStateStopping {
+	if event, _ := s.takePendingEvent(); event == subscribeStateStopping {
 		return subscribeStateStopping, nil
 	}
 	s.recoveryAttempts++
