@@ -177,7 +177,7 @@ func (sm *subscribeStateMachine) transitionStateInner(newState subscribeState, t
 
 		nextState, err := sm.callTransitionFunc(newState)
 		if err != nil {
-			logger.Debugf("subscribe state transition from %s to %s returned error: %v", newState.String(), nextState.String(), err)
+			logger.Debugf("subscribe state transition from %s to %s returned error: %v", nextState.String(), newState.String(), err)
 			transitionErr = err
 		}
 		if !isValidSubscribeState(nextState) {
