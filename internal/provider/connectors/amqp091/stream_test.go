@@ -703,8 +703,9 @@ func Test_streamSubscribe_NewConsumerResult(t *testing.T) {
 		wantErr     string
 	}{
 		{
-			name:        "usable consumer with error continues",
+			name:        "consumer with error returns provider error",
 			consumerErr: errors.New("Invalid Offset"),
+			wantErr:     "Invalid Offset",
 		},
 		{
 			name:        "nil consumer with error returns provider error",
