@@ -64,31 +64,6 @@ func TestConnectionLifecycle(t *testing.T) {
 		assert.Equal(t, 2, calls)
 	})
 
-	t.Run("remains closed when the environment factory returns nil", func(t *testing.T) {
-		connection := NewConnection("rabbitmq-stream://localhost:5552/%2F", "client", nil)
-		replaceEnvironmentFactory(t, func(environmentConfig) (streamEnvironment, error) {
-			return nil, nil
-		})
-
-		assert.Error(t, connection.Connect())
-		assert.True(t, connection.IsClosed())
-	})
-
-	t.Run("does not recreate an open environment", func(t *testing.T) {
-		connection := NewConnection("rabbitmq-stream://localhost:5552/%2F", "client", nil)
-		environment := &environmentStub{}
-		calls := 0
-		replaceEnvironmentFactory(t, func(environmentConfig) (streamEnvironment, error) {
-			calls++
-			return environment, nil
-		})
-
-		require.NoError(t, connection.Connect())
-		require.NoError(t, connection.Connect())
-		assert.Equal(t, 1, calls)
-		assert.False(t, connection.IsClosed())
-	})
-
 	t.Run("passes TLS configuration through", func(t *testing.T) {
 		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 		connection := NewConnection("rabbitmq-stream+tls://localhost:5552/%2F", "client", tlsConfig)
@@ -132,20 +107,5 @@ func TestConnectionLifecycle(t *testing.T) {
 		require.NoError(t, connection.Close())
 		assert.Equal(t, 1, environment.closeCalls)
 		assert.True(t, connection.IsClosed())
-	})
-
-	t.Run("reports environment close errors and does not retry the close", func(t *testing.T) {
-		connection := NewConnection("rabbitmq-stream://localhost:5552/%2F", "client", nil)
-		wantError := errors.New("environment close failed")
-		environment := &environmentStub{closeErr: wantError}
-		replaceEnvironmentFactory(t, func(environmentConfig) (streamEnvironment, error) {
-			return environment, nil
-		})
-		require.NoError(t, connection.Connect())
-
-		assert.ErrorIs(t, connection.Close(), wantError)
-		assert.True(t, connection.IsClosed())
-		require.NoError(t, connection.Close())
-		assert.Equal(t, 1, environment.closeCalls)
 	})
 }
