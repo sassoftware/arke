@@ -212,10 +212,10 @@ func mockSpyAmqp10Environment(t *testing.T) *rabbitMQAMQP10EnvironmentCall {
 }
 
 // stubAmqp10Connection makes Connect receive conn from a mocked environment.
-func stubAmqp10Connection(t *testing.T, ctx context.Context, conn *rabbitMQAMQP10ConnectionMock) {
+func stubAmqp10Connection(t *testing.T, conn *rabbitMQAMQP10ConnectionMock) {
 	t.Helper()
 	env := &rabbitMQAMQP10EnvironmentMock{}
-	env.On("NewConnection", ctx).Return(conn, nil).Once()
+	env.On("NewConnection", mock.Anything).Return(conn, nil).Once()
 	original := newRabbitMQAMQP10EnvironmentFunc
 	newRabbitMQAMQP10EnvironmentFunc = func(context.Context, *pb.ConnectionConfiguration, *tls.Config, provider.Provider) (rabbitMQAMQP10EnvironmentShim, error) {
 		return env, nil
@@ -301,7 +301,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		prov := newTestRabbitMQAMQP10Provider()
 		connectionErr := fmt.Errorf("broker connection failed")
 		env := &rabbitMQAMQP10EnvironmentMock{}
-		env.On("NewConnection", ctx).Return(nil, connectionErr).Once()
+		env.On("NewConnection", mock.Anything).Return(nil, connectionErr).Once()
 		originalFactory := newRabbitMQAMQP10EnvironmentFunc
 		t.Cleanup(func() {
 			newRabbitMQAMQP10EnvironmentFunc = originalFactory
@@ -323,8 +323,8 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		prov := newTestRabbitMQAMQP10Provider()
 		conn := &rabbitMQAMQP10ConnectionMock{}
 		conn.On("WatchConnection", mock.Anything).Return(errors.New("watch failed")).Once()
-		conn.On("Close", ctx).Return(nil).Once()
-		stubAmqp10Connection(t, ctx, conn)
+		conn.On("Close", mock.Anything).Return(nil).Once()
+		stubAmqp10Connection(t, conn)
 
 		err := prov.Connect(ctx, newTestConnectionConfig(), false)
 
@@ -340,8 +340,8 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		conn := &rabbitMQAMQP10ConnectionMock{}
 		conn.On("WatchConnection", mock.Anything).Return(nil).Once()
 		conn.On("State").Return(provider.CLOSED).Once()
-		conn.On("Close", ctx).Return(nil).Once()
-		stubAmqp10Connection(t, ctx, conn)
+		conn.On("Close", mock.Anything).Return(nil).Once()
+		stubAmqp10Connection(t, conn)
 
 		err := prov.Connect(ctx, newTestConnectionConfig(), false)
 
@@ -357,7 +357,7 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		conn := &rabbitMQAMQP10ConnectionMock{}
 		conn.On("WatchConnection", mock.Anything).Return(nil).Once()
 		conn.On("State").Return(provider.CONNECTING).Once()
-		stubAmqp10Connection(t, ctx, conn)
+		stubAmqp10Connection(t, conn)
 
 		err := prov.Connect(ctx, newTestConnectionConfig(), false)
 
@@ -365,6 +365,29 @@ func Test_amqp10provider_Connect(t *testing.T) {
 		bd := prov.getBrokerDetailsByIdentifier(clientIdentifier)
 		require.NotNil(t, bd)
 		assert.Equal(t, uint32(provider.CONNECTING), bd.State.Load())
+		conn.AssertExpectations(t)
+	})
+
+	t.Run("keeps the connection context alive after the Connect context is cancelled", func(t *testing.T) {
+		ctx, clientIdentifier := newTestProviderContext(t, "connect-ctx-cancelled")
+		prov := newTestRabbitMQAMQP10Provider()
+		conn := &rabbitMQAMQP10ConnectionMock{}
+		conn.On("WatchConnection", mock.Anything).Return(nil).Once()
+		conn.On("State").Return(provider.CONNECTED).Once()
+		conn.On("Close", mock.Anything).Return(nil).Once()
+		stubAmqp10Connection(t, conn)
+		connectCtx, cancelConnect := context.WithCancel(ctx)
+
+		require.Nil(t, prov.Connect(connectCtx, newTestConnectionConfig(), false))
+		cancelConnect()
+
+		bd := prov.getBrokerDetailsByIdentifier(clientIdentifier)
+		require.NotNil(t, bd)
+		assert.NoError(t, bd.ctx.Err())
+
+		prov.Disconnect(ctx)
+
+		assert.ErrorIs(t, bd.ctx.Err(), context.Canceled)
 		conn.AssertExpectations(t)
 	})
 

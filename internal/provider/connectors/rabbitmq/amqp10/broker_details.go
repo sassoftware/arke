@@ -23,6 +23,7 @@ import (
 type BrokerDetails struct {
 	amqp.CommonBrokerDetails
 	ctx        context.Context
+	cancel     context.CancelFunc
 	provider   provider.Provider
 	mgmtClient amqp.ManagementClientShim
 	Env        rabbitMQAMQP10EnvironmentShim
@@ -126,6 +127,7 @@ func (bd *BrokerDetails) setConnectionState(state uint32) uint64 {
 	return bd.generation
 }
 
+// connectionSnapshot returns the current connection state and the reconnect generation.
 func (bd *BrokerDetails) connectionSnapshot() (uint32, uint64) {
 	bd.lifecycleMu.Lock()
 	defer bd.lifecycleMu.Unlock()
@@ -154,6 +156,9 @@ func (bd *BrokerDetails) subscribe(ctx context.Context, source *pb.Source, mc ch
 
 // notifySubscriptions forwards a connection state change to every subscription.
 func (bd *BrokerDetails) notifySubscriptions(newState subscribeState, generation uint64) {
+	if bd.subscriptions == nil {
+		return
+	}
 	for _, subName := range bd.subscriptions.GetList() {
 		s, ok := bd.subscriptions.Get(subName)
 		if !ok {
@@ -184,11 +189,17 @@ func (bd *BrokerDetails) queueExists(name string) bool {
 func (bd *BrokerDetails) disconnect() {
 	bd.Lock()
 	defer bd.Unlock()
+	defer func() {
+		if bd.cancel != nil {
+			bd.cancel()
+		}
+	}()
 
 	// A CLOSED broker can still hold a connection the library reconnected.
 	if state := bd.State.Load(); bd.Connection == nil && (state == provider.DISCONNECTED || state == provider.CLOSED) {
 		return
 	}
+	bd.notifySubscriptions(subscribeStateStopping, 0)
 
 	bd.ClientDisconnect.Store(true)
 

@@ -27,8 +27,8 @@ const (
 	subscribeStateStopped
 )
 
-func (s *subscribeState) String() string {
-	switch *s {
+func (s subscribeState) String() string {
+	switch s {
 	case subscribeStateNone:
 		return "none"
 	case subscribeStateIdle:
@@ -177,7 +177,7 @@ func (sm *subscribeStateMachine) transitionStateInner(newState subscribeState, t
 
 		nextState, err := sm.callTransitionFunc(newState)
 		if err != nil {
-			logger.Debugf("subscribe state transition from %s to %s returned error: %v", nextState.String(), newState.String(), err)
+			logger.Debugf("subscribe state transition from %s to %s returned error: %v", nextState.String(), currentState.String(), err)
 			transitionErr = err
 		}
 		if !isValidSubscribeState(nextState) {
@@ -226,4 +226,3 @@ func (sm *subscribeStateMachine) callTransitionFunc(state subscribeState) (subsc
 	logger.Debugf("no transition function registered for state %v", state)
 	return sm.getState(), nil
 }
-

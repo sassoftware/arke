@@ -512,6 +512,55 @@ func Test_AMQP10DeclareExchangeAllowsIncompatibleRedeclaration(t *testing.T) {
 	require.Nil(t, prov.Subscribe(ctxB, sourceB, nil))
 }
 
+func Test_AMQP10SubscribeAfterConnectContextCancelled(t *testing.T) {
+	hostname := os.Getenv("ARKE_BROKER_HOSTNAME")
+	if hostname == "" {
+		hostname = "localhost"
+	}
+	t.Setenv("ARKE_BROKER_HOSTNAME", hostname)
+
+	prov, err := provider.NewProvider("rabbitmq-amqp10")
+	require.NoError(t, err)
+	ctx := integrationClientContext(t, "test-amqp10-connect-ctx")
+	clientIdentifier, err := util.GetClientIdentifier(ctx)
+	require.NoError(t, err)
+
+	connectionConfig := cfg.ConnectionConfigurationFromEnv()
+	connectionConfig.ClientName = clientIdentifier
+	// gRPC cancels the Connect RPC context as soon as the handler returns.
+	connectCtx, cancelConnect := context.WithCancel(ctx)
+	require.Nil(t, prov.Connect(connectCtx, &connectionConfig, false))
+	t.Cleanup(func() { prov.Disconnect(ctx) })
+	cancelConnect()
+
+	exchangeName := "arke-amqp10-connect-ctx-" + uuid.NewString()
+	source := &pb.Source{
+		Name:        exchangeName + "-queue",
+		Type:        pb.Source_QUEUE,
+		DeclareOnly: true,
+		Address:     &pb.Address{Name: exchangeName, Type: pb.Address_TOPIC, Subjects: []string{"a"}},
+	}
+	username, password := amqp.GetUsernamePassword(&connectionConfig)
+	management, err := amqp.NewManagementClient(context.Background(), amqp.GetMgmtEndpoint(&connectionConfig), username, password, nil)
+	require.NoError(t, err)
+	vhost := amqp.GetVhost(&connectionConfig)
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := deleteQueue(cleanupCtx, management, vhost, amqp.SourceName(source)); err != nil {
+			t.Errorf("delete queue %s: %v", source.GetName(), err)
+		}
+		exchangePath := "/api/exchanges/" + url.PathEscape(vhost) + "/" + url.PathEscape(exchangeName)
+		if _, _, err := management.Request(cleanupCtx, http.MethodDelete, exchangePath); err != nil {
+			t.Errorf("delete exchange %s: %v", exchangeName, err)
+		}
+	})
+
+	subscribeErr := prov.Subscribe(ctx, source, nil)
+
+	require.Nil(t, subscribeErr, "subscribe after the Connect context was cancelled: %v", subscribeErr)
+}
+
 type declaredQueueProperties struct {
 	queueType            string
 	expires              int64

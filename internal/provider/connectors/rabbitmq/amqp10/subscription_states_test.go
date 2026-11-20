@@ -939,3 +939,115 @@ func Test_SubscriptionRecoveryAttemptsReset(t *testing.T) {
 		assert.Nil(t, subscription.lastRecoveryError)
 	})
 }
+
+func newDisconnectTestBrokerDetails(t *testing.T) (*BrokerDetails, *rabbitMQAMQP10ConnectionMock) {
+	t.Helper()
+	connection := &rabbitMQAMQP10ConnectionMock{}
+	connection.On("Close", mock.Anything).Return(nil).Once()
+	bd := &BrokerDetails{
+		ctx:              context.Background(),
+		ClientIdentifier: testSubscriptionClient,
+		Connection:       connection,
+		subscriptions:    util.NewConcurrentMap(),
+		provider:         waitForConnectProviderStub{wait: func(context.Context) bool { return true }},
+	}
+	bd.setConnectionState(provider.CONNECTED)
+	return bd, connection
+}
+
+func Test_BrokerDetailsDisconnectStopsRunningSubscription(t *testing.T) {
+	var receiving sync.Once
+	receiveStarted := make(chan struct{})
+	consumer := &subscriptionConsumerStub{
+		closeCalled: make(chan struct{}),
+		receive: func(ctx context.Context) (ramqp10.IDeliveryContext, error) {
+			receiving.Do(func() { close(receiveStarted) })
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	subscription := newTestSubscription(t, context.Background(), newTestQueueSource(), consumer, nil)
+	connection, ok := subscription.bd.Connection.(*rabbitMQAMQP10ConnectionMock)
+	require.True(t, ok)
+	// The mock connection never fails Receive, so only the notification can stop the subscription.
+	connection.On("Close", mock.Anything).Return(nil).Once()
+	result := make(chan subscribeState, 1)
+	go func() {
+		state, _ := runStarted(subscription)
+		result <- state
+	}()
+	select {
+	case <-receiveStarted:
+	case <-time.After(time.Second):
+		t.Fatal("receive worker did not start")
+	}
+
+	subscription.bd.disconnect()
+
+	select {
+	case state := <-result:
+		assert.Equal(t, subscribeStateStopping, state)
+	case <-time.After(time.Second):
+		t.Fatal("running subscription did not stop on disconnect")
+	}
+	select {
+	case <-consumer.closeCalled:
+	default:
+		t.Fatal("consumer was not closed")
+	}
+	connection.AssertCalled(t, "Close", mock.Anything)
+}
+
+func Test_BrokerDetailsDisconnectInterruptsRecoveryBackoff(t *testing.T) {
+	bd, _ := newDisconnectTestBrokerDetails(t)
+	source := newTestQueueSource()
+	// Attempt 4 backs off for 800ms, so only the notification can end it sooner.
+	subscription := &Subscription{ctx: context.Background(), source: source, bd: bd, recoveryAttempts: 3}
+	bd.subscriptions.Add(subscriptionKey(source), subscription)
+	result := make(chan subscribeState, 1)
+	go func() {
+		state, _ := subscription.recovering()
+		result <- state
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	bd.disconnect()
+
+	select {
+	case state := <-result:
+		assert.Equal(t, subscribeStateStopping, state)
+	case <-time.After(400 * time.Millisecond):
+		t.Fatal("recovering subscription waited out its backoff after disconnect")
+	}
+}
+
+func Test_BrokerDetailsDisconnectNotifiesEverySubscription(t *testing.T) {
+	bd, _ := newDisconnectTestBrokerDetails(t)
+	queueSource := newTestQueueSource()
+	otherSource := &pb.Source{Name: testBindingStreamName, Type: pb.Source_QUEUE, Address: &pb.Address{Name: testBindingStreamName, Type: pb.Address_TOPIC}}
+	subscriptions := []*Subscription{
+		{ctx: context.Background(), source: queueSource, bd: bd},
+		{ctx: context.Background(), source: otherSource, bd: bd},
+	}
+	for _, subscription := range subscriptions {
+		bd.subscriptions.Add(subscriptionKey(subscription.source), subscription)
+	}
+
+	bd.disconnect()
+
+	for _, subscription := range subscriptions {
+		assert.True(t, subscription.peekStopping(), subscriptionKey(subscription.source))
+	}
+}
+
+func Test_BrokerDetailsDisconnectSkipsNotificationWhenAlreadyDisconnected(t *testing.T) {
+	bd := &BrokerDetails{ctx: context.Background(), subscriptions: util.NewConcurrentMap()}
+	bd.setConnectionState(provider.DISCONNECTED)
+	source := newTestQueueSource()
+	subscription := &Subscription{ctx: context.Background(), source: source, bd: bd}
+	bd.subscriptions.Add(subscriptionKey(source), subscription)
+
+	bd.disconnect()
+
+	assert.False(t, subscription.peekStopping())
+}

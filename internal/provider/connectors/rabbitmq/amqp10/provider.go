@@ -122,12 +122,21 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 			}
 		}
 	}
-	env, err := newRabbitMQAMQP10EnvironmentFunc(ctx, cf, tlsConfig, prov)
+	// The RPC context is cancelled when Connect returns, but the connection outlives it.
+	connCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	connected := false
+	defer func() {
+		if !connected {
+			cancel()
+		}
+	}()
+
+	env, err := newRabbitMQAMQP10EnvironmentFunc(connCtx, cf, tlsConfig, prov)
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
 
-	conn, err := env.NewConnection(ctx)
+	conn, err := env.NewConnection(connCtx)
 	if err != nil {
 		return &pb.Error{Message: err.Error()}
 	}
@@ -136,7 +145,7 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 
 	// Anything that fails from here on must close the connection, or it leaks.
 	closeOnError := func(err error) *pb.Error {
-		if closeErr := conn.Close(ctx); closeErr != nil {
+		if closeErr := conn.Close(connCtx); closeErr != nil {
 			util.Logger.Debugf("failed to close connection for client %s after connect error: %v", clientIdentifier, closeErr)
 		}
 		return &pb.Error{Message: err.Error()}
@@ -152,13 +161,14 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 	}
 	endpoint := amqp.GetMgmtEndpoint(cf)
 	username, password := amqp.GetUsernamePassword(cf)
-	mgmtClient, err := amqp.NewManagementClient(ctx, endpoint, username, password, tlsConfig)
+	mgmtClient, err := amqp.NewManagementClient(connCtx, endpoint, username, password, tlsConfig)
 	if err != nil {
 		return closeOnError(err)
 	}
 
 	bd = &BrokerDetails{
-		ctx:        ctx,
+		ctx:        connCtx,
+		cancel:     cancel,
 		provider:   prov,
 		mgmtClient: mgmtClient,
 		Env:        env,
@@ -179,6 +189,7 @@ func (prov *rabbitMQAMQP10Provider) Connect(ctx context.Context, cf *pb.Connecti
 	go bd.watchConnection()
 	util.Logger.Debugf("adding client %s", clientIdentifier)
 	prov.connections.Add(clientIdentifier, bd)
+	connected = true
 	return nil
 }
 
