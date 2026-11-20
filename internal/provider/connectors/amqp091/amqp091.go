@@ -1322,6 +1322,9 @@ func (prov *amqp091provider) streamSubscribe(ctx context.Context, bd *BrokerDeta
 	if consumerErr != nil {
 		return &pb.Error{Message: consumerErr.Error()}
 	}
+	if consumer == nil {
+		return &pb.Error{Message: "failed to create stream consumer"}
+	}
 	bd.IncrementStreamCount()
 	defer bd.DecrementStreamCount()
 	<-ctx.Done()

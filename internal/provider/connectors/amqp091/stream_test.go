@@ -692,6 +692,79 @@ func Test_streamSubscribe(t *testing.T) {
 	}
 }
 
+func Test_streamSubscribe_NewConsumerResult(t *testing.T) {
+	address := stockAddress()
+	address.Type = pb.Address_STREAM
+
+	tests := []struct {
+		name        string
+		consumerNil bool
+		consumerErr error
+		wantErr     string
+	}{
+		{
+			name:        "consumer with error returns provider error",
+			consumerErr: errors.New("Invalid Offset"),
+			wantErr:     "Invalid Offset",
+		},
+		{
+			name:        "nil consumer with error returns provider error",
+			consumerNil: true,
+			consumerErr: errors.New("connection refused"),
+			wantErr:     "connection refused",
+		},
+		{
+			name:        "nil consumer without error returns provider error",
+			consumerNil: true,
+			wantErr:     "failed to create stream consumer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := &pb.Source{
+				Name:          "srcname",
+				Address:       address,
+				Options:       map[string]string{"Offset": "0"},
+				Type:          pb.Source_STREAM,
+				PrefetchCount: 4,
+			}
+
+			consumer := &streamConsumerMock{}
+			consumer.On("Close").Return(nil)
+			var consumerResult rabbitstream.Consumer = consumer
+			if tt.consumerNil {
+				consumerResult = nil
+			}
+
+			streamConn := &streamConnectionMock{}
+			streamConn.On("IsClosed").Return(false)
+			streamConn.On("DeclareStream").Return(nil)
+			streamConn.On("NewConsumer", source.GetName(), source.GetName(), "0", mock.Anything, false).
+				Return(consumerResult, tt.consumerErr)
+
+			bd := &BrokerDetails{StreamConnection: streamConn}
+			bd.ActiveMessages = util.NewConcurrentMap()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			messages := make(chan *pb.Message, 1)
+
+			err := NewAMQP091Provider().(*amqp091provider).streamSubscribe(ctx, bd, source, messages)
+			if tt.wantErr == "" {
+				assert.Nil(t, err)
+				consumer.AssertExpectations(t)
+			} else {
+				if assert.NotNil(t, err) {
+					assert.Contains(t, err.GetMessage(), tt.wantErr)
+				}
+				consumer.AssertNotCalled(t, "Close")
+			}
+			streamConn.AssertExpectations(t)
+		})
+	}
+}
+
 func Test_SubscribeStreamAutoDeleteOrExclusive(t *testing.T) {
 	prov := NewAMQP091Provider()
 
